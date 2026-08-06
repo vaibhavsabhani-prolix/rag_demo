@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+
+
+# Virtual Environment
+venv/
+.env
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python cache
+.pytest_cache/
+.mypy_cache/
+
+# Qdrant Local Storage
+qdrant_storage/
+
+# Large Patent Data
+patents-processed/
+us-patent/
+data/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build
+build/
+dist/
