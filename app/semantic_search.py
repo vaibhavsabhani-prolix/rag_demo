@@ -41,6 +41,34 @@ class SemanticSearch:
         self.db = QdrantDB()
         self.reranker = Reranker()
 
+    def search_detailed(
+        self, query: str
+    ) -> tuple[list, list[tuple[float, object]], list[PatentSearchResult]]:
+        """
+        Search for patents and return results at each pipeline stage:
+        1. Qdrant vector search candidate chunks (list of ScoredPoint)
+        2. Reranked candidate chunks (list of (reranker_score, ScoredPoint))
+        3. Aggregated PatentSearchResult list
+        """
+        # Step 1: Embed the query
+        query_vector = self.embedder.embed_query(query)
+
+        # Step 2: Retrieve candidate chunks from Qdrant
+        qdrant_results = self.db.search(
+            query_vector=query_vector,
+        )
+
+        # Step 3: Rerank the candidate chunks
+        reranked_results = self.reranker.rerank(
+            query=query,
+            results=qdrant_results,
+        )
+
+        # Step 4: Aggregate chunks into patent-level results
+        patent_results = self._aggregate_by_patent(reranked_results)
+
+        return qdrant_results, reranked_results, patent_results
+
     def search(self, query: str) -> list[PatentSearchResult]:
         """
         Search for patents matching *query*.
@@ -48,24 +76,7 @@ class SemanticSearch:
         Returns one PatentSearchResult per patent, sorted by
         patent-level score (highest reranker score among chunks).
         """
-
-        # Step 1: Embed the query
-        query_vector = self.embedder.embed_query(query)
-
-        # Step 2: Retrieve candidate chunks from Qdrant
-        results = self.db.search(
-            query_vector=query_vector,
-        )
-
-        # Step 3: Rerank the candidate chunks
-        reranked = self.reranker.rerank(
-            query=query,
-            results=results,
-        )
-
-        # Step 4: Aggregate chunks into patent-level results
-        patent_results = self._aggregate_by_patent(reranked)
-
+        _, _, patent_results = self.search_detailed(query)
         return patent_results
 
     # ==============================================================
