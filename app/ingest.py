@@ -21,7 +21,7 @@ def ingest_directory(directory: str):
     embedder = Embedder()
     db = QdrantDB()
 
-    txt_files = sorted(Path(directory).glob("*.txt"))[101:151]
+    txt_files = sorted(Path(directory).glob("*.txt"))[:5]
 
     print(f"\nFound {len(txt_files)} patent files.\n")
 
@@ -39,6 +39,8 @@ def ingest_directory(directory: str):
         try:
 
             document = parser.load_patent(txt_file)
+
+            db.upsert_patent_metadata(document.patent_id, document.metadata)
 
             chunks = chunker.split(document)
 

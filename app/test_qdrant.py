@@ -5,7 +5,7 @@ def main():
 
     db = QdrantDB()
 
-    db.create_collection()
+    db.create_collections()
 
     print()
 

@@ -10,7 +10,7 @@ def main():
 
     db = QdrantDB()
 
-    db.reset_collection()
+    db.reset_collections()
 
     parser = PatentParser()
     chunker = PatentChunker()
@@ -19,6 +19,8 @@ def main():
     document = parser.load_patent(
         Path("patents-processed/AP170S1.txt")
     )
+
+    db.upsert_patent_metadata(document.patent_id, document.metadata)
 
     chunks = chunker.split(document)
 

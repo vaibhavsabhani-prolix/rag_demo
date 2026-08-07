@@ -25,8 +25,6 @@ class PatentChunk:
 
     text: str = ""
 
-    metadata: dict = field(default_factory=dict)
-
     section: str = ""
 
     vector: list[float] = field(default_factory=list)
@@ -36,12 +34,6 @@ class PatentChunk:
     token_count: int = 0
 
     word_count: int = 0
-
-    # ---- Character offsets within the section ----
-
-    start_offset: int = 0
-
-    end_offset: int = 0
 
     # ---- Document-level metadata ----
 

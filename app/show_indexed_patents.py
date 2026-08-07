@@ -8,19 +8,19 @@ aggregates statistics, and prints a formatted summary table.
 from collections import defaultdict
 import sys
 from app.qdrant_db import QdrantDB
-from app.config import COLLECTION_NAME
+from app.config import CHUNKS_COLLECTION_NAME
 
 
 def fetch_all_chunks(db: QdrantDB):
     """
-    Scroll through Qdrant collection to retrieve all indexed point payloads.
+    Scroll through the chunks collection to retrieve all indexed point payloads.
     """
     points = []
     next_page_offset = None
 
     while True:
         records, next_page_offset = db.client.scroll(
-            collection_name=COLLECTION_NAME,
+            collection_name=CHUNKS_COLLECTION_NAME,
             limit=250,
             offset=next_page_offset,
             with_payload=True,
@@ -88,7 +88,7 @@ def main():
     db = QdrantDB()
 
     total_vectors = db.count_points()
-    print(f"Collection '{COLLECTION_NAME}' contains {total_vectors:,} total vectors.\n")
+    print(f"Collection '{CHUNKS_COLLECTION_NAME}' contains {total_vectors:,} total vectors.\n")
 
     if total_vectors == 0:
         print("No vectors found in Qdrant collection. Run 'python -m app.ingest' first.")
@@ -103,7 +103,6 @@ def main():
         "sections": set(),
         "total_tokens": 0,
         "total_words": 0,
-        "metadata": {},
     })
 
     for pt in points:
@@ -116,12 +115,12 @@ def main():
         patents[pid]["total_tokens"] += payload.get("token_count", 0)
         patents[pid]["total_words"] += payload.get("word_count", 0)
 
-        if not patents[pid]["metadata"] and "metadata" in payload:
-            patents[pid]["metadata"] = payload.get("metadata", {})
+    # Metadata now lives in the "patents" collection, keyed by patent_id
+    all_metadata = db.get_patents_metadata(list(patents.keys()))
 
     patent_list = []
     for pid, data in patents.items():
-        meta = data["metadata"]
+        meta = all_metadata.get(pid, {})
 
         # Extract assignee or inventor fallback
         assignee_arr = meta.get("Original Assignee First") or meta.get("Original Assignee") or meta.get("Assignee Standardized")

@@ -11,7 +11,7 @@ Pipeline:
         ↓
     Semantic Unit Detection (paragraphs → sentences → word fragments)
         ↓
-    Token-aware Chunk Builder (greedy merge + semantic overlap)
+    Token-aware Chunk Builder (greedy merge, no overlap)
         ↓
     Chunk Validation        (reject empty / duplicate only)
         ↓
@@ -141,9 +141,6 @@ class PatentChunker:
 
             # ---- Step 4: Validate and produce PatentChunks ----
 
-            # Track character offset within the section content
-            search_start = 0
-
             for built in built_chunks:
 
                 if not self.chunk_validator.is_valid(built.text):
@@ -151,61 +148,14 @@ class PatentChunker:
 
                 section_valid_count += 1
 
-                # ---- Offset tracking (orchestrator responsibility) ----
-                # Find the chunk text within the section content to get
-                # character offsets relative to the full document.
-                #
-                # Chunks may start with overlap from the previous chunk,
-                # so the prefix might not advance the search position.
-                # Strategy: try the prefix first; if it fails, try a
-                # middle portion (which is unique to this chunk's
-                # position in the section).
-                chunk_text = built.text
-                chunk_len = len(chunk_text)
-
-                # Try 1: prefix match (works for non-overlap chunks)
-                start_in_section = section.content.find(
-                    chunk_text[:80],
-                    search_start,
-                )
-
-                # Try 2: middle portion (skip overlap at the start)
-                if start_in_section < 0 and chunk_len > 160:
-                    mid_start = chunk_len // 3
-                    mid_snippet = chunk_text[mid_start:mid_start + 80]
-                    mid_pos = section.content.find(mid_snippet, search_start)
-                    if mid_pos >= 0:
-                        # Back-calculate the chunk start
-                        start_in_section = mid_pos - mid_start
-
-                # Try 3: last portion
-                if start_in_section < 0 and chunk_len > 80:
-                    tail_snippet = chunk_text[-80:]
-                    tail_pos = section.content.find(tail_snippet, search_start)
-                    if tail_pos >= 0:
-                        start_in_section = tail_pos - (chunk_len - 80)
-
-                if start_in_section >= 0:
-                    abs_start = section.start_offset + start_in_section
-                    abs_end = abs_start + chunk_len
-                    # Advance search_start past this chunk to maintain ordering
-                    search_start = start_in_section + min(chunk_len, 1)
-                else:
-                    # Fallback: text was modified (e.g. whitespace normalization)
-                    abs_start = section.start_offset
-                    abs_end = section.end_offset
-
                 patent_chunks.append(
                     PatentChunk(
                         patent_id=document.patent_id,
                         chunk_id=chunk_index,
                         section=built.section,
                         text=built.text,
-                        metadata=document.metadata,
                         token_count=built.token_count,
                         word_count=built.word_count,
-                        start_offset=abs_start,
-                        end_offset=abs_end,
                         document_chunk_index=chunk_index,
                         section_chunk_index=section_valid_count,
                         total_sections=total_sections,
@@ -271,8 +221,6 @@ class PatentChunker:
                         f" of {chunk.total_chunks}\n")
                 f.write(f"Token Count        : {chunk.token_count}\n")
                 f.write(f"Word Count         : {chunk.word_count}\n")
-                f.write(f"Start Offset       : {chunk.start_offset}\n")
-                f.write(f"End Offset         : {chunk.end_offset}\n")
                 f.write(f"Chunk UUID         : {chunk.chunk_uuid}\n")
                 f.write(f"Created At         : {chunk.created_at}\n")
                 f.write(f"\n{'=' * 60}\n\n")

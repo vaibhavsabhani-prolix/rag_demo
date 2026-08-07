@@ -13,7 +13,7 @@ def main():
 
     print()
 
-    db.reset_collection()
+    db.reset_collections()
 
     print()
 

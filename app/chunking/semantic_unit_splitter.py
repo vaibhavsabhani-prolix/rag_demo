@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from app.chunking.token_counter import TokenCounter
+from app.config import MAX_CHUNK_TOKENS
 
 
 # ==================================================================
@@ -94,7 +95,7 @@ class SemanticUnitSplitter:
     def __init__(
         self,
         token_counter: TokenCounter,
-        max_tokens: int = 256,
+        max_tokens: int = MAX_CHUNK_TOKENS,
     ) -> None:
 
         self.token_counter = token_counter

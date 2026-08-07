@@ -12,7 +12,11 @@ No magic numbers in component code.
 QDRANT_HOST = "localhost"
 QDRANT_PORT = 6333
 
-COLLECTION_NAME = "patent_chunks"
+# Searchable chunk data (text, vector, lightweight fields). One point per chunk.
+CHUNKS_COLLECTION_NAME = "patent_chunks"
+
+# Patent metadata, stored once per patent. No vectors. One point per patent.
+PATENTS_COLLECTION_NAME = "patents"
 
 # ==========================
 # Embedding Model
@@ -35,9 +39,6 @@ MIN_CHUNK_TOKENS = 20
 
 # Minimum words for a chunk to be considered valid
 MIN_CHUNK_WORDS = 8
-
-# Semantic overlap strategy: "last_sentence" or "last_unit"
-OVERLAP_STRATEGY = "last_sentence"
 
 # Number of chunks to upload to Qdrant in one request
 BATCH_SIZE = 100

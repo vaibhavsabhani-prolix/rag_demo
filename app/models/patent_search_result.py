@@ -32,8 +32,6 @@ class RankedChunk:
     section_chunk_index: int = 0
     document_chunk_index: int = 0
     total_chunks: int = 0
-    start_offset: int = 0
-    end_offset: int = 0
 
 
 @dataclass

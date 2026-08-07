@@ -13,6 +13,8 @@ Pipeline:
         ↓
     Group by patent_id
         ↓
+    Fetch metadata from "patents" collection
+        ↓
     Compute patent score (max reranker score)
         ↓
     Sort patents by score
@@ -83,8 +85,8 @@ class SemanticSearch:
     # Patent aggregation
     # ==============================================================
 
-    @staticmethod
     def _aggregate_by_patent(
+        self,
         reranked: list[tuple[float, object]],
     ) -> list[PatentSearchResult]:
         """
@@ -99,7 +101,6 @@ class SemanticSearch:
 
         # ---- Group chunks by patent_id ----
         patent_chunks: dict[str, list[RankedChunk]] = defaultdict(list)
-        patent_metadata: dict[str, dict] = {}
 
         for score, result in reranked:
 
@@ -116,15 +117,12 @@ class SemanticSearch:
                 section_chunk_index=payload.get("section_chunk_index", 0),
                 document_chunk_index=payload.get("document_chunk_index", 0),
                 total_chunks=payload.get("total_chunks", 0),
-                start_offset=payload.get("start_offset", 0),
-                end_offset=payload.get("end_offset", 0),
             )
 
             patent_chunks[patent_id].append(ranked_chunk)
 
-            # Store metadata once per patent (first seen)
-            if patent_id not in patent_metadata:
-                patent_metadata[patent_id] = payload.get("metadata", {})
+        # ---- Fetch metadata once per unique patent ----
+        patent_metadata = self.db.get_patents_metadata(list(patent_chunks.keys()))
 
         # ---- Build PatentSearchResult per patent ----
         patent_results: list[PatentSearchResult] = []
@@ -142,7 +140,7 @@ class SemanticSearch:
                     score=best.score,
                     best_chunk=best,
                     matching_chunks=chunks,
-                    metadata=patent_metadata[patent_id],
+                    metadata=patent_metadata.get(patent_id, {}),
                 )
             )
 
