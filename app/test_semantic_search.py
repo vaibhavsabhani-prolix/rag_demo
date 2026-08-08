@@ -1,4 +1,25 @@
+"""
+End-to-end Patent Semantic Search Test & Diagnostics
+
+Displays the full pipeline at each stage:
+
+    Original Query
+    Semantic Query
+    Candidate Filters
+    Resolved Metadata Filters
+    Initial Vector Candidates
+    Unique Candidate Patents
+    Metadata Matching Patents
+    Candidates After Metadata Filtering
+    Reranked Candidates
+    Final Patents
+
+Run with:
+    ./.venv/bin/python -m app.test_semantic_search "your query here"
+"""
+
 import sys
+from app.query_understanding import ParsedQuery
 from app.semantic_search import SemanticSearch
 
 
@@ -32,13 +53,70 @@ def print_ascii_table(title: str, headers: list[str], rows: list[list[str]]):
     print("+" + "-" * (sum(col_widths) + 3 * (len(col_widths) - 1) + 2) + "+")
 
 
+def print_query_understanding(parsed: ParsedQuery):
+    print()
+    print("=" * 100)
+    print(" QUERY UNDERSTANDING")
+    print("=" * 100)
+    print()
+    print("Original Query:")
+    print(f"  {parsed.original_query}")
+    print()
+    print("Semantic Query:")
+    print(f"  {parsed.semantic_query}")
+    print()
+    print("Candidate Filters:")
+    if not parsed.candidate_filters:
+        print("  (none)")
+    else:
+        for cf in parsed.candidate_filters:
+            print(f'  meaning="{cf.meaning}", value="{cf.value}"')
+    print()
+    print("Resolved Metadata Filters:")
+    if not parsed.metadata_filters:
+        print("  (none)")
+    else:
+        for f in parsed.metadata_filters:
+            print(f"  {f.field} {f.operator} {f.value}")
+    print()
+    print("=" * 100)
+
+
+def print_candidate_diagnostics(parsed: ParsedQuery, qdrant_results, filtered_results, reranked_results, results=None):
+    print()
+    print("-" * 60)
+    print("PIPELINE DIAGNOSTICS")
+    print("-" * 60)
+
+    unique_before = len({p.payload.get("patent_id") for p in qdrant_results if p.payload})
+    unique_after = len({p.payload.get("patent_id") for p in filtered_results if p.payload})
+    final_patents = len(results) if results is not None else unique_after
+
+    print(f"Initial Vector Candidates          : {len(qdrant_results)}")
+    print(f"Unique Candidate Patents           : {unique_before}")
+
+    if parsed.metadata_filters:
+        print(f"Metadata Matching Patents          : {unique_after}")
+    else:
+        print("Metadata Matching Patents          : N/A (no filters applied)")
+
+    print(f"Candidates After Metadata Filtering: {len(filtered_results)}")
+    print(f"Reranked Candidates                : {len(reranked_results)}")
+    print(f"Final Patents                      : {final_patents}")
+    print("-" * 60)
+
+
 def run_search(search: SemanticSearch, query: str):
-    qdrant_results, reranked_results, results = search.search_detailed(query)
+    parsed, qdrant_results, filtered_results, reranked_results, results = search.search_detailed(query)
 
     print()
     print("=" * 100)
     print("Query :", query)
     print("=" * 100)
+
+    print_query_understanding(parsed)
+    print_candidate_diagnostics(parsed, qdrant_results, filtered_results, reranked_results, results)
+
 
     # -------------------------------------------------------------
     # Table 1: Qdrant DB Candidate Results (Vector Search)

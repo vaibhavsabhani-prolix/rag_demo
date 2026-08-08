@@ -32,7 +32,9 @@ from app.config import (
     VECTOR_TOP_K,
 )
 
+from app.filter_engine import FilterEngine
 from app.models.patent_chunk import PatentChunk
+from app.query_understanding.models import MetadataFilter
 
 # Points in the "patents" collection are keyed by patent_id, but Qdrant
 # point IDs must be an unsigned int or a UUID. This namespace makes the
@@ -242,6 +244,69 @@ class QdrantDB:
         }
 
     # ==============================================================
+    # Metadata-first filtering (DEPRECATED)
+    #
+    # The active pipeline uses post-vector metadata filtering
+    # (SemanticSearch._filter_candidates_by_metadata) instead.
+    # This method is retained for backward compatibility but is
+    # NOT called in the active search flow.
+    # ==============================================================
+
+    def filter_patent_ids(
+        self,
+        filters: list[MetadataFilter],
+    ) -> list[str]:
+        """
+        **DEPRECATED** — Not used in the active search pipeline.
+
+        The active architecture performs metadata filtering AFTER vector
+        search (see SemanticSearch._filter_candidates_by_metadata).
+
+        This method scrolls the entire 'patents' collection to find
+        patent_ids satisfying *filters*. Retained for backward
+        compatibility only.
+        """
+
+        if not filters:
+            return []
+
+        native_filters, python_filters = FilterEngine.split_native_and_python(filters)
+        qdrant_filter = FilterEngine.to_qdrant_filter(native_filters)
+        payload_fields = ["patent_id", "metadata"] if python_filters else ["patent_id"]
+
+        matched_ids: list[str] = []
+        next_offset = None
+
+        while True:
+            records, next_offset = self.client.scroll(
+                collection_name=PATENTS_COLLECTION_NAME,
+                scroll_filter=qdrant_filter,
+                limit=256,
+                offset=next_offset,
+                with_payload=payload_fields,
+            )
+
+            if not records:
+                break
+
+            for record in records:
+                if not record.payload:
+                    continue
+
+                if python_filters:
+                    metadata = record.payload.get("metadata", {})
+                    if not FilterEngine.matches(metadata, python_filters):
+                        continue
+
+                matched_ids.append(record.payload["patent_id"])
+
+            if next_offset is None:
+                break
+
+        return matched_ids
+
+
+    # ==============================================================
     # Search
     # ==============================================================
 
@@ -253,6 +318,11 @@ class QdrantDB:
     ):
         """
         Search similar vectors in the chunks collection.
+
+        Pure semantic vector search - no metadata filter involved. Any
+        metadata-constraint narrowing happens afterward, in Python,
+        against the patent_ids present in the returned candidates (see
+        SemanticSearch._filter_candidates_by_metadata) - not here.
         """
 
         return self.client.search(

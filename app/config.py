@@ -112,8 +112,25 @@ PATENT_DIRECTORY = "patents-processed"
 
 RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"
 
-# Number of candidates retrieved from Qdrant
-VECTOR_TOP_K = 50
+# Number of candidates retrieved from Qdrant.
+#
+# Metadata filtering (see app/filter_engine.py) happens AFTER this
+# initial vector search, on whatever candidates come back - not before,
+# and not as a Qdrant-side filter on the search itself. That means a
+# narrower metadata filter can only ever shrink the candidate pool
+# already retrieved here, never look beyond it. Raised from the earlier
+# 50 to 100 to give metadata-filtered queries a larger pool to filter
+# against before reranking, since a filter (e.g. a specific assignee)
+# can eliminate a large fraction of a 50-chunk pool and leave too few
+# candidates for a meaningful rerank.
+VECTOR_TOP_K = 100
 
 # Number of results returned after reranking
 FINAL_TOP_K = 10
+
+# ==========================
+# Metadata Filtering (Query Understanding LLM)
+# ==========================
+
+# Configurable local Qwen instruction model for natural-language query understanding.
+QUERY_LLM_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"

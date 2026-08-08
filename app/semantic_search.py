@@ -5,24 +5,56 @@ Pipeline:
 
     Query
         ↓
-    Embed Query
+    Query Understanding -> semantic_query + metadata_filters
         ↓
-    Qdrant Vector Search (chunk-level)
+    Embed semantic_query ONLY
         ↓
-    Cross-Encoder Reranker (chunk-level)
+    Qdrant Vector Search on patent_chunks (pure semantic search,
+    no metadata filter involved - top VECTOR_TOP_K candidates)
         ↓
-    Group by patent_id
+    Extract unique patent_id[] from those candidates
         ↓
-    Fetch metadata from "patents" collection
+    Fetch metadata for ONLY those candidate patent_ids
+    ("patents" collection, via the existing get_patents_metadata())
         ↓
-    Compute patent score (max reranker score)
-        ↓
-    Sort patents by score
-        ↓
-    Return PatentSearchResult list
+    [metadata_filters present?]
+        │ yes                                   │ no
+        ▼                                       │
+    Evaluate FilterEngine.matches() per         │
+    candidate patent; keep only chunks          │
+    belonging to a patent that matches          │
+        ▼                                       ▼
+    Cross-Encoder Reranker (semantic_query only - metadata
+    phrases were already split off by Query Understanding)
+                          ↓
+                   Group by patent_id
+                          ↓
+        Fetch metadata again for the FINAL (small,
+        post-rerank) patent set, for PatentSearchResult display
+                          ↓
+        Compute patent score (max reranker score)
+                          ↓
+                   Sort patents by score
+                          ↓
+              Return PatentSearchResult list
 
 Internal retrieval unit: Chunk
 External retrieval unit: Patent
+
+Metadata filtering happens AFTER semantic vector search, on the
+candidate chunks that search already returned - never before it, and
+never as a Qdrant-side filter on the search itself (QdrantDB.search()
+is pure vector search, no patent_ids parameter). The "patents"
+collection is only ever consulted for patent_ids that are already
+semantically relevant candidates. See app/query_understanding/ for how
+natural language becomes semantic_query + metadata_filters, and
+app/filter_engine.py for how a MetadataFilter is evaluated against a
+patent's metadata dict.
+
+Nothing about ingestion, chunking, embedding, or the patent_chunks/
+patents collection schemas changes here - this module only reorders how
+the existing pieces (QdrantDB.search, QdrantDB.get_patents_metadata,
+Reranker, aggregation) are called.
 """
 
 from __future__ import annotations
@@ -30,9 +62,11 @@ from __future__ import annotations
 from collections import defaultdict
 
 from app.embedder import Embedder
-from app.qdrant_db import QdrantDB
-from app.reranker import Reranker
+from app.filter_engine import FilterEngine
 from app.models.patent_search_result import PatentSearchResult, RankedChunk
+from app.qdrant_db import QdrantDB
+from app.query_understanding import ParsedQuery, QueryUnderstanding
+from app.reranker import Reranker
 
 
 class SemanticSearch:
@@ -42,34 +76,53 @@ class SemanticSearch:
         self.embedder = Embedder()
         self.db = QdrantDB()
         self.reranker = Reranker()
+        self.query_understanding = QueryUnderstanding()
 
     def search_detailed(
         self, query: str
-    ) -> tuple[list, list[tuple[float, object]], list[PatentSearchResult]]:
+    ) -> tuple[ParsedQuery, list, list, list[tuple[float, object]], list[PatentSearchResult]]:
         """
         Search for patents and return results at each pipeline stage:
-        1. Qdrant vector search candidate chunks (list of ScoredPoint)
-        2. Reranked candidate chunks (list of (reranker_score, ScoredPoint))
-        3. Aggregated PatentSearchResult list
+        1. Parsed query (semantic_query + metadata_filters)
+        2. Initial Qdrant vector search candidate chunks (list of ScoredPoint)
+        3. Candidate chunks after metadata filtering (same list, unchanged, if no filters)
+        4. Reranked candidate chunks (list of (reranker_score, ScoredPoint))
+        5. Aggregated PatentSearchResult list
         """
-        # Step 1: Embed the query
-        query_vector = self.embedder.embed_query(query)
 
-        # Step 2: Retrieve candidate chunks from Qdrant
-        qdrant_results = self.db.search(
-            query_vector=query_vector,
-        )
+        # Step 0: Query Understanding
+        parsed = self.query_understanding.parse(query)
 
-        # Step 3: Rerank the candidate chunks
+        # Step 1: Embed the semantic portion only - metadata-filter
+        # phrases were already split off by Query Understanding, so
+        # neither embedding nor reranking ever sees e.g. "US" or
+        # "Coca Cola" as if they were part of the topic being searched.
+        query_vector = self.embedder.embed_query(parsed.semantic_query)
+
+        # Step 2: Pure semantic vector search - no metadata filter here.
+        qdrant_results = self.db.search(query_vector=query_vector)
+
+        # Step 3: Metadata filtering, on the candidates just returned.
+        # Only patents that are already semantic candidates ever get
+        # their metadata looked up - never the whole "patents" collection.
+        if parsed.metadata_filters:
+            filtered_results = self._filter_candidates_by_metadata(
+                qdrant_results,
+                parsed.metadata_filters,
+            )
+        else:
+            filtered_results = qdrant_results
+
+        # Step 4: Rerank whatever survived filtering.
         reranked_results = self.reranker.rerank(
-            query=query,
-            results=qdrant_results,
+            query=parsed.semantic_query,
+            results=filtered_results,
         )
 
-        # Step 4: Aggregate chunks into patent-level results
+        # Step 5: Aggregate chunks into patent-level results
         patent_results = self._aggregate_by_patent(reranked_results)
 
-        return qdrant_results, reranked_results, patent_results
+        return parsed, qdrant_results, filtered_results, reranked_results, patent_results
 
     def search(self, query: str) -> list[PatentSearchResult]:
         """
@@ -78,11 +131,52 @@ class SemanticSearch:
         Returns one PatentSearchResult per patent, sorted by
         patent-level score (highest reranker score among chunks).
         """
-        _, _, patent_results = self.search_detailed(query)
+        _, _, _, _, patent_results = self.search_detailed(query)
         return patent_results
 
     # ==============================================================
-    # Patent aggregation
+    # Metadata filtering (post-vector-search, pre-rerank)
+    # ==============================================================
+
+    def _filter_candidates_by_metadata(
+        self,
+        qdrant_results: list,
+        metadata_filters: list,
+    ) -> list:
+        """
+        Keep only candidate chunks whose patent satisfies every filter.
+
+        Extracts the unique patent_ids already present in the semantic
+        candidates, fetches their metadata in ONE batch call (the
+        existing get_patents_metadata - no per-patent requests), and
+        evaluates FilterEngine.matches() per patent. A patent with no
+        stored metadata can't satisfy any filter and is excluded.
+        """
+
+        patent_ids = list(
+            dict.fromkeys(
+                point.payload.get("patent_id")
+                for point in qdrant_results
+                if point.payload and point.payload.get("patent_id")
+            )
+        )
+
+        patent_metadata = self.db.get_patents_metadata(patent_ids)
+
+        matching_ids = {
+            patent_id
+            for patent_id, metadata in patent_metadata.items()
+            if FilterEngine.matches(metadata, metadata_filters)
+        }
+
+        return [
+            point
+            for point in qdrant_results
+            if point.payload and point.payload.get("patent_id") in matching_ids
+        ]
+
+    # ==============================================================
+    # Patent aggregation (unchanged)
     # ==============================================================
 
     def _aggregate_by_patent(
