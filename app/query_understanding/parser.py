@@ -34,10 +34,13 @@ _ORG_FIELDS = {
     "current_assignee_standardized",
     "original_assignee",
     "applicant_first_organization",
+    "assignee_applicant_original_with_address",
+    "assignee_applicant_standardized_with_address",
 }
 
 _FIELD_LIST_PROMPT = "\n".join(
-    f"{code}: {METADATA_FIELD_CODES.get(code, code)}" for code in sorted(CODE_TO_FIELD)
+    f"{code}: {METADATA_FIELD_CODES.get(code, code)} ({FIELD_MAPPING[name]['type']})"
+    for code, name in sorted(CODE_TO_FIELD.items())
 )
 
 _ALLOWED_OPERATORS = {"equals", "contains", "gt", "gte", "lt", "lte"}
@@ -126,7 +129,10 @@ class QueryUnderstanding:
                 self.model_name, trust_remote_code=True
             )
             self._llm_model = AutoModelForCausalLM.from_pretrained(
-                self.model_name, trust_remote_code=True
+                self.model_name,
+                trust_remote_code=True,
+                torch_dtype="auto",
+                low_cpu_mem_usage=True,
             )
             print("Local LLM loaded successfully.\n")
         except Exception as e:
@@ -152,6 +158,13 @@ Field codes (the ONLY values "field" may take):
 Rules:
 - "field" must be exactly one of the codes above. Never invent a code.
 - "operator" is one of: equals, contains, gt, gte, lt, lte.
+- Each code's type is shown in parentheses. A bare year or number (e.g.
+  "2008", "after 2018") MUST go to a field of type "number" or
+  "array_number" - never to a "string"/"array_string" classification
+  code (CPC/IPC/etc.) or a country code, even if the sentence also
+  mentions a place, status, or classification elsewhere.
+- "value" must be copied verbatim from the query - never invent a value
+  that isn't in the query text.
 - Remove recognized filters from semantic_query.
 - If nothing matches a filter, return an empty filters list.
 - Return valid JSON only. No Markdown. No explanation.
@@ -163,6 +176,10 @@ Output: {{"semantic_query": "bottle designs", "filters": [{{"field": "CAN_EN", "
 Example:
 User: bottle design patents published in Japan after 2018
 Output: {{"semantic_query": "bottle design", "filters": [{{"field": "PNC", "operator": "equals", "value": "Japan"}}, {{"field": "PY", "operator": "gt", "value": "2018"}}]}}
+
+Example:
+User: what problems with existing antimalarial compounds are discussed in patents published in 2008?
+Output: {{"semantic_query": "problems with existing antimalarial compounds", "filters": [{{"field": "PY", "operator": "equals", "value": "2008"}}]}}
 
 Example:
 User: bottle design

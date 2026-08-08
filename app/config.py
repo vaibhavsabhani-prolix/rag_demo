@@ -133,4 +133,10 @@ FINAL_TOP_K = 10
 # ==========================
 
 # Configurable local Qwen instruction model for natural-language query understanding.
-QUERY_LLM_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+# 1.5B (not the smaller 0.5B variant) so it reliably picks the right field
+# code out of the FIELD_MAPPING allowlist instead of confusing similarly
+# -described fields (e.g. "Publication Year" vs "Publication Country
+# Code"). Chosen over 3B/4B: this machine is CPU-only with ~8GB free RAM,
+# shared with the embedder and reranker models - 1.5B (~3GB in bf16) fits
+# safely; 3B/4B would risk OOM/swapping once all three models are loaded.
+QUERY_LLM_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
