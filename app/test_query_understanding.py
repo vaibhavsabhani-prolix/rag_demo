@@ -9,243 +9,131 @@ import sys
 
 from app.query_understanding import QueryUnderstanding
 from app.query_understanding.field_mapping import FIELD_MAPPING
-from app.query_understanding.parser import resolve_candidate_filter
+from app.query_understanding.parser import resolve_filter
 
 
-def _filter(parsed, field):
-    return next((f for f in parsed.metadata_filters if f.field == field), None)
-
-
-def case_1_pure_semantic(qu):
-    """Pure semantic query with no metadata filters."""
-    parsed = qu.parse("bottle design")
-    assert parsed.semantic_query in ("bottle design", "bottle designs")
-    assert parsed.metadata_filters == []
-
-
-def case_2_assignee_filter(qu):
-    """Assignee filter: 'assigned to Coca Cola' -> current_assignee_normalized."""
-    parsed = qu.parse("bottle design patents assigned to Coca Cola")
-    assert "bottle design" in parsed.semantic_query
-    assert len(parsed.metadata_filters) >= 1
-    f = _filter(parsed, "current_assignee_normalized")
+def case_1_direct_code_resolves(qu):
+    """The LLM's field code maps straight to the right FIELD_MAPPING entry."""
+    f = resolve_filter("PY", "equals", "2008")
     assert f is not None
-    assert f.operator == "contains"
+    assert f.field == "publication_year"
+    assert f.operator == "equals"
+    assert f.value == 2008
+
+
+def case_2_comparator_operator_preserved(qu):
+    """A valid comparator operator for a numeric field is kept as-is."""
+    f = resolve_filter("PY", "gt", "2018")
+    assert f is not None
+    assert f.field == "publication_year"
+    assert f.operator == "gt"
+    assert f.value == 2018
+
+
+def case_3_unsupported_operator_falls_back(qu):
+    """An operator not valid for the field's type falls back to the field's first allowed operator."""
+    f = resolve_filter("PY", "contains", "2018")
+    assert f is not None
+    assert f.operator in FIELD_MAPPING["publication_year"]["operators"]
+    assert f.operator == "equals"
+
+
+def case_4_unknown_code_not_invented(qu):
+    """An unknown/invented field code is dropped, never invents a field."""
+    assert resolve_filter("BOTTLE_COLOR", "equals", "red") is None
+    assert resolve_filter("XYZ", "equals", "red") is None
+
+
+def case_5_country_code_normalized(qu):
+    """Country field values are normalized to ISO-ish codes."""
+    f = resolve_filter("AC", "equals", "United States")
+    assert f is not None
+    assert f.field == "application_country"
+    assert f.value == "US"
+
+    f2 = resolve_filter("PNC", "equals", "Japan")
+    assert f2 is not None
+    assert f2.field == "publication_country_code"
+    assert f2.value == "JP"
+
+
+def case_6_unrecognized_country_dropped(qu):
+    """A country value that doesn't resolve to a known code is dropped."""
+    assert resolve_filter("AC", "equals", "Nowhereland") is None
+
+
+def case_7_org_name_normalized(qu):
+    """Organization field values are uppercased/cleaned."""
+    f = resolve_filter("CAN_EN", "contains", "coca-cola")
+    assert f is not None
+    assert f.field == "current_assignee_normalized"
     assert f.value == "COCA COLA"
 
 
-def case_3_country_trailing_idiom(qu):
-    """Country filter: 'patents in the US' -> application_country."""
-    parsed = qu.parse("bottle design patents in the US")
-    assert "bottle design" in parsed.semantic_query
-    assert len(parsed.metadata_filters) >= 1
-    f = _filter(parsed, "application_country")
+def case_8_enum_value_matched_case_insensitively(qu):
+    """Enum fields match against their declared values, case-insensitively."""
+    f = resolve_filter("LST", "equals", "granted")
     assert f is not None
-    assert f.operator == "equals"
-    assert f.value == "US"
+    assert f.field == "legal_status"
+    assert f.value == "Granted"
+
+    assert resolve_filter("LST", "equals", "not-a-real-status") is None
 
 
-def case_4_country_leading_idiom(qu):
-    """Country before topic: 'US bottle design patents' -> application_country."""
-    parsed = qu.parse("US bottle design patents")
-    assert "bottle design" in parsed.semantic_query
-    assert len(parsed.metadata_filters) >= 1
-    f = _filter(parsed, "application_country")
-    assert f is not None
-    assert f.operator == "equals"
-    assert f.value == "US"
+def case_9_empty_value_dropped(qu):
+    """A blank value never produces a filter."""
+    assert resolve_filter("PY", "equals", "") is None
+    assert resolve_filter("PY", "equals", None) is None
 
 
-def case_5_application_year(qu):
-    """Application year: 'filed in 2020' -> application_year equals 2020."""
-    parsed = qu.parse("bottle design patents filed in 2020")
-    assert "bottle design" in parsed.semantic_query
-    assert len(parsed.metadata_filters) >= 1
-    f = _filter(parsed, "application_year")
-    assert f is not None
-    assert f.operator == "equals"
-    assert f.value == 2020
-
-
-def case_6_country_plus_year_gt(qu):
-    """Publication country + year: 'published in Japan after 2018'."""
-    parsed = qu.parse("bottle design patents published in Japan after 2018")
-    assert "bottle design" in parsed.semantic_query
-
-    country = _filter(parsed, "publication_country_code")
-    assert country is not None and country.operator == "equals" and country.value == "JP"
-
-    year = _filter(parsed, "publication_year")
-    assert year is not None and year.operator == "gt" and year.value == 2018
-
-
-def case_7_bare_assignee_plus_enum(qu):
-    """Legal state + assignee: 'active Coca Cola bottle patents'."""
-    parsed = qu.parse("active Coca Cola bottle patents")
-    assert "bottle" in parsed.semantic_query
-
-    assignee = _filter(parsed, "current_assignee_normalized")
-    assert assignee is not None and assignee.operator == "contains" and assignee.value == "COCA COLA"
-
-    state = _filter(parsed, "legal_state")
-    assert state is not None and state.operator == "equals" and state.value == "Alive"
-
-
-def case_8_three_filters(qu):
-    """Three combined filters: granted + assignee + country."""
-    parsed = qu.parse("granted Coca Cola bottle design patents in the US")
-    assert "bottle design" in parsed.semantic_query
-
-    status = _filter(parsed, "legal_status")
-    assert status is not None and status.operator == "equals" and status.value == "Granted"
-
-    assignee = _filter(parsed, "current_assignee_normalized")
-    assert assignee is not None and assignee.operator == "contains" and assignee.value == "COCA COLA"
-
-    country = _filter(parsed, "application_country")
-    assert country is not None and country.operator == "equals" and country.value == "US"
-
-
-def case_9_semantic_question_no_filters(qu):
-    """Regression guard: a natural question must never spuriously pick up a filter."""
-    query = "What patents describe a bottle with a removable cap and pressure control?"
-    parsed = qu.parse(query)
-    assert parsed.metadata_filters == []
-
-
-def case_10_unsupported_filter_not_invented(qu):
-    """Unsupported/ambiguous candidate filter is dropped, NEVER invents a field."""
-    res = resolve_candidate_filter(meaning="company_headquarters", value="Atlanta")
-    assert res is None or res.field in FIELD_MAPPING
-
-    res_color = resolve_candidate_filter(meaning="bottle_color", value="red")
-    assert res_color is None
-
-    parsed = qu.parse("bottle design with red color owned by Coca Cola")
-    for f in parsed.metadata_filters:
-        assert f.field in FIELD_MAPPING
-        assert f.field != "bottle_color"
-        assert f.field != "company_headquarters"
-
-
-def case_11_all_filters_exist_in_field_mapping(qu):
-    """Every resolved filter must be in FIELD_MAPPING for a variety of queries."""
-    queries = [
-        "bottle design",
-        "bottle design assigned to Coca Cola",
-        "bottle design patents from the US",
-        "active Coca Cola bottle patents from Japan",
-        "bottle design patents filed after 2020",
+def case_10_all_resolved_fields_in_field_mapping(qu):
+    """Every resolved filter's field must be a key in FIELD_MAPPING."""
+    cases = [
+        ("PY", "equals", "2008"),
+        ("AC", "equals", "US"),
+        ("CAN_EN", "contains", "Coca Cola"),
+        ("LST", "equals", "Granted"),
     ]
-    for q in queries:
-        parsed = qu.parse(q)
-        for f in parsed.metadata_filters:
-            assert f.field in FIELD_MAPPING, f"Field '{f.field}' is not in FIELD_MAPPING allowlist!"
-
-
-def case_12_natural_language_variations(qu):
-    """Natural language variations for assignee, country, filing country."""
-    p1 = qu.parse("bottle design patents owned by Coca Cola")
-    f1 = _filter(p1, "current_assignee_normalized")
-    assert f1 is not None and f1.value == "COCA COLA"
-
-    p2 = qu.parse("bottle design patents from the US")
-    f2 = _filter(p2, "application_country")
-    assert f2 is not None and f2.value == "US"
-
-    p3 = qu.parse("bottle design patents filed in Japan")
-    f3 = _filter(p3, "application_country")
-    assert f3 is not None and f3.value == "JP"
-
-
-def case_13_llm_invalid_json_fallback(qu):
-    """If LLM returns garbage, the rule-based fallback should still parse correctly."""
-    # Test the rule-based parser directly (simulates LLM failure fallback)
-    parsed = qu.parse_rule_based("bottle design patents assigned to Coca Cola in the US")
-    assert "bottle design" in parsed.semantic_query
-
-    assignee = _filter(parsed, "current_assignee_normalized")
-    assert assignee is not None and assignee.value == "COCA COLA"
-
-    country = _filter(parsed, "application_country")
-    assert country is not None and country.value == "US"
-
-    for f in parsed.metadata_filters:
+    for code, op, val in cases:
+        f = resolve_filter(code, op, val)
+        assert f is not None
         assert f.field in FIELD_MAPPING
 
 
-def case_14_llm_unavailable_fallback(qu):
-    """If LLM is unavailable, QueryUnderstanding(use_llm=False) uses rule-based parser."""
+def case_11_llm_unavailable_falls_back_to_pure_semantic(qu):
+    """If the LLM is unavailable, the query passes through unfiltered."""
     qu_no_llm = QueryUnderstanding(use_llm=False)
     parsed = qu_no_llm.parse("bottle designs patented by Coca Cola in the US")
 
-    assert "bottle design" in parsed.semantic_query
-    assert len(parsed.metadata_filters) >= 1
-
-    for f in parsed.metadata_filters:
-        assert f.field in FIELD_MAPPING
+    assert parsed.semantic_query == "bottle designs patented by Coca Cola in the US"
+    assert parsed.metadata_filters == []
 
 
-def case_15_candidate_meaning_resolves_through_field_mapping(qu):
-    """Candidate meaning -> resolve_candidate_filter -> FIELD_MAPPING field."""
-    # "patented by" should resolve to current_assignee_normalized
-    res1 = resolve_candidate_filter("patented by", "Coca Cola")
-    assert res1 is not None
-    assert res1.field == "current_assignee_normalized"
-    assert res1.field in FIELD_MAPPING
-    assert res1.value == "COCA COLA"
-
-    # "in the US" should resolve to application_country
-    res2 = resolve_candidate_filter("in the US", "US")
-    assert res2 is not None
-    assert res2.field == "application_country"
-    assert res2.field in FIELD_MAPPING
-    assert res2.value == "US"
-
-    # "published in Japan" -> publication_country_code
-    res3 = resolve_candidate_filter("published in Japan", "Japan")
-    assert res3 is not None
-    assert res3.field == "publication_country_code"
-    assert res3.field in FIELD_MAPPING
-    assert res3.value == "JP"
-
-    # "published after" with year -> publication_year
-    res4 = resolve_candidate_filter("published after", "2018")
-    assert res4 is not None
-    assert res4.field == "publication_year"
-    assert res4.field in FIELD_MAPPING
-    assert res4.operator == "gt"
-    assert res4.value == 2018
-
-    # unsupported meaning -> None
-    res5 = resolve_candidate_filter("bottle_material", "glass")
-    assert res5 is None
-
-    res6 = resolve_candidate_filter("invented_database_field", "test")
-    assert res6 is None
+def case_12_empty_query(qu):
+    """An empty query is returned as-is, with no filters."""
+    qu_no_llm = QueryUnderstanding(use_llm=False)
+    parsed = qu_no_llm.parse("   ")
+    assert parsed.metadata_filters == []
 
 
 CASES = [
-    ("Test 1  - pure semantic search", case_1_pure_semantic),
-    ("Test 2  - assignee filter", case_2_assignee_filter),
-    ("Test 3  - country filter (trailing idiom)", case_3_country_trailing_idiom),
-    ("Test 4  - country filter (leading idiom)", case_4_country_leading_idiom),
-    ("Test 5  - application year", case_5_application_year),
-    ("Test 6  - publication country + year (gt)", case_6_country_plus_year_gt),
-    ("Test 7  - active Coca Cola bottle patents", case_7_bare_assignee_plus_enum),
-    ("Test 8  - three filters combined", case_8_three_filters),
-    ("Test 9  - semantic question, no filters", case_9_semantic_question_no_filters),
-    ("Test 10 - unsupported filter not invented", case_10_unsupported_filter_not_invented),
-    ("Test 11 - all final filters in FIELD_MAPPING", case_11_all_filters_exist_in_field_mapping),
-    ("Test 12 - natural language variations", case_12_natural_language_variations),
-    ("Test 13 - LLM invalid JSON fallback", case_13_llm_invalid_json_fallback),
-    ("Test 14 - LLM unavailable fallback", case_14_llm_unavailable_fallback),
-    ("Test 15 - candidate meaning resolves through FIELD_MAPPING", case_15_candidate_meaning_resolves_through_field_mapping),
+    ("Test 1  - direct code resolves to field", case_1_direct_code_resolves),
+    ("Test 2  - comparator operator preserved", case_2_comparator_operator_preserved),
+    ("Test 3  - unsupported operator falls back", case_3_unsupported_operator_falls_back),
+    ("Test 4  - unknown code not invented", case_4_unknown_code_not_invented),
+    ("Test 5  - country code normalized", case_5_country_code_normalized),
+    ("Test 6  - unrecognized country dropped", case_6_unrecognized_country_dropped),
+    ("Test 7  - org name normalized", case_7_org_name_normalized),
+    ("Test 8  - enum value matched case-insensitively", case_8_enum_value_matched_case_insensitively),
+    ("Test 9  - empty value dropped", case_9_empty_value_dropped),
+    ("Test 10 - all resolved fields in FIELD_MAPPING", case_10_all_resolved_fields_in_field_mapping),
+    ("Test 11 - LLM unavailable falls back to pure semantic", case_11_llm_unavailable_falls_back_to_pure_semantic),
+    ("Test 12 - empty query", case_12_empty_query),
 ]
 
 
 def main():
-    qu = QueryUnderstanding()
+    qu = QueryUnderstanding(use_llm=False)
     failures = 0
 
     for name, case in CASES:

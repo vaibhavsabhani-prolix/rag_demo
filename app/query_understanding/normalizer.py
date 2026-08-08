@@ -105,27 +105,6 @@ def normalize_country(text: str) -> str | None:
     return None
 
 
-def find_country_in_text(text: str) -> tuple[str, int] | None:
-    """
-    Search *text* (not required to be an exact match) for the first
-    occurrence of a known country name/demonym/code and return
-    (code, end_index) for the matched span, or None if none is found.
-    """
-
-    lower_text = text.lower()
-
-    for name in sorted(COUNTRY_ALIASES, key=len, reverse=True):
-        pos = lower_text.find(name)
-        if pos != -1:
-            return COUNTRY_ALIASES[name], pos + len(name)
-
-    match = re.search(r"\b[A-Za-z]{2}\b", text)
-    if match and match.group().upper() in BARE_COUNTRY_CODES:
-        return match.group().upper(), match.end()
-
-    return None
-
-
 def normalize_org_name(text: str) -> str:
     """
     Uppercase + strip punctuation (hyphens, periods, commas) + collapse
