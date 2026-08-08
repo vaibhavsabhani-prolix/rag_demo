@@ -32,7 +32,7 @@ VECTOR_SIZE = 1024
 # ==========================
 
 # Maximum tokens per chunk (measured by the embedding model tokenizer)
-MAX_CHUNK_TOKENS = 256
+MAX_CHUNK_TOKENS = 512
 
 # Minimum tokens for a chunk to be considered valid
 MIN_CHUNK_TOKENS = 20
@@ -103,7 +103,7 @@ TOKEN_COUNT_CACHE_SIZE = 4096
 # Data Directory
 # ==========================
 
-PATENT_DIRECTORY = "us-patent"
+PATENT_DIRECTORY = "patents-processed"
 
 
 # ==========================
