@@ -1127,7 +1127,7 @@ No extra text.
                 return json.loads(match.group(0))
 
         except Exception as e:
-            print(f"[QueryUnderstanding] Remote Qwen failed: {e}")
+            self._last_remote_error = str(e)
 
         return None
 
@@ -1148,6 +1148,8 @@ No extra text.
         # ----------------------------------------------------------
 
         if self._remote_available:
+            print(f"Using remote LLM: {QUERY_LLM_REMOTE_MODEL}")
+            self._last_remote_error = None
             result = self._call_remote_llm(query)
 
             if result is not None:
@@ -1157,8 +1159,9 @@ No extra text.
             # this request. Disable it and fall back to local.
             self._remote_available = False
 
+            error_detail = self._last_remote_error or "unknown error"
             print(
-                "[QueryUnderstanding] Remote Qwen request failed. "
+                f"[QueryUnderstanding] Remote Qwen request failed: {error_detail}. "
                 "Falling back to local Qwen."
             )
 
@@ -1166,6 +1169,7 @@ No extra text.
         # 2. Local Qwen fallback
         # ----------------------------------------------------------
 
+        print(f"Using local LLM: {self.model_name}")
         return self._call_local_llm(query)
 
     def parse(self, query: str) -> ParsedQuery:
