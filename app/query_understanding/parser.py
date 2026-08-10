@@ -176,7 +176,7 @@ class QueryUnderstanding:
             client = OpenAI(
                 base_url=QUERY_LLM_REMOTE_BASE_URL,
                 api_key=QUERY_LLM_REMOTE_API_KEY,
-                timeout=3.0,
+                timeout=60.0,
             )
 
             # Lightweight connectivity/model check.
