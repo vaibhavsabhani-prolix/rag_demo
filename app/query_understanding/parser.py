@@ -1103,7 +1103,8 @@ No extra text.
                     }
                 ],
                 temperature=0,
-                max_tokens=2048,
+                max_tokens=512,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
 
             content = response.choices[0].message.content
@@ -1112,7 +1113,7 @@ No extra text.
                 self._last_remote_error = "Remote model returned empty content"
                 return None
 
-            # Strip <think>...</think> blocks (Qwen 3 reasoning mode)
+            # Remove Qwen thinking blocks if present
             cleaned = re.sub(
                 r"<think>.*?</think>",
                 "",
@@ -1120,9 +1121,14 @@ No extra text.
                 flags=re.DOTALL,
             ).strip()
 
-            # Strip Markdown code fences
-            cleaned = re.sub(r"```(?:json)?\s*", "", cleaned).strip()
+            # Remove Markdown code fences
+            cleaned = re.sub(
+                r"```(?:json)?\s*",
+                "",
+                cleaned,
+            ).strip()
 
+            # Extract JSON object
             match = re.search(
                 r"\{.*\}",
                 cleaned,
@@ -1132,20 +1138,22 @@ No extra text.
             if match:
                 try:
                     return json.loads(match.group(0))
-                except json.JSONDecodeError as je:
+                except json.JSONDecodeError as e:
                     self._last_remote_error = (
-                        f"Invalid JSON in response: {je}. Raw content: {content[:500]}"
+                        f"Invalid JSON in response: {e}. "
+                        f"Raw content: {content[:500]}"
                     )
                     return None
 
             self._last_remote_error = (
-                f"No JSON object found in response. Raw content: {content[:500]}"
+                "No JSON object found in remote response. "
+                f"Raw content: {content[:500]}"
             )
+            return None
 
         except Exception as e:
             self._last_remote_error = str(e)
-
-        return None
+            return None
 
     def _call_llm(self, query: str) -> dict | None:
         """
