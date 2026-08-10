@@ -1104,6 +1104,7 @@ No extra text.
                 ],
                 temperature=0,
                 max_tokens=512,
+                response_format={"type": "json_object"},
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
 
@@ -1160,8 +1161,9 @@ No extra text.
         Query Understanding LLM routing:
 
         1. Try remote Qwen first.
-        2. If remote fails, fall back to local Qwen.
-        3. If local also fails, return None.
+        2. If remote returns invalid/failed output, retry once.
+        3. If remote still fails, fall back to local Qwen.
+        4. If local also fails, return None.
         """
 
         if not self.use_llm:
@@ -1173,27 +1175,50 @@ No extra text.
 
         if self._remote_available:
             print(f"Using remote LLM: {QUERY_LLM_REMOTE_MODEL}")
+
+            # First remote attempt
             self._last_remote_error = None
             result = self._call_remote_llm(query)
 
             if result is not None:
                 return result
 
-            # Remote was available before, but failed during
-            # this request. Disable it and fall back to local.
-            self._remote_available = False
+            first_error = self._last_remote_error or "unknown error"
 
-            error_detail = self._last_remote_error or "unknown error"
             print(
-                f"[QueryUnderstanding] Remote Qwen request failed: {error_detail}. "
-                "Falling back to local Qwen."
+                f"[QueryUnderstanding] Remote Qwen first attempt failed: "
+                f"{first_error}"
             )
+
+            # ------------------------------------------------------
+            # Retry remote once
+            # ------------------------------------------------------
+
+            print("[QueryUnderstanding] Retrying remote Qwen...")
+
+            self._last_remote_error = None
+            result = self._call_remote_llm(query)
+
+            if result is not None:
+                print("[QueryUnderstanding] Remote Qwen retry succeeded.")
+                return result
+
+            second_error = self._last_remote_error or "unknown error"
+
+            print(
+                f"[QueryUnderstanding] Remote Qwen retry failed: "
+                f"{second_error}. Falling back to local Qwen."
+            )
+
+            # Remote is considered unavailable only after retry fails
+            self._remote_available = False
 
         # ----------------------------------------------------------
         # 2. Local Qwen fallback
         # ----------------------------------------------------------
 
         print(f"Using local LLM: {self.model_name}")
+
         return self._call_local_llm(query)
 
     def parse(self, query: str) -> ParsedQuery:
