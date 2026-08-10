@@ -19,8 +19,53 @@ Run with:
 """
 
 import sys
+import threading
+import time
 from app.query_understanding import ParsedQuery
 from app.semantic_search import SemanticSearch
+
+
+# ==============================================================
+# Terminal Spinner (Loading Indicator)
+# ==============================================================
+
+class Spinner:
+    """
+    Animated terminal spinner that runs in a background thread.
+
+    Usage:
+        with Spinner("Searching"):
+            # ... long operation ...
+    """
+
+    _FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def __init__(self, message: str = "Searching"):
+        self._message = message
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _spin(self):
+        idx = 0
+        while not self._stop_event.is_set():
+            frame = self._FRAMES[idx % len(self._FRAMES)]
+            sys.stdout.write(f"\r\033[36m{frame}\033[0m {self._message}...")
+            sys.stdout.flush()
+            idx += 1
+            self._stop_event.wait(0.08)
+        # Clear the spinner line
+        sys.stdout.write("\r" + " " * (len(self._message) + 10) + "\r")
+        sys.stdout.flush()
+
+    def __enter__(self):
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join()
 
 
 def print_ascii_table(title: str, headers: list[str], rows: list[list[str]]):
@@ -107,7 +152,9 @@ def print_candidate_diagnostics(parsed: ParsedQuery, qdrant_results, filtered_re
 
 
 def run_search(search: SemanticSearch, query: str):
-    parsed, qdrant_results, filtered_results, reranked_results, results = search.search_detailed(query)
+    # Show spinner while the search pipeline runs
+    with Spinner("Searching"):
+        parsed, qdrant_results, filtered_results, reranked_results, results = search.search_detailed(query)
 
     print()
     print("=" * 100)
@@ -213,18 +260,22 @@ def run_search(search: SemanticSearch, query: str):
 
 def main():
 
+    print("\n\033[36m⏳ Loading models...\033[0m")
+    start = time.time()
     search = SemanticSearch()
+    elapsed = time.time() - start
+    print(f"\033[32m✓ Models loaded in {elapsed:.1f}s\033[0m\n")
 
     if len(sys.argv) > 1:
         query = " ".join(sys.argv[1:])
         run_search(search, query)
     else:
-        print("\n=== Interactive Patent Semantic Search ===")
+        print("=== Interactive Patent Semantic Search ===")
         print("Type your query and press Enter (or type 'exit' or 'q' to quit).\n")
 
         while True:
             try:
-                query = input("Enter search query: ").strip()
+                query = input("\033[1mEnter search query:\033[0m ").strip()
                 if not query:
                     continue
                 if query.lower() in ("exit", "q", "quit"):
