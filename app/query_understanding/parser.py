@@ -22,6 +22,13 @@ import json
 import re
 from typing import Any
 
+from app.config import (
+    QUERY_LLM_MODEL,
+    QUERY_LLM_REMOTE_API_KEY,
+    QUERY_LLM_REMOTE_BASE_URL,
+    QUERY_LLM_REMOTE_MODEL,
+)
+
 from app.config import QUERY_LLM_MODEL
 from app.query_understanding.field_mapping import CODE_TO_FIELD, FIELD_MAPPING
 from app.query_understanding.metadata_field_codes import METADATA_FIELD_CODES
@@ -114,9 +121,19 @@ class QueryUnderstanding:
     def __init__(self, model_name: str | None = None, use_llm: bool = True):
         self.model_name = model_name or QUERY_LLM_MODEL
         self.use_llm = use_llm
+
+        # Local model
         self._llm_model = None
         self._llm_tokenizer = None
         self._llm_initialized = False
+
+        # Remote model
+        self._remote_client = None
+        self._remote_available = False
+
+        # Try remote first.
+        if self.use_llm:
+            self._check_remote_llm()
 
     def _init_llm(self):
         if self._llm_initialized:
@@ -146,9 +163,41 @@ class QueryUnderstanding:
             self._llm_model = None
             self._llm_tokenizer = None
 
-   
+    def _check_remote_llm(self):
+        """
+        Check whether the remote Qwen server is available.
+
+        If available, remote Qwen becomes the primary model.
+        If unavailable, the local Qwen model will be used as fallback.
+        """
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(
+                base_url=QUERY_LLM_REMOTE_BASE_URL,
+                api_key=QUERY_LLM_REMOTE_API_KEY,
+                timeout=3.0,
+            )
+
+            # Lightweight connectivity/model check.
+            client.models.list()
+
+            self._remote_client = client
+            self._remote_available = True
+
+            print(f"Remote Query LLM available: " f"{QUERY_LLM_REMOTE_MODEL}")
+
+        except Exception as e:
+            self._remote_client = None
+            self._remote_available = False
+
+            print(
+                "[QueryUnderstanding] Remote Qwen unavailable. "
+                "Local model will be used as fallback."
+            )
+
     def _build_prompt(self, query: str) -> str:
-     return f"""<|im_start|>system
+        return f"""<|im_start|>system
 You are the Query Understanding component of a patent semantic search engine.
 
 Your job is to convert the user's natural-language patent search query into
@@ -1005,7 +1054,7 @@ No extra text.
 <|im_start|>assistant
 """
 
-    def _call_llm(self, query: str) -> dict | None:
+    def _call_local_llm(self, query: str) -> dict | None:
         self._init_llm()
         if self._llm_model is None or self._llm_tokenizer is None:
             return None
@@ -1032,6 +1081,92 @@ No extra text.
             print(f"[QueryUnderstanding] LLM execution/parsing failed: {e}")
 
         return None
+
+    def _call_remote_llm(self, query: str) -> dict | None:
+        """
+        Send the query-understanding prompt to the remote Qwen model
+        through its OpenAI-compatible API.
+        """
+
+        if not self._remote_client:
+            return None
+
+        prompt = self._build_prompt(query)
+
+        try:
+            response = self._remote_client.chat.completions.create(
+                model=QUERY_LLM_REMOTE_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                temperature=0,
+                max_tokens=300,
+            )
+
+            content = response.choices[0].message.content
+
+            if not content:
+                return None
+
+            cleaned = re.sub(
+                r"```(?:json)?\s*",
+                "",
+                content,
+            ).strip()
+
+            match = re.search(
+                r"\{.*\}",
+                cleaned,
+                re.DOTALL,
+            )
+
+            if match:
+                return json.loads(match.group(0))
+
+        except Exception as e:
+            print(f"[QueryUnderstanding] Remote Qwen failed: {e}")
+
+        return None
+
+    def _call_llm(self, query: str) -> dict | None:
+        """
+        Query Understanding LLM routing:
+
+        1. Try remote Qwen first.
+        2. If remote fails, fall back to local Qwen.
+        3. If local also fails, return None.
+        """
+
+        if not self.use_llm:
+            return None
+
+        # ----------------------------------------------------------
+        # 1. Remote Qwen
+        # ----------------------------------------------------------
+
+        if self._remote_available:
+            result = self._call_remote_llm(query)
+
+            if result is not None:
+                return result
+
+            # Remote was available before, but failed during
+            # this request. Disable it and fall back to local.
+            self._remote_available = False
+
+            print(
+                "[QueryUnderstanding] Remote Qwen request failed. "
+                "Falling back to local Qwen."
+            )
+
+        # ----------------------------------------------------------
+        # 2. Local Qwen fallback
+        # ----------------------------------------------------------
+
+        return self._call_local_llm(query)
 
     def parse(self, query: str) -> ParsedQuery:
         original = query

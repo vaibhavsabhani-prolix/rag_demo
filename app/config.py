@@ -140,3 +140,12 @@ FINAL_TOP_K = 10
 # shared with the embedder and reranker models - 1.5B (~3GB in bf16) fits
 # safely; 3B/4B would risk OOM/swapping once all three models are loaded.
 QUERY_LLM_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+
+
+QUERY_LLM_REMOTE_BASE_URL = "http://192.168.2.219:8081/v1"
+
+QUERY_LLM_REMOTE_MODEL = "Qwen3.6-35B-A3B-MXFP4-CRACK-MTP"
+
+# The server does not require a real API key.
+# The OpenAI client still expects a value.
+QUERY_LLM_REMOTE_API_KEY = "EMPTY"
