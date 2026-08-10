@@ -1109,6 +1109,7 @@ No extra text.
             content = response.choices[0].message.content
 
             if not content:
+                self._last_remote_error = "Remote model returned empty content"
                 return None
 
             cleaned = re.sub(
@@ -1124,7 +1125,17 @@ No extra text.
             )
 
             if match:
-                return json.loads(match.group(0))
+                try:
+                    return json.loads(match.group(0))
+                except json.JSONDecodeError as je:
+                    self._last_remote_error = (
+                        f"Invalid JSON in response: {je}. Raw content: {content[:300]}"
+                    )
+                    return None
+
+            self._last_remote_error = (
+                f"No JSON object found in response. Raw content: {content[:300]}"
+            )
 
         except Exception as e:
             self._last_remote_error = str(e)
