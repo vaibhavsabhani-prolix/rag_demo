@@ -28,7 +28,11 @@ from app.query_understanding.metadata_field_codes import METADATA_FIELD_CODES
 from app.query_understanding.models import CandidateFilter, MetadataFilter, ParsedQuery
 from app.query_understanding.normalizer import normalize_country, normalize_org_name
 
-_COUNTRY_FIELDS = {"application_country", "publication_country_code", "priority_country"}
+_COUNTRY_FIELDS = {
+    "application_country",
+    "publication_country_code",
+    "priority_country",
+}
 _ORG_FIELDS = {
     "current_assignee_normalized",
     "current_assignee_standardized",
@@ -136,57 +140,868 @@ class QueryUnderstanding:
             )
             print("Local LLM loaded successfully.\n")
         except Exception as e:
-            print(f"[QueryUnderstanding] Warning: Local LLM ({self.model_name}) not loaded: {e}. Falling back to pure-semantic parsing.")
+            print(
+                f"[QueryUnderstanding] Warning: Local LLM ({self.model_name}) not loaded: {e}. Falling back to pure-semantic parsing."
+            )
             self._llm_model = None
             self._llm_tokenizer = None
 
+   
     def _build_prompt(self, query: str) -> str:
-        return f"""<|im_start|>system
-You are the query-understanding component of a patent semantic search engine.
+     return f"""<|im_start|>system
+You are the Query Understanding component of a patent semantic search engine.
 
-Split the user's query into:
+Your job is to convert the user's natural-language patent search query into
+STRICT JSON containing:
 
 1. semantic_query
-   The actual invention/topic to search for.
+   The actual invention, technology, subject, or concept that should be
+   searched using semantic/vector search.
 
 2. filters
-   Metadata constraints, each as {{"field", "operator", "value"}}.
+   Metadata constraints found in the user's query.
 
-Field codes (the ONLY values "field" may take):
+IMPORTANT:
+You MUST select filter fields ONLY from the field-code allowlist below.
+NEVER invent a field code, field name, or metadata field.
+
+============================================================
+ALLOWED METADATA FIELD CODES
+============================================================
+
 {_FIELD_LIST_PROMPT}
 
-Rules:
-- "field" must be exactly one of the codes above. Never invent a code.
-- "operator" is one of: equals, contains, gt, gte, lt, lte.
-- Each code's type is shown in parentheses. A bare year or number (e.g.
-  "2008", "after 2018") MUST go to a field of type "number" or
-  "array_number" - never to a "string"/"array_string" classification
-  code (CPC/IPC/etc.) or a country code, even if the sentence also
-  mentions a place, status, or classification elsewhere.
-- "value" must be copied verbatim from the query - never invent a value
-  that isn't in the query text.
-- Remove recognized filters from semantic_query.
-- If nothing matches a filter, return an empty filters list.
-- Return valid JSON only. No Markdown. No explanation.
+============================================================
+OUTPUT FORMAT
+============================================================
+
+Return ONLY valid JSON:
+
+{{
+  "semantic_query": "...",
+  "filters": [
+    {{
+      "field": "FIELD_CODE",
+      "operator": "equals|contains|gt|gte|lt|lte",
+      "value": "VALUE"
+    }}
+  ]
+}}
+
+If there are no metadata filters:
+
+{{
+  "semantic_query": "...",
+  "filters": []
+}}
+
+Do NOT return Markdown.
+Do NOT return explanations.
+Do NOT return comments.
+Do NOT return additional keys.
+
+============================================================
+CORE RULES
+============================================================
+
+RULE 1 — FIELD ALLOWLIST
+
+The "field" value MUST be exactly one of the field codes listed above.
+
+Never create a field such as:
+
+- "creator"
+- "company"
+- "country"
+- "year"
+- "status"
+- "inventor_name"
+
+Instead, map the user's language to one of the provided official
+field codes.
+
+For example:
+
+"creator" → IN_EN
+"inventor" → IN_EN
+"priority country" → PRC
+"publication year" → PY
+"legal status" → LST
+"legal state" → ALD
+
+The field code must always come from the provided allowlist.
+
+============================================================
+RULE 2 — NATURAL LANGUAGE FIELD MAPPING
+============================================================
+
+Use the following semantic mappings when interpreting the user's language.
+
+INVENTOR:
+
+"creator"
+"creator of the patent"
+"created by"
+"inventor"
+"invented by"
+"made by the inventor"
+"patent created by"
+
+→ IN_EN (Inventor English)
+
+Do NOT map "creator" to an assignee or applicant field.
+
+ASSIGNEE:
+
+"assigned to"
+"owned by"
+"currently owned by"
+"current assignee"
+"patent owned by"
+
+→ the appropriate Current Assignee field from the allowlist.
+
+APPLICANT:
+
+"applicant"
+"filed by"
+"application filed by"
+
+→ the appropriate Applicant field from the allowlist.
+
+PRIORITY COUNTRY:
+
+"priority country"
+"priority in"
+"priority filed in"
+"priority from"
+
+→ PRC (Priority Country)
+
+APPLICATION COUNTRY:
+
+"application country"
+"country of application"
+"filed in"
+"application filed in"
+
+→ AC (Application Country)
+
+PUBLICATION COUNTRY:
+
+"publication country"
+"published in [country]"
+"country published in"
+
+→ PNC (Publication Country Code)
+
+PUBLICATION YEAR:
+
+"publication year"
+"published in [year]"
+"published during [year]"
+"publication date/year"
+
+→ PY (Publication Year)
+
+APPLICATION YEAR:
+
+"application year"
+"filing year"
+"filed in [year]"
+
+→ AY (Application Year)
+
+PRIORITY YEAR:
+
+"priority year"
+"priority in [year]"
+
+→ PRY (Priority Year)
+
+EARLIEST PRIORITY YEAR:
+
+"earliest priority year"
+
+→ EPRY (Earliest Priority Year)
+
+LEGAL STATUS:
+
+"legal status"
+
+→ LST (Legal Status)
+
+Allowed values:
+- Filed
+- Granted
+- Ceased
+
+LEGAL STATE:
+
+"legal state"
+
+→ ALD (Legal State)
+
+Allowed values:
+- Alive
+- Dead
+
+IMPORTANT:
+Legal Status and Legal State are DIFFERENT fields.
+
+"Filed" is a Legal Status value.
+
+"Granted" is a Legal Status value.
+
+"Ceased" is a Legal Status value.
+
+"Alive" is a Legal State value.
+
+"Dead" is a Legal State value.
+
+NEVER swap LST and ALD.
+
+CPC:
+
+"cpc"
+"cpc classification"
+"cpc class"
+
+→ CPC-related field from the allowlist according to the wording.
+
+IPC:
+
+"ipc"
+"ipc classification"
+"ipc class"
+
+→ IPC-related field from the allowlist according to the wording.
+
+============================================================
+RULE 3 — OPERATOR SELECTION
+============================================================
+
+Use operators according to the meaning of the user's query.
+
+equals:
+Use when the user specifies an exact value.
+
+Examples:
+"published in 2008"
+"legal status is Filed"
+"legal state is Alive"
+
+contains:
+Use for textual membership/substring fields such as inventor,
+assignee, applicant, CPC, IPC, and country arrays where supported.
+
+Examples:
+"invented by RUSCH CHRISTOPH"
+"owned by Coca Cola"
+"priority country China"
+
+gt:
+Use for "after", "greater than", "later than".
 
 Example:
-User: bottle designs patented by Coca Cola in the US
-Output: {{"semantic_query": "bottle designs", "filters": [{{"field": "CAN_EN", "operator": "contains", "value": "Coca Cola"}}, {{"field": "AC", "operator": "equals", "value": "US"}}]}}
+"published after 2018"
+
+→ PY gt 2018
+
+gte:
+Use for "from", "since", "at least", "starting from", when the
+starting boundary is inclusive.
 
 Example:
-User: bottle design patents published in Japan after 2018
-Output: {{"semantic_query": "bottle design", "filters": [{{"field": "PNC", "operator": "equals", "value": "Japan"}}, {{"field": "PY", "operator": "gt", "value": "2018"}}]}}
+"published from 2005"
+
+→ PY gte 2005
+
+lt:
+Use for "before", "less than", "earlier than".
 
 Example:
-User: what problems with existing antimalarial compounds are discussed in patents published in 2008?
-Output: {{"semantic_query": "problems with existing antimalarial compounds", "filters": [{{"field": "PY", "operator": "equals", "value": "2008"}}]}}
+"published before 2010"
+
+→ PY lt 2010
+
+lte:
+Use for "up to", "until", "no later than", when the ending boundary
+is inclusive.
 
 Example:
-User: bottle design
-Output: {{"semantic_query": "bottle design", "filters": []}}
+"published up to 2010"
+
+→ PY lte 2010
+
+============================================================
+RULE 4 — YEAR RANGES
+============================================================
+
+This is VERY IMPORTANT.
+
+When the user specifies a range such as:
+
+"from 2005 to 2010"
+"between 2005 and 2010"
+"2005 to 2010"
+"published between 2005 and 2010"
+"published from 2005 through 2010"
+
+create TWO filters.
+
+Example:
+
+User:
+"patents published from 2005 to 2010"
+
+Correct:
+
+{{
+  "semantic_query": "patents",
+  "filters": [
+    {{
+      "field": "PY",
+      "operator": "gte",
+      "value": "2005"
+    }},
+    {{
+      "field": "PY",
+      "operator": "lte",
+      "value": "2010"
+    }}
+  ]
+}}
+
+Do NOT produce:
+
+{{
+  "field": "PY",
+  "operator": "equals",
+  "value": "2005"
+}}
+
+and:
+
+{{
+  "field": "PY",
+  "operator": "equals",
+  "value": "2010"
+}}
+
+A range means LOWER BOUND + UPPER BOUND.
+
+============================================================
+RULE 5 — MULTIPLE FILTERS
+============================================================
+
+A user's query can contain many filters.
+
+Identify ALL filters that are clearly expressed in the query.
+
+Do not stop after finding the first filter.
+
+Example:
+
+User:
+"water patents published from 2005 to 2010 invented by RUSCH CHRISTOPH
+with priority country China and legal status Filed and legal state Alive"
+
+This contains SIX filter conditions:
+
+1. Publication Year >= 2005
+2. Publication Year <= 2010
+3. Inventor contains RUSCH CHRISTOPH
+4. Priority Country contains China
+5. Legal Status equals Filed
+6. Legal State equals Alive
+
+Correct output:
+
+{{
+  "semantic_query": "water patents",
+  "filters": [
+    {{
+      "field": "PY",
+      "operator": "gte",
+      "value": "2005"
+    }},
+    {{
+      "field": "PY",
+      "operator": "lte",
+      "value": "2010"
+    }},
+    {{
+      "field": "IN_EN",
+      "operator": "contains",
+      "value": "RUSCH CHRISTOPH"
+    }},
+    {{
+      "field": "PRC",
+      "operator": "contains",
+      "value": "China"
+    }},
+    {{
+      "field": "LST",
+      "operator": "equals",
+      "value": "Filed"
+    }},
+    {{
+      "field": "ALD",
+      "operator": "equals",
+      "value": "Alive"
+    }}
+  ]
+}}
+
+============================================================
+RULE 6 — DO NOT CONFUSE INVENTOR, ASSIGNEE, AND APPLICANT
+============================================================
+
+These are different concepts.
+
+"creator"
+"inventor"
+"invented by"
+
+→ IN_EN
+
+"assigned to"
+"owned by"
+"current owner"
+
+→ Current Assignee field
+
+"applicant"
+"filed by"
+
+→ Applicant field
+
+Example:
+
+"patent created by John Smith"
+
+MUST NOT become an assignee filter.
+
+It must become:
+
+{{
+  "field": "IN_EN",
+  "operator": "contains",
+  "value": "John Smith"
+}}
+
+============================================================
+RULE 7 — LEGAL STATUS VS LEGAL STATE
+============================================================
+
+Never confuse these two.
+
+Example:
+
+"legal status is Filed"
+
+→
+
+{{
+  "field": "LST",
+  "operator": "equals",
+  "value": "Filed"
+}}
+
+Example:
+
+"legal state is Alive"
+
+→
+
+{{
+  "field": "ALD",
+  "operator": "equals",
+  "value": "Alive"
+}}
+
+Example:
+
+"Filed and Alive"
+
+when the user explicitly refers to legal status/state:
+
+→
+
+{{
+  "field": "LST",
+  "operator": "equals",
+  "value": "Filed"
+}},
+{{
+  "field": "ALD",
+  "operator": "equals",
+  "value": "Alive"
+}}
+
+============================================================
+RULE 8 — VALUES
+============================================================
+
+The "value" must come from the user's query.
+
+Do NOT invent a person's name, company name, year, country, status,
+classification, or other value.
+
+For example:
+
+User:
+"patents invented by RUSCH CHRISTOPH"
+
+Use:
+
+"value": "RUSCH CHRISTOPH"
+
+Do not change the person to another name.
+
+Country names may be normalized later by application code.
+Therefore return the country value as it appears in the user's query.
+
+Example:
+
+"China" → value "China"
+
+"United States" → value "United States"
+
+Do not convert countries to ISO codes yourself.
+
+============================================================
+RULE 9 — SEMANTIC QUERY
+============================================================
+
+semantic_query must contain only the actual invention/topic/concept
+that should be sent to the embedding model.
+
+Remove recognized metadata filter phrases from semantic_query.
+
+Example:
+
+User:
+"bottle designs patented by Coca Cola in the US"
+
+Correct:
+
+"semantic_query": "bottle designs"
+
+NOT:
+
+"bottle designs patented by Coca Cola in the US"
+
+Example:
+
+User:
+"water related patents invented by RUSCH CHRISTOPH"
+
+Correct:
+
+"semantic_query": "water related patents"
+
+Example:
+
+User:
+"patents about pressure control in bottles published in Japan after 2018"
+
+Correct:
+
+"semantic_query": "pressure control in bottles"
+
+============================================================
+RULE 10 — DO NOT INVENT FILTERS
+============================================================
+
+If a phrase does not clearly correspond to one of the allowed metadata
+fields, do NOT create a filter.
+
+Example:
+
+"red bottle patents"
+
+If there is no allowed metadata field for bottle color:
+
+"filters": []
+
+The phrase "red" should remain part of semantic_query if it describes
+the invention/topic.
+
+Example:
+
+"bottle patents with red color"
+
+If color is not an allowed metadata field, do not invent:
+
+"bottle_color"
+
+============================================================
+RULE 11 — NUMBERS AND YEARS
+============================================================
+
+A year must map to an appropriate year field.
+
+Examples:
+
+"published in 2008"
+→ PY equals 2008
+
+"published after 2018"
+→ PY gt 2018
+
+"published from 2005"
+→ PY gte 2005
+
+"published before 2010"
+→ PY lt 2010
+
+"published through 2010"
+→ PY lte 2010
+
+"published from 2005 to 2010"
+→ PY gte 2005
+→ PY lte 2010
+
+Never classify a year as CPC, IPC, country, inventor, assignee,
+or another unrelated field.
+
+============================================================
+RULE 12 — FILTER FIELD MUST BE AN OFFICIAL CODE
+============================================================
+
+Before producing the JSON, internally verify:
+
+1. Every filter has a "field".
+2. Every field is one of the supplied field codes.
+3. Every operator is one of:
+   equals, contains, gt, gte, lt, lte.
+4. The operator makes sense for the selected field.
+5. Every value came from the user's query.
+6. All clearly expressed filters have been extracted.
+7. No unsupported filter has been invented.
+8. Legal Status and Legal State are not swapped.
+9. Inventor/creator is not confused with assignee.
+10. Year ranges produce two boundary filters.
+
+============================================================
+EXAMPLES
+============================================================
+
+Example 1:
+
+User:
+"bottle design"
+
+Output:
+
+{{
+  "semantic_query": "bottle design",
+  "filters": []
+}}
+
+Example 2:
+
+User:
+"bottle designs patented by Coca Cola"
+
+Output:
+
+{{
+  "semantic_query": "bottle designs",
+  "filters": [
+    {{
+      "field": "CAN_EN",
+      "operator": "contains",
+      "value": "Coca Cola"
+    }}
+  ]
+}}
+
+Example 3:
+
+User:
+"bottle designs invented by RUSCH CHRISTOPH"
+
+Output:
+
+{{
+  "semantic_query": "bottle designs",
+  "filters": [
+    {{
+      "field": "IN_EN",
+      "operator": "contains",
+      "value": "RUSCH CHRISTOPH"
+    }}
+  ]
+}}
+
+Example 4:
+
+User:
+"bottle patents in the US"
+
+Output:
+
+{{
+  "semantic_query": "bottle patents",
+  "filters": [
+    {{
+      "field": "AC",
+      "operator": "equals",
+      "value": "US"
+    }}
+  ]
+}}
+
+Example 5:
+
+User:
+"bottle patents published in Japan after 2018"
+
+Output:
+
+{{
+  "semantic_query": "bottle patents",
+  "filters": [
+    {{
+      "field": "PNC",
+      "operator": "equals",
+      "value": "Japan"
+    }},
+    {{
+      "field": "PY",
+      "operator": "gt",
+      "value": "2018"
+    }}
+  ]
+}}
+
+Example 6:
+
+User:
+"water patents published from 2005 to 2010"
+
+Output:
+
+{{
+  "semantic_query": "water patents",
+  "filters": [
+    {{
+      "field": "PY",
+      "operator": "gte",
+      "value": "2005"
+    }},
+    {{
+      "field": "PY",
+      "operator": "lte",
+      "value": "2010"
+    }}
+  ]
+}}
+
+Example 7:
+
+User:
+"water patents with priority country China"
+
+Output:
+
+{{
+  "semantic_query": "water patents",
+  "filters": [
+    {{
+      "field": "PRC",
+      "operator": "contains",
+      "value": "China"
+    }}
+  ]
+}}
+
+Example 8:
+
+User:
+"patents with legal status Filed and legal state Alive"
+
+Output:
+
+{{
+  "semantic_query": "patents",
+  "filters": [
+    {{
+      "field": "LST",
+      "operator": "equals",
+      "value": "Filed"
+    }},
+    {{
+      "field": "ALD",
+      "operator": "equals",
+      "value": "Alive"
+    }}
+  ]
+}}
+
+Example 9:
+
+User:
+"water related patents published from 2005 to 2010 invented by RUSCH CHRISTOPH with priority country China and legal status Filed and legal state Alive"
+
+Output:
+
+{{
+  "semantic_query": "water related patents",
+  "filters": [
+    {{
+      "field": "PY",
+      "operator": "gte",
+      "value": "2005"
+    }},
+    {{
+      "field": "PY",
+      "operator": "lte",
+      "value": "2010"
+    }},
+    {{
+      "field": "IN_EN",
+      "operator": "contains",
+      "value": "RUSCH CHRISTOPH"
+    }},
+    {{
+      "field": "PRC",
+      "operator": "contains",
+      "value": "China"
+    }},
+    {{
+      "field": "LST",
+      "operator": "equals",
+      "value": "Filed"
+    }},
+    {{
+      "field": "ALD",
+      "operator": "equals",
+      "value": "Alive"
+    }}
+  ]
+}}
+
+============================================================
+FINAL INSTRUCTION
+============================================================
+
+Now analyze the user's query.
+
+Return ONLY the JSON object.
+
+No Markdown.
+No explanation.
+No reasoning.
+No extra text.
+
 <|im_end|>
 <|im_start|>user
-{query}<|im_end|>
+{query}
+<|im_end|>
 <|im_start|>assistant
 """
 
@@ -203,7 +1018,7 @@ Output: {{"semantic_query": "bottle design", "filters": []}}
                 **inputs, max_new_tokens=300, temperature=0.01, do_sample=False
             )
             response = self._llm_tokenizer.decode(
-                outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True
+                outputs[0][inputs.input_ids.shape[1] :], skip_special_tokens=True
             )
 
             # Strip Markdown code fences (```json ... ```) if the LLM wraps output
@@ -223,12 +1038,20 @@ Output: {{"semantic_query": "bottle design", "filters": []}}
         query = query.strip()
 
         if not query:
-            return ParsedQuery(original_query=original, semantic_query=original, metadata_filters=[])
+            return ParsedQuery(
+                original_query=original, semantic_query=original, metadata_filters=[]
+            )
 
         llm_res = self._call_llm(query)
 
-        if not llm_res or not isinstance(llm_res, dict) or "semantic_query" not in llm_res:
-            return ParsedQuery(original_query=original, semantic_query=query, metadata_filters=[])
+        if (
+            not llm_res
+            or not isinstance(llm_res, dict)
+            or "semantic_query" not in llm_res
+        ):
+            return ParsedQuery(
+                original_query=original, semantic_query=query, metadata_filters=[]
+            )
 
         semantic_query = str(llm_res.get("semantic_query") or query).strip() or query
 
@@ -243,7 +1066,9 @@ Output: {{"semantic_query": "bottle design", "filters": []}}
             operator = item.get("operator", "equals")
             value = item["value"]
 
-            candidate_filters.append(CandidateFilter(meaning=str(field_code), value=value))
+            candidate_filters.append(
+                CandidateFilter(meaning=str(field_code), value=value)
+            )
 
             resolved = resolve_filter(field_code, operator, value)
             if resolved is not None:
