@@ -1103,7 +1103,7 @@ No extra text.
                     }
                 ],
                 temperature=0,
-                max_tokens=300,
+                max_tokens=2048,
             )
 
             content = response.choices[0].message.content
@@ -1112,11 +1112,16 @@ No extra text.
                 self._last_remote_error = "Remote model returned empty content"
                 return None
 
+            # Strip <think>...</think> blocks (Qwen 3 reasoning mode)
             cleaned = re.sub(
-                r"```(?:json)?\s*",
+                r"<think>.*?</think>",
                 "",
                 content,
+                flags=re.DOTALL,
             ).strip()
+
+            # Strip Markdown code fences
+            cleaned = re.sub(r"```(?:json)?\s*", "", cleaned).strip()
 
             match = re.search(
                 r"\{.*\}",
@@ -1129,12 +1134,12 @@ No extra text.
                     return json.loads(match.group(0))
                 except json.JSONDecodeError as je:
                     self._last_remote_error = (
-                        f"Invalid JSON in response: {je}. Raw content: {content[:300]}"
+                        f"Invalid JSON in response: {je}. Raw content: {content[:500]}"
                     )
                     return None
 
             self._last_remote_error = (
-                f"No JSON object found in response. Raw content: {content[:300]}"
+                f"No JSON object found in response. Raw content: {content[:500]}"
             )
 
         except Exception as e:
