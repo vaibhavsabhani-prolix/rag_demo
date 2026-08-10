@@ -2,64 +2,126 @@
 Field Mapping — Curated Metadata Filter Allowlist
 
 The single source of truth for which metadata fields QueryUnderstanding
-is allowed to filter on. A filter's field is only ever accepted if it's
-a key in FIELD_MAPPING - this is the allowlist that stops the parser
-(or LLM-based query understanding) from inventing unsupported fields.
+is allowed to filter on.
 
-IMPORTANT: ``real_key`` must be exactly the key used in stored patent
-metadata JSON (verified by inspecting patents-processed/*.json), NOT
-the formal name from METADATA_FIELD_CODES which can differ.
+IMPORTANT:
+`real_key` must exactly match the key used in the stored patent
+metadata JSON.
 
-To add new filter keys in the future:
-1. Inspect the actual stored metadata JSON to find the exact key name.
-2. Add the corresponding config block to FIELD_MAPPING below.
+The flow is:
+
+    LLM field code
+        ↓
+    CODE_TO_FIELD
+        ↓
+    FIELD_MAPPING
+        ↓
+    real_key
+        ↓
+    actual patent metadata JSON
 """
 
 from __future__ import annotations
 
-# ---- Actual stored metadata key names (authoritative) ----
-# Verified by inspecting patents-processed/*.json files.
-# These are the exact dictionary keys used in the patent metadata
-# payloads stored in Qdrant's "patents" collection.
+# ==============================================================
+# Actual stored metadata key names
+# ==============================================================
 
 _REAL_KEYS = {
-    "AC":       "Application Country",
-    "AY":       "Application Year",
-    "PNC":      "Publication Country Code",
-    "PY":       "Publication Year",
-    "PT":       "Publication Type",
-    "APT":      "Applicant Type",
-    "APFO_EN":  "Applicant First Organization",
-    "IN_EN":    "Inventor",
-    "INF_EN":   "Inventor First",
-    "PRC":      "Priority Country",
-    "EPRY":     "Earliest Priority Year",
-    "PRY":      "Priority Year",
-    "CAS_EN":   "Current Assignee Standardized",
-    "LST":      "Legal Status (Filed/Granted/Ceased)",
-    "ALD":      "Legal State\n(Alive/Dead)",
-    "AAPO":     "Assignee/Applicant (Original) with Address",
-    "AAPS":     "Assignee/Applicant (Standardized) with Address",
-    "CAN_EN":   "Current Assignee Normalized",
-    "CPC":      "CPC",
-    "CPCP":     "CPC Primary",
-    "CPC12":    "CPC - 12 Digit",
-    "CPC4":     "CPC - 8 Digit",
-    "CPC8":     "CPC - 4 Digit",
-    "CPCV":     "CPC - Version",
-    "CPCO":     "CPC - Assigning Office",
-    "IPC":      "IPC",
-    "IPC12":    "IPC - 12 Digit",
-    "IPC8":     "IPC - 8 Digit",
-    "IPC4":     "IPC - 4 Digit",
-    "IPCRV":    "IPCR Version",
+    "AC": "Application Country",
+    "AD": "Application Date",
+    "AY": "Application Year",
+    "SC": "Us Application Number with Series Code",
+    "PNC": "Publication Country Code",
+    "PD": "Publication Date",
+    "PY": "Publication Year",
+    "PT": "Publication Type",
+    "PKC": "Publication Kind Code",
+    "ACC": "Assignee Country",
+    "AO_EN": "Original Assignee",
+    "AS_EN": "Assignee Standardized",
+    "CAS_EN": "Current Assignee Standardized",
+    "CAN_EN": "Current Assignee Normalized",
+    "APT": "Applicant Type",
+    "APFO_EN": "Applicant First Organization",
+    "IN_EN": "Inventor",
+    "INF_EN": "Inventor First",
+    "AG_EN": "Attorney/Agent",
+    "PEX": "Primary Examiner",
+    "AEX": "Assistant Examiner",
+    "PRC": "Priority Country",
+    "PRD": "Priority Date",
+    "EPRD": "Earliest Priority Date",
+    "EPRY": "Earliest Priority Year",
+    "PRY": "Priority Year",
+    "CPC": "CPC",
+    "CPCP": "CPC Primary",
+    "CPCD": "CPC Divided",
+    "CPC12": "CPC - 12 Digit",
+    "CPC4": "CPC - 8 Digit",
+    "CPC8": "CPC - 4 Digit",
+    "CPCV": "CPC - Version",
+    "CPCO": "CPC - Assigning Office",
+    "IPC": "IPC",
+    "IPCD": "IPC Divided",
+    "IPC12": "IPC - 12 Digit",
+    "IPC8": "IPC - 8 Digit",
+    "IPC4": "IPC - 4 Digit",
+    "IPCR": "IPCR",
+    "IPCRD": "IPCR Divided",
+    "IPCR12": "IPCR - 12 Digit",
+    "IPCR8": "IPCR - 8 Digit",
+    "IPCR4": "IPCR - 4 Digit",
+    "IPCRV": "IPCR Version",
+    "LST": "Legal Status (Filed/Granted/Ceased)",
+    "ALD": "Legal State\n(Alive/Dead)",
+    "AAPO": "Assignee/Applicant (Original) with Address",
+    "AAPN": "Assignee/Applicant (Normalized) with Address",
+    "AAPS": "Assignee/Applicant (Standardized) with Address",
+    "TI_EN": "Title English",
+    "CLN": "Claims (N)",
+    "PTS": (
+        "Patent type "
+        "(Utility, Design, Plant, Reissue, Defensive Publication, "
+        "Statutory Invention Registration)"
+    ),
+    "DST": "Docdb Status",
+    "CFID": "Complete Family ID",
+    "DFID": "Domestic Family ID",
+    "EFID": "Extended Family ID",
+    "MFID": "Main Family ID",
+    "SFID": "Simple Family ID",
+    "ED": "Expiry Date (C)",
+    "EDN": "Expiry Date (N)",
+    "LD": "Lapse Date (C)",
+    "LDN": "Lapse Date (N)",
+    "RL": "Estimated Remaining Life (Current Date- Expiry Date)",
+    "USMS": "US Maintenance Status",
+    "GOI": "Government Interest",
+    "PL": "Publication Language",
+    "EXP": "Examiner",
+    "DC": "Domestic Classification",
+    "DCD": "Domestic Classification Divided",
+    "IPCM": "IPC Main Classification",
+    "PCL": "IPC/CPC",
+    "PCLD": "IPCD/CPCD",
 }
 
+
+# ==============================================================
+# FIELD MAPPING
+# ==============================================================
 
 FIELD_MAPPING: dict[str, dict] = {
     "application_country": {
         "code": "AC",
         "real_key": _REAL_KEYS["AC"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "application_date": {
+        "code": "AD",
+        "real_key": _REAL_KEYS["AD"],
         "type": "string",
         "operators": ["equals", "contains"],
     },
@@ -69,9 +131,21 @@ FIELD_MAPPING: dict[str, dict] = {
         "type": "number",
         "operators": ["equals", "gt", "gte", "lt", "lte"],
     },
+    "application_number_series_code": {
+        "code": "SC",
+        "real_key": _REAL_KEYS["SC"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
     "publication_country_code": {
         "code": "PNC",
         "real_key": _REAL_KEYS["PNC"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "publication_date": {
+        "code": "PD",
+        "real_key": _REAL_KEYS["PD"],
         "type": "string",
         "operators": ["equals", "contains"],
     },
@@ -88,23 +162,29 @@ FIELD_MAPPING: dict[str, dict] = {
         "operators": ["equals"],
         "values": ["Grant", "Application"],
     },
-    "priority_country": {
-        "code": "PRC",
-        "real_key": _REAL_KEYS["PRC"],
+    "publication_kind_code": {
+        "code": "PKC",
+        "real_key": _REAL_KEYS["PKC"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "assignee_country": {
+        "code": "ACC",
+        "real_key": _REAL_KEYS["ACC"],
         "type": "array_string",
         "operators": ["contains"],
     },
-    "priority_year": {
-        "code": "PRY",
-        "real_key": _REAL_KEYS["PRY"],
-        "type": "array_number",
-        "operators": ["equals", "gt", "gte", "lt", "lte"],
+    "original_assignee": {
+        "code": "AO_EN",
+        "real_key": _REAL_KEYS["AO_EN"],
+        "type": "array_string",
+        "operators": ["contains"],
     },
-    "earliest_priority_year": {
-        "code": "EPRY",
-        "real_key": _REAL_KEYS["EPRY"],
-        "type": "number",
-        "operators": ["equals", "gt", "gte", "lt", "lte"],
+    "assignee_standardized": {
+        "code": "AS_EN",
+        "real_key": _REAL_KEYS["AS_EN"],
+        "type": "array_string",
+        "operators": ["contains"],
     },
     "current_assignee_normalized": {
         "code": "CAN_EN",
@@ -118,9 +198,9 @@ FIELD_MAPPING: dict[str, dict] = {
         "type": "array_string",
         "operators": ["contains"],
     },
-    "original_assignee": {
-        "code": "AAPO",
-        "real_key": _REAL_KEYS["AAPO"],
+    "applicant_type": {
+        "code": "APT",
+        "real_key": _REAL_KEYS["APT"],
         "type": "array_string",
         "operators": ["contains"],
     },
@@ -130,17 +210,65 @@ FIELD_MAPPING: dict[str, dict] = {
         "type": "array_string",
         "operators": ["contains"],
     },
-    "applicant_type": {
-        "code": "APT",
-        "real_key": _REAL_KEYS["APT"],
-        "type": "array_string",
-        "operators": ["contains"],
-    },
     "inventor": {
         "code": "IN_EN",
         "real_key": _REAL_KEYS["IN_EN"],
         "type": "array_string",
         "operators": ["contains"],
+    },
+    "inventor_first": {
+        "code": "INF_EN",
+        "real_key": _REAL_KEYS["INF_EN"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "attorney_agent": {
+        "code": "AG_EN",
+        "real_key": _REAL_KEYS["AG_EN"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "primary_examiner": {
+        "code": "PEX",
+        "real_key": _REAL_KEYS["PEX"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "assistant_examiner": {
+        "code": "AEX",
+        "real_key": _REAL_KEYS["AEX"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "priority_country": {
+        "code": "PRC",
+        "real_key": _REAL_KEYS["PRC"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "priority_date": {
+        "code": "PRD",
+        "real_key": _REAL_KEYS["PRD"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "earliest_priority_date": {
+        "code": "EPRD",
+        "real_key": _REAL_KEYS["EPRD"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "earliest_priority_year": {
+        "code": "EPRY",
+        "real_key": _REAL_KEYS["EPRY"],
+        "type": "number",
+        "operators": ["equals", "gt", "gte", "lt", "lte"],
+    },
+    "priority_year": {
+        "code": "PRY",
+        "real_key": _REAL_KEYS["PRY"],
+        "type": "array_number",
+        "operators": ["equals", "gt", "gte", "lt", "lte"],
     },
     "legal_status": {
         "code": "LST",
@@ -156,6 +284,12 @@ FIELD_MAPPING: dict[str, dict] = {
         "operators": ["equals"],
         "values": ["Alive", "Dead"],
     },
+    "docdb_status": {
+        "code": "DST",
+        "real_key": _REAL_KEYS["DST"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
     "cpc_primary": {
         "code": "CPCP",
         "real_key": _REAL_KEYS["CPCP"],
@@ -165,6 +299,12 @@ FIELD_MAPPING: dict[str, dict] = {
     "cpc": {
         "code": "CPC",
         "real_key": _REAL_KEYS["CPC"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "cpc_divided": {
+        "code": "CPCD",
+        "real_key": _REAL_KEYS["CPCD"],
         "type": "array_string",
         "operators": ["contains"],
     },
@@ -204,6 +344,12 @@ FIELD_MAPPING: dict[str, dict] = {
         "type": "array_string",
         "operators": ["contains"],
     },
+    "ipc_divided": {
+        "code": "IPCD",
+        "real_key": _REAL_KEYS["IPCD"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
     "ipc_12_digit": {
         "code": "IPC12",
         "real_key": _REAL_KEYS["IPC12"],
@@ -222,15 +368,39 @@ FIELD_MAPPING: dict[str, dict] = {
         "type": "array_string",
         "operators": ["contains"],
     },
-    "ipcr_version": {
-        "code": "IPCRV",
-        "real_key": _REAL_KEYS["IPCRV"],
+    "ipcr": {
+        "code": "IPCR",
+        "real_key": _REAL_KEYS["IPCR"],
         "type": "array_string",
         "operators": ["contains"],
     },
-    "inventor_first": {
-        "code": "INF_EN",
-        "real_key": _REAL_KEYS["INF_EN"],
+    "ipcr_divided": {
+        "code": "IPCRD",
+        "real_key": _REAL_KEYS["IPCRD"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "ipcr_12_digit": {
+        "code": "IPCR12",
+        "real_key": _REAL_KEYS["IPCR12"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "ipcr_8_digit": {
+        "code": "IPCR8",
+        "real_key": _REAL_KEYS["IPCR8"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "ipcr_4_digit": {
+        "code": "IPCR4",
+        "real_key": _REAL_KEYS["IPCR4"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "ipcr_version": {
+        "code": "IPCRV",
+        "real_key": _REAL_KEYS["IPCRV"],
         "type": "array_string",
         "operators": ["contains"],
     },
@@ -240,23 +410,170 @@ FIELD_MAPPING: dict[str, dict] = {
         "type": "array_string",
         "operators": ["contains"],
     },
+    "assignee_applicant_normalized_with_address": {
+        "code": "AAPN",
+        "real_key": _REAL_KEYS["AAPN"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
     "assignee_applicant_standardized_with_address": {
         "code": "AAPS",
         "real_key": _REAL_KEYS["AAPS"],
         "type": "array_string",
         "operators": ["contains"],
     },
+    "title_english": {
+        "code": "TI_EN",
+        "real_key": _REAL_KEYS["TI_EN"],
+        "type": "string",
+        "operators": ["contains"],
+    },
+    "claims_count": {
+        "code": "CLN",
+        "real_key": _REAL_KEYS["CLN"],
+        "type": "number",
+        "operators": ["equals", "gt", "gte", "lt", "lte"],
+    },
+    "patent_type": {
+        "code": "PTS",
+        "real_key": _REAL_KEYS["PTS"],
+        "type": "enum",
+        "operators": ["equals", "contains"],
+        "values": [
+            "Utility",
+            "Design",
+            "Plant",
+            "Reissue",
+            "Defensive Publication",
+            "Statutory Invention Registration",
+        ],
+    },
+    "complete_family_id": {
+        "code": "CFID",
+        "real_key": _REAL_KEYS["CFID"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "domestic_family_id": {
+        "code": "DFID",
+        "real_key": _REAL_KEYS["DFID"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "extended_family_id": {
+        "code": "EFID",
+        "real_key": _REAL_KEYS["EFID"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "main_family_id": {
+        "code": "MFID",
+        "real_key": _REAL_KEYS["MFID"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "simple_family_id": {
+        "code": "SFID",
+        "real_key": _REAL_KEYS["SFID"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "expiry_date_current": {
+        "code": "ED",
+        "real_key": _REAL_KEYS["ED"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "expiry_date_normalized": {
+        "code": "EDN",
+        "real_key": _REAL_KEYS["EDN"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "lapse_date_current": {
+        "code": "LD",
+        "real_key": _REAL_KEYS["LD"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "lapse_date_normalized": {
+        "code": "LDN",
+        "real_key": _REAL_KEYS["LDN"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "estimated_remaining_life": {
+        "code": "RL",
+        "real_key": _REAL_KEYS["RL"],
+        "type": "number",
+        "operators": ["equals", "gt", "gte", "lt", "lte"],
+    },
+    "us_maintenance_status": {
+        "code": "USMS",
+        "real_key": _REAL_KEYS["USMS"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "government_interest": {
+        "code": "GOI",
+        "real_key": _REAL_KEYS["GOI"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "publication_language": {
+        "code": "PL",
+        "real_key": _REAL_KEYS["PL"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "examiner": {
+        "code": "EXP",
+        "real_key": _REAL_KEYS["EXP"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "domestic_classification": {
+        "code": "DC",
+        "real_key": _REAL_KEYS["DC"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "domestic_classification_divided": {
+        "code": "DCD",
+        "real_key": _REAL_KEYS["DCD"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "ipc_main_classification": {
+        "code": "IPCM",
+        "real_key": _REAL_KEYS["IPCM"],
+        "type": "string",
+        "operators": ["equals", "contains"],
+    },
+    "ipc_cpc": {
+        "code": "PCL",
+        "real_key": _REAL_KEYS["PCL"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
+    "ipcd_cpcd": {
+        "code": "PCLD",
+        "real_key": _REAL_KEYS["PCLD"],
+        "type": "array_string",
+        "operators": ["contains"],
+    },
 }
+
 
 _UNSAFE_KEY_CHARS = set(" \n()/")
 
+
 QDRANT_UNSAFE_FIELDS = frozenset(
-    field for field, spec in FIELD_MAPPING.items()
+    field
+    for field, spec in FIELD_MAPPING.items()
     if _UNSAFE_KEY_CHARS & set(spec["real_key"])
 )
 
-# Short code (e.g. "PY") -> FIELD_MAPPING key (e.g. "publication_year").
-# This is what lets Query Understanding hand the LLM the short-code
-# allowlist directly and map its answer straight back to a field, with
-# no guessing in between.
-CODE_TO_FIELD: dict[str, str] = {spec["code"]: name for name, spec in FIELD_MAPPING.items()}
+CODE_TO_FIELD: dict[str, str] = {
+    spec["code"]: name for name, spec in FIELD_MAPPING.items()
+}
