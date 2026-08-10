@@ -1,125 +1,210 @@
-"""
-Value Normalization
-
-Deliberately minimal, non-aggressive normalization between raw query
-text and the values FilterEngine compares against stored metadata.
-Only mappings that are unambiguous are applied - see each function's
-docstring for exactly what it does and does not do.
-"""
-
-from __future__ import annotations
-
 import re
+import pycountry
 
-# Country name/demonym/abbreviation -> ISO-ish code, as found in this
-# project's metadata (Application Country / Publication Country Code /
-# Priority Country). Longest keys are tried first so "united states"
-# matches before "us".
 COUNTRY_ALIASES = {
-    "united states of america": "US",
-    "united states": "US",
     "usa": "US",
     "u.s.a.": "US",
     "u.s.": "US",
-    "us": "US",
     "american": "US",
-    "china": "CN",
     "chinese": "CN",
-    "japan": "JP",
     "japanese": "JP",
-    "germany": "DE",
     "german": "DE",
-    "south korea": "KR",
     "korea": "KR",
+    "south korea": "KR",
     "korean": "KR",
-    "united kingdom": "GB",
+    "uk": "GB",
     "britain": "GB",
     "british": "GB",
-    "uk": "GB",
-    "france": "FR",
+    "england": "GB",
+    "english": "GB",
     "french": "FR",
-    "canada": "CA",
     "canadian": "CA",
-    "australia": "AU",
     "australian": "AU",
-    "taiwan": "TW",
     "taiwanese": "TW",
-    "brazil": "BR",
     "brazilian": "BR",
-    "spain": "ES",
     "spanish": "ES",
-    "russia": "RU",
     "russian": "RU",
-    "italy": "IT",
     "italian": "IT",
-    "india": "IN",
     "indian": "IN",
-    "austria": "AT",
     "austrian": "AT",
-    "malaysia": "MY",
     "malaysian": "MY",
-    "ukraine": "UA",
     "ukrainian": "UA",
+    "swiss": "CH",
     "european patent office": "EP",
     "epo": "EP",
     "pct": "WO",
 }
 
-# Bare two-letter codes accepted case-insensitively (e.g. "US", "CN",
-# "JP" as standalone tokens). Codes that double as common English words
-# ("in" for India, "it" for Italy, "my" for Malaysia, "us" as a pronoun,
-# ...) are deliberately excluded here - they're still reachable through
-# their full name/demonym in COUNTRY_ALIASES above, just not from a bare
-# ambiguous two-letter token, which would otherwise false-positive
-# constantly.
-BARE_COUNTRY_CODES = {
-    "US", "CN", "JP", "DE", "KR", "GB", "FR", "CA", "AU", "TW", "BR",
-    "ES", "RU", "EP", "WO", "AP", "UA",
+SPECIAL_COUNTRY_CODES = {
+    "EP",
+    "WO",
+    "AP",
 }
 
-_ORG_PUNCTUATION_RE = re.compile(r"[.,\-]")
+_ORG_PUNCTUATION_RE = re.compile(r"[.,-]")
 _WHITESPACE_RE = re.compile(r"\s+")
-
 
 def normalize_country(text: str) -> str | None:
     """
-    Resolve *text* to an ISO-ish country code, or None if it doesn't
-    match a known country name, demonym, or bare code. Case-insensitive.
-    Tries the longest COUNTRY_ALIASES key first so multi-word names
-    ("united states") aren't pre-empted by a shorter one.
+    Normalize a country name, country code, or common country
+    alias into the canonical country code used by the patent
+    metadata.
+
+    Examples:
+
+        Switzerland              -> CH
+        switzerland              -> CH
+        SWITZERLAND              -> CH
+        Swiss                     -> CH
+        CH                        -> CH
+
+        China                     -> CN
+        china                     -> CN
+        Chinese                   -> CN
+        CN                        -> CN
+
+        India                     -> IN
+        india                     -> IN
+        Indian                    -> IN
+        IN                        -> IN
+
+        United States             -> US
+        USA                       -> US
+        American                  -> US
+        US                        -> US
+
+    Returns:
+        ISO-2 country code / project country code
+        or None if the value cannot be resolved.
     """
 
-    stripped = text.strip()
-    if not stripped:
+    if text is None:
         return None
 
-    lower = stripped.lower()
+    # Convert to string and clean whitespace.
+    value = str(text).strip()
 
-    for name in sorted(COUNTRY_ALIASES, key=len, reverse=True):
-        if lower == name:
-            return COUNTRY_ALIASES[name]
+    if not value:
+        return None
 
-    if len(stripped) == 2 and stripped.upper() in BARE_COUNTRY_CODES:
-        return stripped.upper()
+    value = _WHITESPACE_RE.sub(" ", value)
+
+    lower_value = value.lower()
+    upper_value = value.upper()
+
+    # ----------------------------------------------------------
+    # 1. Check project-specific aliases
+    # ----------------------------------------------------------
+
+    alias = COUNTRY_ALIASES.get(lower_value)
+
+    if alias:
+        return alias
+
+    # ----------------------------------------------------------
+    # 2. Check special patent-system codes
+    # ----------------------------------------------------------
+
+    if upper_value in SPECIAL_COUNTRY_CODES:
+        return upper_value
+
+    # ----------------------------------------------------------
+    # 3. Check ISO-2 country code dynamically
+    # ----------------------------------------------------------
+
+    if len(upper_value) == 2:
+
+        country = pycountry.countries.get(
+            alpha_2=upper_value
+        )
+
+        if country:
+            return country.alpha_2
+
+    # ----------------------------------------------------------
+    # 4. Check exact country name
+    # ----------------------------------------------------------
+
+    country = pycountry.countries.get(
+        name=value
+    )
+
+    if country:
+        return country.alpha_2
+
+    # ----------------------------------------------------------
+    # 5. Case-insensitive country-name lookup
+    # ----------------------------------------------------------
+
+    for country in pycountry.countries:
+
+        if country.name.lower() == lower_value:
+            return country.alpha_2
+
+    # ----------------------------------------------------------
+    # 6. Check official country name
+    # ----------------------------------------------------------
+
+    for country in pycountry.countries:
+
+        official_name = getattr(
+            country,
+            "official_name",
+            None,
+        )
+
+        if (
+            official_name
+            and official_name.lower() == lower_value
+        ):
+            return country.alpha_2
+
+    # ----------------------------------------------------------
+    # 7. Check common country name
+    # ----------------------------------------------------------
+
+    for country in pycountry.countries:
+
+        common_name = getattr(
+            country,
+            "common_name",
+            None,
+        )
+
+        if (
+            common_name
+            and common_name.lower() == lower_value
+        ):
+            return country.alpha_2
+
+    # ----------------------------------------------------------
+    # 8. Country not recognized
+    # ----------------------------------------------------------
 
     return None
 
 
+# ==============================================================
+# Organization normalization
+# ==============================================================
+
 def normalize_org_name(text: str) -> str:
     """
-    Uppercase + strip punctuation (hyphens, periods, commas) + collapse
-    whitespace - nothing more. E.g. "Coca-Cola" -> "COCA COLA",
-    "coca cola" -> "COCA COLA".
+    Uppercase + strip punctuation (hyphens, periods, commas)
+    + collapse whitespace.
 
-    Deliberately does NOT strip corporate suffixes ("CO", "INC",
-    "COMPANY", "LTD", ...): this project's own "*_normalized" metadata
-    fields are already vendor-cleaned to bare names (e.g. stored as
-    "COCA COLA", not "COCA COLA CO"), so a "contains" match after this
-    normalization is enough. Stripping suffixes more aggressively risks
-    false positives on legitimately different companies that happen to
-    share a suffix.
+    Examples:
+
+        Coca-Cola -> COCA COLA
+        coca cola -> COCA COLA
+        RANBAXY   -> RANBAXY
     """
 
     cleaned = _ORG_PUNCTUATION_RE.sub(" ", text)
-    cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
+
+    cleaned = _WHITESPACE_RE.sub(
+        " ",
+        cleaned
+    ).strip()
+
     return cleaned.upper()
