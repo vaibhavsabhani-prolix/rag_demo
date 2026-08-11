@@ -167,28 +167,35 @@ def run_search(search: SemanticSearch, query: str):
 
     # -------------------------------------------------------------
     # Table 1: Qdrant DB Candidate Results (Vector Search)
+    #
+    # Skipped for metadata-only queries (no real topic - see
+    # ParsedQuery.is_metadata_only) - there was no vector search, so
+    # qdrant_results holds the whole-collection filter matches instead
+    # and would be misleading labeled as "vector search results".
     # -------------------------------------------------------------
-    qdrant_headers = ["#", "Qdrant Score", "Patent ID", "Chunk ID", "Section", "Text Preview"]
-    qdrant_rows = []
     qdrant_rank_map = {}
 
-    for idx, point in enumerate(qdrant_results, start=1):
-        qdrant_rank_map[point.id] = idx
-        payload = point.payload or {}
-        text_snippet = payload.get("text", "").replace("\n", " ").strip()
-        if len(text_snippet) > 45:
-            text_snippet = text_snippet[:42] + "..."
+    if not parsed.is_metadata_only:
+        qdrant_headers = ["#", "Qdrant Score", "Patent ID", "Chunk ID", "Section", "Text Preview"]
+        qdrant_rows = []
 
-        qdrant_rows.append([
-            str(idx),
-            f"{point.score:.4f}",
-            str(payload.get("patent_id", "")),
-            str(payload.get("chunk_id", "")),
-            str(payload.get("section", "")),
-            text_snippet,
-        ])
+        for idx, point in enumerate(qdrant_results, start=1):
+            qdrant_rank_map[point.id] = idx
+            payload = point.payload or {}
+            text_snippet = payload.get("text", "").replace("\n", " ").strip()
+            if len(text_snippet) > 45:
+                text_snippet = text_snippet[:42] + "..."
 
-    print_ascii_table("Table 1: Vector Search Results (Qdrant DB)", qdrant_headers, qdrant_rows)
+            qdrant_rows.append([
+                str(idx),
+                f"{point.score:.4f}",
+                str(payload.get("patent_id", "")),
+                str(payload.get("chunk_id", "")),
+                str(payload.get("section", "")),
+                text_snippet,
+            ])
+
+        print_ascii_table("Table 1: Vector Search Results (Qdrant DB)", qdrant_headers, qdrant_rows)
 
     # -------------------------------------------------------------
     # Table 2: Reranked Results (Cross-Encoder Reranking)

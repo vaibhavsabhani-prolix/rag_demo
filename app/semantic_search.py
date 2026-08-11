@@ -101,7 +101,7 @@ class SemanticSearch:
         # would wrongly exclude matching patents never picked up by an
         # embedding of a non-existent topic. Filter the whole
         # collection directly instead.
-        if not parsed.semantic_query.strip() and parsed.metadata_filters:
+        if parsed.is_metadata_only:
             return self._search_by_metadata_only(parsed)
 
         # Step 1: Embed the semantic portion only - metadata-filter

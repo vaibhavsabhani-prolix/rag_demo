@@ -64,3 +64,13 @@ class ParsedQuery:
     @property
     def has_filters(self) -> bool:
         return len(self.metadata_filters) > 0
+
+    @property
+    def is_metadata_only(self) -> bool:
+        """
+        True when there's no real topic to vector-search - just
+        metadata filters (see parser.py Rule 9B). SemanticSearch routes
+        these straight to a whole-collection metadata filter instead of
+        vector search + rerank (see SemanticSearch._search_by_metadata_only).
+        """
+        return not self.semantic_query.strip() and self.has_filters
