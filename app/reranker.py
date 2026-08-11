@@ -13,10 +13,7 @@ This module was introduced in sentence-transformers 5.4.0.
 
 from sentence_transformers import CrossEncoder
 
-from app.config import (
-    RERANKER_MODEL,
-    FINAL_TOP_K,
-)
+from app.config import RERANKER_MODEL
 
 
 class Reranker:
@@ -26,14 +23,10 @@ class Reranker:
 
     def __init__(self):
 
-        print(f"Loading reranker: {RERANKER_MODEL}")
-
         self.model = CrossEncoder(
             RERANKER_MODEL,
             trust_remote_code=True,
         )
-
-        print("Reranker loaded successfully.\n")
 
     def rerank(
         self,
@@ -43,8 +36,13 @@ class Reranker:
         """
         Rerank Qdrant search results using the cross-encoder.
 
-        Returns a list of ``(reranker_score, qdrant_result)`` tuples,
-        sorted by reranker score descending, truncated to FINAL_TOP_K.
+        Returns every result as a ``(reranker_score, qdrant_result)``
+        tuple, sorted by reranker score descending. Not truncated here -
+        results still need to be aggregated into patents (a patent's
+        score is its best chunk's score), and cutting to a fixed chunk
+        count first could drop a patent whose only strong chunk missed
+        that cut. Truncation to the final patent count happens after
+        aggregation instead (see SemanticSearch.search_detailed).
         """
 
         if not results:
@@ -65,5 +63,5 @@ class Reranker:
 
         return [
             (float(score), result)
-            for score, result in ranked[:FINAL_TOP_K]
+            for score, result in ranked
         ]

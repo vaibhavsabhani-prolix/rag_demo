@@ -29,11 +29,11 @@ from qdrant_client.models import (
 
 from app.config import (
     CHUNKS_COLLECTION_NAME,
+    PATENT_CANDIDATE_TOP_K,
     PATENTS_COLLECTION_NAME,
     QDRANT_HOST,
     QDRANT_PORT,
     VECTOR_SIZE,
-    VECTOR_TOP_K,
 )
 
 from app.filter_engine import FilterEngine
@@ -254,7 +254,7 @@ class QdrantDB:
     # content to vector-search with (see
     # SemanticSearch._is_semantic_query_meaningless) - post-vector
     # filtering (SemanticSearch._filter_candidates_by_metadata) can
-    # only ever match patents within the VECTOR_TOP_K candidate pool,
+    # only ever match patents within the PATENT_CANDIDATE_TOP_K candidate pool,
     # which is the wrong tool when the query is purely a metadata
     # lookup ("applications filed in 2008 by Wyeth").
     # ==============================================================
@@ -314,8 +314,8 @@ class QdrantDB:
 
         Companion to filter_patent_ids() for metadata-only queries:
         once the matching patent_ids are known, this retrieves their
-        full chunk set (unbounded by VECTOR_TOP_K) so the existing
-        reranker/aggregation code can run unchanged.
+        full chunk set (unbounded by PATENT_CANDIDATE_TOP_K) so the
+        existing reranker/aggregation code can run unchanged.
         """
 
         if not patent_ids:
@@ -361,23 +361,39 @@ class QdrantDB:
         self,
         query_vector: list[float],
         score_threshold: float = 0.30,
-        limit: int = VECTOR_TOP_K,
+        limit: int = PATENT_CANDIDATE_TOP_K,
     ):
         """
-        Search similar vectors in the chunks collection.
+        Identify the top *limit* distinct candidate PATENTS via semantic
+        vector search, grouped by patent_id.
 
         Pure semantic vector search - no metadata filter involved. Any
         metadata-constraint narrowing happens afterward, in Python,
         against the patent_ids present in the returned candidates (see
         SemanticSearch._filter_candidates_by_metadata) - not here.
+
+        Uses Qdrant's group-by search with group_size=1 so *limit*
+        bounds the number of distinct PATENTS returned, not chunks - a
+        single patent with many similar-scoring chunks can't crowd other
+        relevant patents out of the candidate pool the way a flat top-K
+        chunk search could. Only each patent's single best-matching
+        chunk is returned here (for candidate identification and
+        diagnostics score display) - callers that need every chunk of a
+        candidate patent (e.g. for reranking) should follow up with
+        get_chunks_for_patent_ids(), which fetches a patent's full,
+        unbounded chunk set rather than an arbitrary fixed cap.
         """
 
-        return self.client.search(
+        result = self.client.query_points_groups(
             collection_name=CHUNKS_COLLECTION_NAME,
-            query_vector=query_vector,
-            score_threshold=score_threshold,
+            query=query_vector,
+            group_by="patent_id",
             limit=limit,
+            group_size=1,
+            score_threshold=score_threshold,
         )
+
+        return [hit for group in result.groups for hit in group.hits]
 
     # ==============================================================
     # Stats

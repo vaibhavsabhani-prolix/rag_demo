@@ -5,11 +5,11 @@ Applies structured MetadataFilter constraints (app/query_understanding/models.py
 against patent metadata AFTER vector search (post-retrieval filtering).
 
 The pipeline is:
-    1. Pure Qdrant vector search → top VECTOR_TOP_K chunks
-    2. Extract unique patent_ids from those chunks
+    1. Pure Qdrant vector search, grouped by patent_id → top PATENT_CANDIDATE_TOP_K patents
+    2. Extract unique patent_ids from those candidates
     3. Batch fetch metadata for only those patent_ids
     4. FilterEngine.matches() → keep only chunks belonging to matching patents
-    5. Reranker → FINAL_TOP_K
+    5. Reranker scores every surviving chunk → aggregate by patent → top FINAL_TOP_K patents
 
 FilterEngine validates every filter against FIELD_MAPPING before
 evaluating it:

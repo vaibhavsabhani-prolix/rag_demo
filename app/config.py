@@ -112,20 +112,25 @@ PATENT_DIRECTORY = "patents-processed"
 
 RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"
 
-# Number of candidates retrieved from Qdrant.
+# Number of distinct PATENTS retrieved as candidates from Qdrant.
 #
-# Metadata filtering (see app/filter_engine.py) happens AFTER this
-# initial vector search, on whatever candidates come back - not before,
+# Vector search is grouped by patent_id (Qdrant group-by search), so
+# this is a patent count, not a chunk count - a single patent with many
+# similar chunks can't crowd other relevant patents out of the
+# candidate pool the way flat top-K chunk search could. Metadata
+# filtering (see app/filter_engine.py) happens AFTER this initial
+# vector search, on whatever candidate patents come back - not before,
 # and not as a Qdrant-side filter on the search itself. That means a
 # narrower metadata filter can only ever shrink the candidate pool
-# already retrieved here, never look beyond it. Raised from the earlier
-# 50 to 100 to give metadata-filtered queries a larger pool to filter
-# against before reranking, since a filter (e.g. a specific assignee)
-# can eliminate a large fraction of a 50-chunk pool and leave too few
-# candidates for a meaningful rerank.
-VECTOR_TOP_K = 100
+# already retrieved here, never look beyond it.
+PATENT_CANDIDATE_TOP_K = 100
 
-# Number of results returned after reranking
+# Number of patents returned after reranking.
+#
+# Applied AFTER chunks are reranked and aggregated into patents (see
+# SemanticSearch.search_detailed) - not as a chunk-level truncation
+# before aggregation, which could otherwise drop a patent entirely if
+# none of its chunks made a flat top-K chunk cut.
 FINAL_TOP_K = 10
 
 # ==========================

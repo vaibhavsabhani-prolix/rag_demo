@@ -9,10 +9,15 @@ Pipeline:
         ↓
     Embed semantic_query ONLY
         ↓
-    Qdrant Vector Search on patent_chunks (pure semantic search,
-    no metadata filter involved - top VECTOR_TOP_K candidates)
+    Qdrant Vector Search on patent_chunks, GROUPED by patent_id
+    (pure semantic search, no metadata filter involved - identifies
+    the top PATENT_CANDIDATE_TOP_K distinct PATENTS by their single
+    best-matching chunk each)
         ↓
     Extract unique patent_id[] from those candidates
+        ↓
+    Fetch EVERY chunk belonging to those candidate patents
+    (get_chunks_for_patent_ids - unbounded per patent, not a fixed cap)
         ↓
     Fetch metadata for ONLY those candidate patent_ids
     ("patents" collection, via the existing get_patents_metadata())
@@ -25,7 +30,8 @@ Pipeline:
     belonging to a patent that matches          │
         ▼                                       ▼
     Cross-Encoder Reranker (semantic_query only - metadata
-    phrases were already split off by Query Understanding)
+    phrases were already split off by Query Understanding;
+    scores every surviving chunk, no truncation yet)
                           ↓
                    Group by patent_id
                           ↓
@@ -35,6 +41,8 @@ Pipeline:
         Compute patent score (max reranker score)
                           ↓
                    Sort patents by score
+                          ↓
+              Truncate to FINAL_TOP_K patents
                           ↓
               Return PatentSearchResult list
 
@@ -61,6 +69,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from app.config import FINAL_TOP_K
 from app.embedder import Embedder
 from app.filter_engine import FilterEngine
 from app.models.patent_search_result import PatentSearchResult, RankedChunk
@@ -84,8 +93,11 @@ class SemanticSearch:
         """
         Search for patents and return results at each pipeline stage:
         1. Parsed query (semantic_query + metadata_filters)
-        2. Initial Qdrant vector search candidate chunks (list of ScoredPoint)
-        3. Candidate chunks after metadata filtering (same list, unchanged, if no filters)
+        2. Initial Qdrant vector search candidates - one best-matching
+           chunk per candidate patent (list of ScoredPoint)
+        3. Candidate chunks after metadata filtering - now every chunk
+           of every surviving candidate patent, not just the one used
+           to identify it
         4. Reranked candidate chunks (list of (reranker_score, ScoredPoint))
         5. Aggregated PatentSearchResult list
         """
@@ -97,9 +109,9 @@ class SemanticSearch:
         # (e.g. "applications filed in 2008 by Wyeth") comes back from
         # Query Understanding with semantic_query == "" (see parser.py
         # Rule 9B) - there's nothing meaningful to vector-search or
-        # rerank, and restricting to the VECTOR_TOP_K candidate pool
-        # would wrongly exclude matching patents never picked up by an
-        # embedding of a non-existent topic. Filter the whole
+        # rerank, and restricting to the PATENT_CANDIDATE_TOP_K candidate
+        # pool would wrongly exclude matching patents never picked up by
+        # an embedding of a non-existent topic. Filter the whole
         # collection directly instead.
         if parsed.is_metadata_only:
             return self._search_by_metadata_only(parsed)
@@ -111,18 +123,34 @@ class SemanticSearch:
         query_vector = self.embedder.embed_query(parsed.semantic_query)
 
         # Step 2: Pure semantic vector search - no metadata filter here.
+        # Identifies the top candidate PATENTS only (one representative
+        # best-matching chunk each) - not the chunk pool that gets
+        # filtered/reranked next.
         qdrant_results = self.db.search(query_vector=query_vector)
 
-        # Step 3: Metadata filtering, on the candidates just returned.
+        candidate_patent_ids = list(
+            dict.fromkeys(
+                point.payload.get("patent_id")
+                for point in qdrant_results
+                if point.payload and point.payload.get("patent_id")
+            )
+        )
+
+        # Fetch every chunk belonging to those candidate patents - each
+        # patent's full chunk set, unbounded, not an arbitrary fixed cap
+        # per patent. This is what actually gets filtered and reranked.
+        candidate_chunks = self.db.get_chunks_for_patent_ids(candidate_patent_ids)
+
+        # Step 3: Metadata filtering, on the candidates just fetched.
         # Only patents that are already semantic candidates ever get
         # their metadata looked up - never the whole "patents" collection.
         if parsed.metadata_filters:
             filtered_results = self._filter_candidates_by_metadata(
-                qdrant_results,
+                candidate_chunks,
                 parsed.metadata_filters,
             )
         else:
-            filtered_results = qdrant_results
+            filtered_results = candidate_chunks
 
         # Step 4: Rerank whatever survived filtering.
         reranked_results = self.reranker.rerank(
@@ -130,8 +158,12 @@ class SemanticSearch:
             results=filtered_results,
         )
 
-        # Step 5: Aggregate chunks into patent-level results
-        patent_results = self._aggregate_by_patent(reranked_results)
+        # Step 5: Aggregate chunks into patent-level results, then keep
+        # only the top FINAL_TOP_K patents by patent score. Truncating
+        # here (post-aggregation) rather than on the chunk list means a
+        # patent survives on its best chunk regardless of how many other
+        # patents' chunks outscored its weaker ones.
+        patent_results = self._aggregate_by_patent(reranked_results)[:FINAL_TOP_K]
 
         return parsed, qdrant_results, filtered_results, reranked_results, patent_results
 
@@ -158,7 +190,7 @@ class SemanticSearch:
         "applications filed in 2008 by Wyeth".
 
         Filters the whole "patents" collection directly instead of the
-        VECTOR_TOP_K vector-search candidate pool, fetches every chunk
+        PATENT_CANDIDATE_TOP_K vector-search candidate pool, fetches every chunk
         belonging to the matching patents, and aggregates them straight
         into PatentSearchResult - no embedding, no vector search, no
         reranker, since there's no query text to score chunks against.
