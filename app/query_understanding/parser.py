@@ -387,24 +387,31 @@ class QueryUnderstanding:
             if not isinstance(item, dict) or "value" not in item:
                 continue
 
+            # Defends against an observed remote-LLM glitch: on a
+            # 2nd-or-later filter in the array, the "field" or
+            # "operator" key occasionally comes back corrupted (e.g.
+            # "", ".field", "=") while its intended value (the real
+            # field code / operator) survives under that stray key.
+            # Recover missing expected keys from whatever stray keys
+            # are left, in order - resolve_filter still validates the
+            # recovered field code against CODE_TO_FIELD, so a
+            # genuinely malformed item is dropped either way.
+            stray_values = [
+                v for k, v in item.items() if k not in ("field", "operator", "value")
+            ]
+
             field_code = item.get("field")
-            if field_code is None:
-                # Defends against an observed remote-LLM glitch: on a
-                # 2nd-or-later filter in the array, the "field" key
-                # itself occasionally comes back corrupted (e.g. "" or
-                # ".field") while its value (the actual field code)
-                # survives intact. Recover it from the one stray key
-                # that isn't "operator"/"value" - resolve_filter still
-                # validates it against CODE_TO_FIELD below, so a
-                # genuinely malformed item is dropped either way.
-                stray_keys = [k for k in item if k not in ("operator", "value")]
-                if len(stray_keys) == 1:
-                    field_code = item.get(stray_keys[0])
+            if field_code is None and stray_values:
+                field_code = stray_values.pop(0)
 
             if field_code is None:
                 continue
 
-            operator = item.get("operator", "equals")
+            operator = item.get("operator")
+            if operator is None and stray_values:
+                operator = stray_values.pop(0)
+            operator = operator or "equals"
+
             value = item["value"]
 
             candidate_filters.append(
