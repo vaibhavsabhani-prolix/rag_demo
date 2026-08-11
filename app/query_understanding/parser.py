@@ -765,11 +765,21 @@ RULE 9B — QUERIES WITH NO REAL SEMANTIC CONTENT
 ============================================================
 
 If a query is ENTIRELY metadata filters with no actual invention or
-topic, set semantic_query to null - never filler like "patent" or "find".
+topic, set semantic_query to null - never filler like "patent",
+"patents", "patent applications", or "find". This applies even when
+the query is phrased as a question ("which patents...", "what
+applications...") or strings several filters together with "and" -
+the grammatical wrapper isn't a topic either.
 
 Example:
 "Applications filed in 2011 where the applicant is Pfizer." ->
 {{"semantic_query": null, "filters": [{{"field": "AY", "operator": "equals", "value": "2011"}}, {{"field": "AAPS", "operator": "contains", "value": "Pfizer"}}]}}
+
+Example:
+"Which patent applications by Pfizer are still active and have been filed but not yet granted?" ->
+{{"semantic_query": null, "filters": [{{"field": "AAPS", "operator": "contains", "value": "Pfizer"}}, {{"field": "ALD", "operator": "equals", "value": "Alive"}}, {{"field": "LST", "operator": "equals", "value": "Filed"}}]}}
+("still active" -> ALD Alive, "filed but not yet granted" -> LST Filed
+- these describe filters, not a search topic.)
 
 A query with a real topic, like "bottle designs patented by Coca Cola",
 still keeps semantic_query non-empty ("bottle designs") - see Rule 9.

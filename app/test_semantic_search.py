@@ -199,30 +199,36 @@ def run_search(search: SemanticSearch, query: str):
 
     # -------------------------------------------------------------
     # Table 2: Reranked Results (Cross-Encoder Reranking)
+    #
+    # Skipped for metadata-only queries too - there's no semantic_query
+    # to rerank against, so reranked_results just holds the raw filter
+    # matches with a placeholder score (see
+    # SemanticSearch._search_by_metadata_only), not an actual reranking.
     # -------------------------------------------------------------
-    rerank_headers = ["#", "Rerank Score", "Qdrant Rank", "Patent ID", "Chunk ID", "Section", "Text Preview"]
-    rerank_rows = []
+    if not parsed.is_metadata_only:
+        rerank_headers = ["#", "Rerank Score", "Qdrant Rank", "Patent ID", "Chunk ID", "Section", "Text Preview"]
+        rerank_rows = []
 
-    for idx, (score, point) in enumerate(reranked_results, start=1):
-        payload = point.payload or {}
-        orig_rank = qdrant_rank_map.get(point.id, "N/A")
-        qdrant_rank_str = f"#{orig_rank}" if isinstance(orig_rank, int) else str(orig_rank)
+        for idx, (score, point) in enumerate(reranked_results, start=1):
+            payload = point.payload or {}
+            orig_rank = qdrant_rank_map.get(point.id, "N/A")
+            qdrant_rank_str = f"#{orig_rank}" if isinstance(orig_rank, int) else str(orig_rank)
 
-        text_snippet = payload.get("text", "").replace("\n", " ").strip()
-        if len(text_snippet) > 45:
-            text_snippet = text_snippet[:42] + "..."
+            text_snippet = payload.get("text", "").replace("\n", " ").strip()
+            if len(text_snippet) > 45:
+                text_snippet = text_snippet[:42] + "..."
 
-        rerank_rows.append([
-            str(idx),
-            f"{score:.4f}",
-            qdrant_rank_str,
-            str(payload.get("patent_id", "")),
-            str(payload.get("chunk_id", "")),
-            str(payload.get("section", "")),
-            text_snippet,
-        ])
+            rerank_rows.append([
+                str(idx),
+                f"{score:.4f}",
+                qdrant_rank_str,
+                str(payload.get("patent_id", "")),
+                str(payload.get("chunk_id", "")),
+                str(payload.get("section", "")),
+                text_snippet,
+            ])
 
-    print_ascii_table("Table 2: Final Reranked Results (Cross-Encoder Reranker)", rerank_headers, rerank_rows)
+        print_ascii_table("Table 2: Final Reranked Results (Cross-Encoder Reranker)", rerank_headers, rerank_rows)
 
     if not results:
         print("\nNo matching patents found.")
