@@ -761,6 +761,20 @@ Correct:
 "semantic_query": "pressure control in bottles"
 
 ============================================================
+RULE 9B — QUERIES WITH NO REAL SEMANTIC CONTENT
+============================================================
+
+If a query is ENTIRELY metadata filters with no actual invention or
+topic, set semantic_query to null - never filler like "patent" or "find".
+
+Example:
+"Applications filed in 2011 where the applicant is Pfizer." ->
+{{"semantic_query": null, "filters": [{{"field": "AY", "operator": "equals", "value": "2011"}}, {{"field": "AAPS", "operator": "contains", "value": "Pfizer"}}]}}
+
+A query with a real topic, like "bottle designs patented by Coca Cola",
+still keeps semantic_query non-empty ("bottle designs") - see Rule 9.
+
+============================================================
 RULE 10 — DO NOT INVENT FILTERS
 ============================================================
 
@@ -833,6 +847,9 @@ Before producing the JSON, internally verify:
 8. Legal Status and Legal State are not swapped.
 9. Inventor/creator is not confused with assignee.
 10. Year ranges produce two boundary filters.
+11. If the query is purely metadata filters with no real topic,
+    semantic_query is "" - not "patent", "patents", "find", or any
+    other filler word.
 
 ============================================================
 EXAMPLES
@@ -1241,16 +1258,32 @@ No extra text.
                 original_query=original, semantic_query=query, metadata_filters=[]
             )
 
-        semantic_query = str(llm_res.get("semantic_query") or query).strip() or query
+        raw_semantic = str(llm_res.get("semantic_query") or "").strip()
 
         candidate_filters: list[CandidateFilter] = []
         metadata_filters: list[MetadataFilter] = []
 
         for item in llm_res.get("filters", []) or []:
-            if not isinstance(item, dict) or "field" not in item or "value" not in item:
+            if not isinstance(item, dict) or "value" not in item:
                 continue
 
-            field_code = item["field"]
+            field_code = item.get("field")
+            if field_code is None:
+                # Defends against an observed remote-LLM glitch: on a
+                # 2nd-or-later filter in the array, the "field" key
+                # itself occasionally comes back corrupted (e.g. "" or
+                # ".field") while its value (the actual field code)
+                # survives intact. Recover it from the one stray key
+                # that isn't "operator"/"value" - resolve_filter still
+                # validates it against CODE_TO_FIELD below, so a
+                # genuinely malformed item is dropped either way.
+                stray_keys = [k for k in item if k not in ("operator", "value")]
+                if len(stray_keys) == 1:
+                    field_code = item.get(stray_keys[0])
+
+            if field_code is None:
+                continue
+
             operator = item.get("operator", "equals")
             value = item["value"]
 
@@ -1261,6 +1294,13 @@ No extra text.
             resolved = resolve_filter(field_code, operator, value)
             if resolved is not None:
                 metadata_filters.append(resolved)
+
+        # An empty semantic_query is the LLM's deliberate "this query is
+        # pure metadata filters, no real topic" signal (see prompt Rule
+        # 9B) - trust it only if it actually produced filters, otherwise
+        # an empty semantic_query would mean "search for nothing" and we
+        # fall back to the raw query text instead.
+        semantic_query = raw_semantic if (raw_semantic or metadata_filters) else query
 
         return ParsedQuery(
             original_query=original,

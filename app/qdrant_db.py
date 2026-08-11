@@ -14,11 +14,15 @@ instead of once per chunk, which matters at 180M-patent scale where a
 single patent can produce dozens of chunks.
 """
 
+import types
 import uuid
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    FieldCondition,
+    Filter,
+    MatchAny,
     PointStruct,
     VectorParams,
 )
@@ -244,12 +248,15 @@ class QdrantDB:
         }
 
     # ==============================================================
-    # Metadata-first filtering (DEPRECATED)
+    # Metadata-first filtering
     #
-    # The active pipeline uses post-vector metadata filtering
-    # (SemanticSearch._filter_candidates_by_metadata) instead.
-    # This method is retained for backward compatibility but is
-    # NOT called in the active search flow.
+    # Used when a query has metadata_filters but no real semantic
+    # content to vector-search with (see
+    # SemanticSearch._is_semantic_query_meaningless) - post-vector
+    # filtering (SemanticSearch._filter_candidates_by_metadata) can
+    # only ever match patents within the VECTOR_TOP_K candidate pool,
+    # which is the wrong tool when the query is purely a metadata
+    # lookup ("applications filed in 2008 by Wyeth").
     # ==============================================================
 
     def filter_patent_ids(
@@ -257,14 +264,8 @@ class QdrantDB:
         filters: list[MetadataFilter],
     ) -> list[str]:
         """
-        **DEPRECATED** — Not used in the active search pipeline.
-
-        The active architecture performs metadata filtering AFTER vector
-        search (see SemanticSearch._filter_candidates_by_metadata).
-
-        This method scrolls the entire 'patents' collection to find
-        patent_ids satisfying *filters*. Retained for backward
-        compatibility only.
+        Scroll the entire 'patents' collection to find every patent_id
+        satisfying *filters* - not limited to any prior candidate pool.
         """
 
         if not filters:
@@ -305,6 +306,52 @@ class QdrantDB:
 
         return matched_ids
 
+    def get_chunks_for_patent_ids(self, patent_ids: list[str]) -> list:
+        """
+        Fetch every chunk belonging to *patent_ids* directly from the
+        chunks collection, via a native Qdrant filter on the safe
+        "patent_id" field - no vector search involved.
+
+        Companion to filter_patent_ids() for metadata-only queries:
+        once the matching patent_ids are known, this retrieves their
+        full chunk set (unbounded by VECTOR_TOP_K) so the existing
+        reranker/aggregation code can run unchanged.
+        """
+
+        if not patent_ids:
+            return []
+
+        scroll_filter = Filter(
+            must=[FieldCondition(key="patent_id", match=MatchAny(any=patent_ids))]
+        )
+
+        chunks: list = []
+        next_offset = None
+
+        while True:
+            records, next_offset = self.client.scroll(
+                collection_name=CHUNKS_COLLECTION_NAME,
+                scroll_filter=scroll_filter,
+                limit=256,
+                offset=next_offset,
+                with_payload=True,
+            )
+
+            # Scroll returns plain Records (no .score - there was no
+            # ranking involved). Wrap as ScoredPoint-like objects so the
+            # existing reranker/aggregation/diagnostics code, which all
+            # expect a `.score` alongside `.id`/`.payload`, works
+            # unchanged. score=1.0 marks "confirmed metadata match",
+            # not a similarity value.
+            chunks.extend(
+                types.SimpleNamespace(id=record.id, score=1.0, payload=record.payload)
+                for record in records
+            )
+
+            if next_offset is None:
+                break
+
+        return chunks
 
     # ==============================================================
     # Search

@@ -93,6 +93,17 @@ class SemanticSearch:
         # Step 0: Query Understanding
         parsed = self.query_understanding.parse(query)
 
+        # A query that is purely metadata filters with no real topic
+        # (e.g. "applications filed in 2008 by Wyeth") comes back from
+        # Query Understanding with semantic_query == "" (see parser.py
+        # Rule 9B) - there's nothing meaningful to vector-search or
+        # rerank, and restricting to the VECTOR_TOP_K candidate pool
+        # would wrongly exclude matching patents never picked up by an
+        # embedding of a non-existent topic. Filter the whole
+        # collection directly instead.
+        if not parsed.semantic_query.strip() and parsed.metadata_filters:
+            return self._search_by_metadata_only(parsed)
+
         # Step 1: Embed the semantic portion only - metadata-filter
         # phrases were already split off by Query Understanding, so
         # neither embedding nor reranking ever sees e.g. "US" or
@@ -133,6 +144,42 @@ class SemanticSearch:
         """
         _, _, _, _, patent_results = self.search_detailed(query)
         return patent_results
+
+    # ==============================================================
+    # Metadata-only search (no topic to embed, vector-search, or rerank)
+    # ==============================================================
+
+    def _search_by_metadata_only(
+        self, parsed: ParsedQuery
+    ) -> tuple[ParsedQuery, list, list, list[tuple[float, object]], list[PatentSearchResult]]:
+        """
+        Handle a query whose semantic_query came back empty (see
+        parser.py Rule 9B) - it's purely metadata filters, e.g.
+        "applications filed in 2008 by Wyeth".
+
+        Filters the whole "patents" collection directly instead of the
+        VECTOR_TOP_K vector-search candidate pool, fetches every chunk
+        belonging to the matching patents, and aggregates them straight
+        into PatentSearchResult - no embedding, no vector search, no
+        reranker, since there's no query text to score chunks against.
+        """
+
+        matching_patent_ids = self.db.filter_patent_ids(parsed.metadata_filters)
+
+        if not matching_patent_ids:
+            return parsed, [], [], [], []
+
+        chunks = self.db.get_chunks_for_patent_ids(matching_patent_ids)
+
+        # chunks already carry a placeholder .score (see
+        # QdrantDB.get_chunks_for_patent_ids) so they slot straight into
+        # the (score, chunk) shape _aggregate_by_patent expects from the
+        # reranker, without actually reranking anything.
+        reranked_results = [(chunk.score, chunk) for chunk in chunks]
+
+        patent_results = self._aggregate_by_patent(reranked_results)
+
+        return parsed, chunks, chunks, reranked_results, patent_results
 
     # ==============================================================
     # Metadata filtering (post-vector-search, pre-rerank)
