@@ -15,7 +15,7 @@ Displays the full pipeline at each stage:
     Final Patents
 
 Run with:
-    ./.venv/bin/python -m app.test_semantic_search "your query here"
+    ./.venv/bin/python -m app._tests_.test_semantic_search "your query here"
 """
 
 import sys

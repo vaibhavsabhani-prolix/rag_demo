@@ -1,20 +1,17 @@
-from app.qdrant_db import (
-    get_qdrant_client,
-    create_collection,
-)
+from app.qdrant_db import QdrantDB
 
 
 def main():
 
-    client = get_qdrant_client()
+    db = QdrantDB()
 
     print("\nConnected to Qdrant successfully!\n")
 
-    create_collection()
+    db.create_collections()
 
     print("\nAvailable Collections:\n")
 
-    collections = client.get_collections()
+    collections = db.client.get_collections()
 
     for collection in collections.collections:
         print(f"- {collection.name}")

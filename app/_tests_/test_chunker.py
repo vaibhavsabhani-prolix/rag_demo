@@ -5,7 +5,6 @@ from app.parser import PatentParser
 
 
 def main():
-
     parser = PatentParser()
 
     document = parser.load_patent(
@@ -13,25 +12,17 @@ def main():
     )
 
     chunker = PatentChunker()
-
     chunks = chunker.split(document)
 
     print("=" * 60)
-
     print(f"Total Chunks : {len(chunks)}")
-
     print("=" * 60)
 
     for chunk in chunks:
-
         print(f"\nChunk ID : {chunk.chunk_id}")
-
         print(f"Patent ID : {chunk.patent_id}")
-
         print("\nText:\n")
-
         print(chunk.text)
-
         print("-" * 60)
 
 

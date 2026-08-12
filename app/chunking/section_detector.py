@@ -186,8 +186,6 @@ class SectionDetector:
                 if current_lines:
                     content = "".join(current_lines).strip()
                     if content:
-                        # Find the actual content boundaries within section text
-                        raw_section = "".join(current_lines)
                         # start_offset = where this section's content starts
                         # end_offset = where it ends (exclusive)
                         content_start = section_content_start

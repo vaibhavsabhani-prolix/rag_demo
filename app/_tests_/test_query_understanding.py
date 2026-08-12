@@ -2,7 +2,7 @@
 Test cases for LLM-based Query Understanding & FIELD_MAPPING resolution.
 
 Run with:
-    ./.venv/bin/python -m app.test_query_understanding
+    ./.venv/bin/python -m app._tests_.test_query_understanding
 """
 
 import sys
