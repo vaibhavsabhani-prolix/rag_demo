@@ -158,22 +158,6 @@ class QdrantDB:
     # Chunk insert
     # ==============================================================
 
-    def insert(self, chunk: PatentChunk):
-        """
-        Insert a single chunk.
-        """
-
-        point = PointStruct(
-            id=chunk.point_id,
-            vector=chunk.vector,
-            payload=self._build_chunk_payload(chunk),
-        )
-
-        self.client.upsert(
-            collection_name=CHUNKS_COLLECTION_NAME,
-            points=[point],
-        )
-
     def insert_batch(self, chunks: list[PatentChunk]):
         """
         Insert multiple chunks in one request.

@@ -11,32 +11,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import Enum, auto
 
 from app.chunking.token_counter import TokenCounter
 from app.config import MAX_CHUNK_TOKENS
-
 
 # ==================================================================
 # Semantic unit types
 # ==================================================================
 
-class UnitType(Enum):
-    """Type tag for each semantic unit."""
-
-    PARAGRAPH = auto()
-    SENTENCE = auto()
-    WORD_FRAGMENT = auto()
-
 
 @dataclass
 class SemanticUnit:
-    """
-    A single indivisible piece of text produced by the splitter.
-    """
-
     text: str
-    unit_type: UnitType
     token_count: int
 
 
@@ -56,8 +42,8 @@ class SemanticUnit:
 # patterns, then require [.!?] followed by whitespace.
 
 _SENTENCE_SPLIT_RE = re.compile(
-    r"(?<!"        # negative lookbehind group start
-    r"\b[A-Z]"     # single capital letter (A. B. C.)
+    r"(?<!"  # negative lookbehind group start
+    r"\b[A-Z]"  # single capital letter (A. B. C.)
     r")"
     r"(?<!"
     r"\b[A-Z][a-z]"  # two-letter abbreviation (Dr. Mr. Ms. Co. No.)
@@ -66,19 +52,20 @@ _SENTENCE_SPLIT_RE = re.compile(
     r"\b[A-Z][a-z][a-z]"  # three-letter abbreviation (Fig. Inc. Ltd.)
     r")"
     r"(?<!"
-    r"\d"          # digit before dot (3.14, 1.2)
+    r"\d"  # digit before dot (3.14, 1.2)
     r")"
     r"(?<!"
-    r"\.\."        # ellipsis (...)
+    r"\.\."  # ellipsis (...)
     r")"
     r"(?<=[.!?])"  # positive lookbehind: must end with . ! ?
-    r"\s+"         # consume the whitespace separator
+    r"\s+"  # consume the whitespace separator
 )
 
 
 # ==================================================================
 # Splitter
 # ==================================================================
+
 
 class SemanticUnitSplitter:
     """
@@ -89,7 +76,7 @@ class SemanticUnitSplitter:
     1. Split content on double-newlines → paragraphs.
     2. If only one paragraph, split on sentence boundaries.
     3. If a sentence exceeds *max_tokens*, split by words into
-       token-bounded fragments.
+        token-bounded fragments.
     """
 
     def __init__(
@@ -170,7 +157,6 @@ class SemanticUnitSplitter:
                 units.append(
                     SemanticUnit(
                         text=para,
-                        unit_type=UnitType.PARAGRAPH,
                         token_count=token_count,
                     )
                 )
@@ -218,7 +204,6 @@ class SemanticUnitSplitter:
                 units.append(
                     SemanticUnit(
                         text=sentence,
-                        unit_type=UnitType.SENTENCE,
                         token_count=token_count,
                     )
                 )
@@ -261,7 +246,6 @@ class SemanticUnitSplitter:
                     units.append(
                         SemanticUnit(
                             text=fragment_text,
-                            unit_type=UnitType.WORD_FRAGMENT,
                             token_count=self.token_counter.count(fragment_text),
                         )
                     )
@@ -275,7 +259,6 @@ class SemanticUnitSplitter:
             units.append(
                 SemanticUnit(
                     text=fragment_text,
-                    unit_type=UnitType.WORD_FRAGMENT,
                     token_count=self.token_counter.count(fragment_text),
                 )
             )

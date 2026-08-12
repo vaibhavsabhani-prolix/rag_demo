@@ -21,7 +21,7 @@ def ingest_directory(directory: str):
     embedder = Embedder()
     db = QdrantDB()
 
-    txt_files = sorted(Path(directory).glob("*.txt"))[:5]
+    txt_files = sorted(Path(directory).glob("*.txt"))[:1000]
 
     print(f"\nFound {len(txt_files)} patent files.\n")
 
@@ -106,4 +106,4 @@ def ingest_directory(directory: str):
 
 if __name__ == "__main__":
 
-    ingest_directory("us-patent")
+    ingest_directory("patents-processed")

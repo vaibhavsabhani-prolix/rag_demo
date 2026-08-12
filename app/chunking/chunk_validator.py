@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-from app.chunking.token_counter import TokenCounter
+
 from app.config import (
     VALIDATOR_DEGENERATE_OVERLAP_THRESHOLD,
     VALIDATOR_HEADING_ONLY_MAX_WORDS,
@@ -40,7 +40,6 @@ class ChunkValidator:
 
     def __init__(
         self,
-        token_counter: TokenCounter,
         *,
         normalize_whitespace: bool = VALIDATOR_NORMALIZE_WHITESPACE,
         reject_heading_only: bool = VALIDATOR_REJECT_HEADING_ONLY,
@@ -50,8 +49,6 @@ class ChunkValidator:
         degenerate_overlap_threshold: float = VALIDATOR_DEGENERATE_OVERLAP_THRESHOLD,
         heading_only_max_words: int = VALIDATOR_HEADING_ONLY_MAX_WORDS,
     ) -> None:
-
-        self.token_counter = token_counter
 
         # Config flags for optional checks
         self._normalize_whitespace = normalize_whitespace
@@ -223,9 +220,7 @@ class ChunkValidator:
         Fast content hash for duplicate detection.
         """
 
-        return hashlib.sha256(
-            text.encode("utf-8")
-        ).hexdigest()
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _normalize(text: str) -> str:

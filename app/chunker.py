@@ -23,7 +23,6 @@ content from another section.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from app.chunking.token_counter import TokenCounter
@@ -63,7 +62,6 @@ class PatentChunker:
         debug_dir: str = DEBUG_CHUNKS_DIR,
     ) -> None:
 
-        self._max_tokens = max_tokens
         self._debug = debug
         self._debug_dir = debug_dir
 
@@ -79,13 +77,10 @@ class PatentChunker:
         )
 
         self.chunk_builder = ChunkBuilder(
-            token_counter=self.token_counter,
             max_tokens=max_tokens,
         )
 
-        self.chunk_validator = ChunkValidator(
-            token_counter=self.token_counter,
-        )
+        self.chunk_validator = ChunkValidator()
 
     # ==============================================================
     # Main entry point
@@ -230,46 +225,3 @@ class PatentChunker:
     # ==============================================================
     # Statistics
     # ==============================================================
-
-    def print_statistics(
-        self,
-        chunks: list[PatentChunk],
-    ) -> None:
-        """
-        Print chunk statistics.
-        """
-
-        if not chunks:
-            print("No chunks created.")
-            return
-
-        token_sizes = [c.token_count for c in chunks]
-        word_sizes = [c.word_count for c in chunks]
-
-        # Collect unique sections
-        sections = {c.section for c in chunks}
-
-        print()
-        print("=" * 60)
-        print("Chunk Statistics")
-        print("=" * 60)
-        print(f"  Total Chunks    : {len(chunks)}")
-        print(f"  Sections Found  : {len(sections)}")
-        print()
-        print("  Token Counts:")
-        print(f"    Largest       : {max(token_sizes)}")
-        print(f"    Smallest      : {min(token_sizes)}")
-        print(f"    Average       : {sum(token_sizes) // len(token_sizes)}")
-        print()
-        print("  Word Counts:")
-        print(f"    Largest       : {max(word_sizes)}")
-        print(f"    Smallest      : {min(word_sizes)}")
-        print(f"    Average       : {sum(word_sizes) // len(word_sizes)}")
-        print()
-        print("  Sections:")
-
-        for section_name in sorted(sections):
-            count = sum(1 for c in chunks if c.section == section_name)
-            print(f"    {section_name}: {count} chunks")
-
-        print("=" * 60)

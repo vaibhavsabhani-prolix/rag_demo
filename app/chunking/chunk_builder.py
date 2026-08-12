@@ -12,14 +12,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.chunking.token_counter import TokenCounter
 from app.chunking.semantic_unit_splitter import SemanticUnit
 from app.config import MAX_CHUNK_TOKENS
-
 
 # ==================================================================
 # Built chunk
 # ==================================================================
+
 
 @dataclass
 class BuiltChunk:
@@ -37,6 +36,7 @@ class BuiltChunk:
 # Builder
 # ==================================================================
 
+
 class ChunkBuilder:
     """
     Token-aware greedy chunk builder.
@@ -52,11 +52,9 @@ class ChunkBuilder:
 
     def __init__(
         self,
-        token_counter: TokenCounter,
         max_tokens: int = MAX_CHUNK_TOKENS,
     ) -> None:
 
-        self.token_counter = token_counter
         self.max_tokens = max_tokens
 
     # ==============================================================
