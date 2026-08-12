@@ -80,9 +80,9 @@ class SectionDetector:
     # ==============================================================
 
     def is_heading(self, line: str) -> bool:
-        """
-        Return True if *line* looks like a section heading.
-        """
+        # all the heading condtions
+        #   1. heading length is more then max_heading_length then its not heading
+        #   2. heading word count is more then max_heading_words then its not heading
 
         stripped = line.strip()
 
@@ -99,7 +99,7 @@ class SectionDetector:
             return False
 
         # ---- Pattern 1: colon-terminated short line ----
-        if stripped.endswith(":") and word_count <= self.max_heading_words:
+        if stripped.endswith(":"):
             return True
 
         # ---- Pattern 2: numbered heading ----
