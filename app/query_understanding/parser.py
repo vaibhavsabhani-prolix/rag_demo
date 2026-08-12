@@ -237,8 +237,8 @@ class QueryUnderstanding:
                         "content": prompt,
                     }
                 ],
-                temperature=0,
-                max_tokens=512,
+                # temperature=0,
+                # max_tokens=512,
                 response_format={"type": "json_object"},
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
