@@ -147,9 +147,15 @@ FINAL_TOP_K = 10
 QUERY_LLM_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
 
-QUERY_LLM_REMOTE_BASE_URL = "http://192.168.2.219:8081/v1"
+# True: use the remote LLM (QUERY_LLM_REMOTE_MODEL). False: use the local
+# LLM (QUERY_LLM_MODEL) instead.
+USE_REMOTE_LLM = True
 
-QUERY_LLM_REMOTE_MODEL = "Qwen3.6-35B-A3B-MXFP4-CRACK-MTP"
+# QUERY_LLM_REMOTE_BASE_URL = "http://192.168.2.219:8081/v1"
+QUERY_LLM_REMOTE_BASE_URL = "http://192.168.2.213:8000/v1"
+
+# QUERY_LLM_REMOTE_MODEL = "Qwen3.6-35B-A3B-MXFP4-CRACK-MTP"
+QUERY_LLM_REMOTE_MODEL = "nvidia/Qwen3.6-35B-A3B-NVFP4"
 
 # The server does not require a real API key.
 # The OpenAI client still expects a value.
