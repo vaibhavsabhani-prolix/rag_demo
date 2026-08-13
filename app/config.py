@@ -112,11 +112,6 @@ PATENT_DIRECTORY = "patents-processed"
 
 RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"
 
-# Chunks scored per batch on the reranker's GPU/MPS device. Caps peak
-# memory instead of scoring every candidate chunk in one giant batch,
-# which can exhaust Apple Silicon's shared MPS memory.
-RERANKER_BATCH_SIZE = 16
-
 # Number of distinct PATENTS retrieved as candidates from Qdrant.
 #
 # Vector search is grouped by patent_id (Qdrant group-by search), so

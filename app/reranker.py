@@ -13,7 +13,7 @@ This module was introduced in sentence-transformers 5.4.0.
 
 from sentence_transformers import CrossEncoder
 
-from app.config import RERANKER_BATCH_SIZE, RERANKER_MODEL
+from app.config import RERANKER_MODEL
 
 
 class Reranker:
@@ -53,7 +53,7 @@ class Reranker:
             for result in results
         ]
 
-        scores = self.model.predict(pairs, batch_size=RERANKER_BATCH_SIZE)
+        scores = self.model.predict(pairs)
 
         ranked = sorted(
             zip(scores, results),
