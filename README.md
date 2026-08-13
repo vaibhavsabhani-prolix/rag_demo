@@ -236,6 +236,14 @@ Or pass a search query directly as a command-line argument:
 ./venv/bin/python -m app.test_semantic_search "Microdrilling"
 ```
 
+### 4.1 Run the Search UI
+A browser-based search UI - a search bar and a results table showing every
+matching chunk's full text (no truncation). Search-only, no
+ingestion/admin controls:
+```bash
+./venv/bin/streamlit run app/ui/search_app.py
+```
+
 ### 5. Running Component Verification Tests
 * Test Qdrant database connection:
   ```bash

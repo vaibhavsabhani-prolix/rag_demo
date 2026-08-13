@@ -7,3 +7,4 @@ tqdm==4.67.1
 openai>=2.0.0
 requests>=2.32.0
 pycountry
+streamlit>=1.38.0
