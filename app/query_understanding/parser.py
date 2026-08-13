@@ -48,7 +48,16 @@ _ORG_FIELDS = {
     "assignee_applicant_standardized_with_address",
 }
 
-_ALLOWED_OPERATORS = {"equals", "contains", "gt", "gte", "lt", "lte"}
+_ALLOWED_OPERATORS = {
+    "equals",
+    "contains",
+    "not_equals",
+    "not_contains",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+}
 
 
 def resolve_filter(field_code: Any, operator: Any, value: Any) -> MetadataFilter | None:

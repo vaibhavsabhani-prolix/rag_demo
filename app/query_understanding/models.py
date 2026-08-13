@@ -33,9 +33,14 @@ class MetadataFilter:
     field:    Canonical snake_case field name. Must be a key in
               FIELD_MAPPING (see field_mapping.py) - the pipeline never
               accepts a field it doesn't recognize.
-    operator: One of "equals", "contains", "gt", "gte", "lt", "lte" -
-              restricted to what the field's type supports (see
-              field_mapping.py's per-field "operators" list).
+    operator: One of "equals", "contains", "not_equals", "not_contains",
+              "gt", "gte", "lt", "lte" - restricted to what the field's
+              type supports (see field_mapping.py's per-field
+              "operators" list). "not_equals"/"not_contains" express an
+              exclusion ("not from China", "excluding Coca Cola") -
+              gt/gte/lt/lte need no negated variant since their
+              opposite is just another comparison operator
+              (e.g. "not after 2018" is "lte 2018").
     value:    Normalized filter value (see normalizer.py).
     """
 

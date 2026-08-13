@@ -53,11 +53,15 @@ Return ONLY valid JSON:
   "filters": [
     {{
       "field": "FIELD_CODE",
-      "operator": "equals|contains|gt|gte|lt|lte",
+      "operator": "equals|contains|not_equals|not_contains|gt|gte|lt|lte",
       "value": "VALUE"
     }}
   ]
 }}
+
+"not_equals" and "not_contains" are EXCLUSIONS - the user wants patents
+that do NOT match the value (e.g. "not from China" → operator
+"not_contains"). See RULE 3B below.
 
 If there are no metadata filters:
 
@@ -680,6 +684,29 @@ Examples:
 "owned by Coca Cola"
 "priority country China"
 
+not_equals / not_contains:
+The exclusion counterparts of equals/contains - use when the user
+wants patents that do NOT have a given value, for ANY field (country,
+assignee, inventor, legal status, patent type, etc.), not just country.
+
+Recognize exclusion from phrasing such as:
+"not from X", "not X", "excluding X", "except X", "other than X",
+"anything but X", "non-X", "should not be X", "must not be X".
+
+Examples:
+"patent is not from China"
+→ AC not_contains "China"
+
+"excluding patents owned by Coca Cola"
+→ CAN_EN (or the matching assignee field) not_contains "Coca Cola"
+
+"legal status other than Filed"
+→ LST not_equals "Filed"
+
+Do NOT use not_equals/not_contains for a date/number range exclusion
+("not after 2018", "not before 2010") - use the opposite comparison
+operator instead (gt/gte/lt/lte - see RULE 3B).
+
 gt:
 Use for "after", "greater than", "later than".
 
@@ -713,6 +740,22 @@ Example:
 "published up to 2010"
 
 → PY lte 2010
+
+============================================================
+RULE 3B — EXCLUDING A DATE/NUMBER RANGE
+============================================================
+
+gt/gte/lt/lte have no "not_" counterpart - a range exclusion is just
+the opposite comparison, so re-express it directly:
+
+"not after 2018" / "not later than 2018" → lte 2018
+"not before 2010" / "not earlier than 2010" → gte 2010
+"not from 2005 onward" → lt 2005
+
+Only fall back to not_equals when the user excludes a single exact
+value rather than a range:
+
+"published year is not 2008" → PY not_equals 2008
 
 ============================================================
 RULE 4 — YEAR RANGES
@@ -1174,7 +1217,7 @@ Before producing the JSON, internally verify:
 1. Every filter has a "field".
 2. Every field is one of the supplied field codes.
 3. Every operator is one of:
-   equals, contains, gt, gte, lt, lte.
+   equals, contains, not_equals, not_contains, gt, gte, lt, lte.
 4. The operator makes sense for the selected field.
 5. Every value came from the user's query.
 6. All clearly expressed filters have been extracted.
@@ -1189,6 +1232,10 @@ Before producing the JSON, internally verify:
     any other filler word.
 13. If uncertain between multiple possible metadata fields, prefer
     semantic_query over an incorrect hard metadata filter.
+14. Every exclusion phrase ("not from X", "excluding X", "except X",
+    "other than X") is expressed with "not_equals"/"not_contains" (or
+    the opposite gt/gte/lt/lte for a range), not silently dropped and
+    not left as a plain inclusion filter.
 
 ============================================================
 EXAMPLES

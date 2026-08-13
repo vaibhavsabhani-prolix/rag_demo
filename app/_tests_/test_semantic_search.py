@@ -223,9 +223,13 @@ def run_search(search: SemanticSearch, query: str):
             print()
             print("Additional Matching Chunks:")
             for chunk in additional:
+                snippet = chunk.text.replace("\n", " ").strip()
+                if len(snippet) > 80:
+                    snippet = snippet[:77] + "..."
                 print(f"  Chunk {chunk.chunk_id:4d}  "
                       f"Section: {chunk.section:30s}  "
-                      f"Score: {chunk.score:.4f}")
+                      f"Score: {chunk.score:.4f}  "
+                      f"Preview: {snippet}")
 
         print()
         print("Preview:")

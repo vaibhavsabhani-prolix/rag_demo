@@ -110,7 +110,20 @@ PATENT_DIRECTORY = "patents-processed"
 # Reranker Configuration
 # ==========================
 
-RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"
+# Base URL of the remote reranking server (OpenAI/TEI-style /rerank endpoint).
+RERANKER_REMOTE_BASE_URL = "http://192.168.2.213:8001"
+
+# Model name the remote reranking server expects.
+RERANKER_REMOTE_MODEL = "Qwen/Qwen3-Reranker-8B"
+
+# The server does not require a real API key.
+RERANKER_REMOTE_API_KEY = "EMPTY"
+
+# Seconds to wait for the remote reranker's response. A single call can
+# carry every chunk from up to PATENT_CANDIDATE_TOP_K patents (unbounded
+# per patent), which an 8B reranker can take well over a minute to score
+# in one batch - so this needs more headroom than a typical HTTP call.
+RERANKER_REQUEST_TIMEOUT = 360.0
 
 # Number of distinct PATENTS retrieved as candidates from Qdrant.
 #
@@ -142,8 +155,9 @@ FINAL_TOP_K = 10
 # code out of the FIELD_MAPPING allowlist instead of confusing similarly
 # -described fields (e.g. "Publication Year" vs "Publication Country
 # Code"). Chosen over 3B/4B: this machine is CPU-only with ~8GB free RAM,
-# shared with the embedder and reranker models - 1.5B (~3GB in bf16) fits
-# safely; 3B/4B would risk OOM/swapping once all three models are loaded.
+# shared with the embedder model - 1.5B (~3GB in bf16) fits safely; 3B/4B
+# would risk OOM/swapping once both models are loaded (the reranker now
+# runs on a remote server, so it no longer competes for local RAM).
 QUERY_LLM_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
 

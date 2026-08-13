@@ -1,32 +1,36 @@
 """
-Qwen Reranker
+Remote Reranker
 
-Uses the official sentence-transformers CrossEncoder API.
+Calls a remotely-hosted reranking server over HTTP instead of loading a
+cross-encoder model locally. Expects a vLLM-style OpenAI-compatible
+``/rerank`` endpoint:
 
-Requires: sentence-transformers >= 5.4.0
-          transformers >= 4.51.0
+    POST {base_url}/rerank
+    {"model": ..., "query": ..., "documents": [...]}
 
-The Qwen3-Reranker is a CausalLM-based reranker that uses a LogitScore
-module (yes/no token logit difference) rather than a classification head.
-This module was introduced in sentence-transformers 5.4.0.
+    -> {"results": [{"index": 0, "relevance_score": 0.98}, ...]}
 """
 
-from sentence_transformers import CrossEncoder
+import requests
 
-from app.config import RERANKER_MODEL
+from app.config import (
+    RERANKER_REMOTE_API_KEY,
+    RERANKER_REMOTE_BASE_URL,
+    RERANKER_REMOTE_MODEL,
+    RERANKER_REQUEST_TIMEOUT,
+)
 
 
 class Reranker:
     """
-    Rerank Qdrant search results using a cross-encoder.
+    Rerank Qdrant search results using a remote reranking server.
     """
 
     def __init__(self):
 
-        self.model = CrossEncoder(
-            RERANKER_MODEL,
-            trust_remote_code=True,
-        )
+        self.base_url = RERANKER_REMOTE_BASE_URL.rstrip("/")
+        self.model = RERANKER_REMOTE_MODEL
+        self.headers = {"Authorization": f"Bearer {RERANKER_REMOTE_API_KEY}"}
 
     def rerank(
         self,
@@ -34,7 +38,7 @@ class Reranker:
         results: list,
     ) -> list[tuple[float, object]]:
         """
-        Rerank Qdrant search results using the cross-encoder.
+        Rerank Qdrant search results using the remote reranker.
 
         Returns every result as a ``(reranker_score, qdrant_result)``
         tuple, sorted by reranker score descending. Not truncated here -
@@ -48,20 +52,28 @@ class Reranker:
         if not results:
             return []
 
-        pairs = [
-            (query, result.payload["text"])
-            for result in results
-        ]
-
-        scores = self.model.predict(pairs)
+        texts = [result.payload["text"] for result in results]
+        print(f"Reranking {len(texts)} candidate chunks for query: {query}")
+        response = requests.post(
+            f"{self.base_url}/rerank",
+            headers=self.headers,
+            json={
+                "model": self.model,
+                "query": query,
+                "documents": texts,
+            },
+            timeout=RERANKER_REQUEST_TIMEOUT,
+        )
+        print(f"Reranker response status code: {response.status_code}")
+        response.raise_for_status()
 
         ranked = sorted(
-            zip(scores, results),
-            key=lambda x: x[0],
+            response.json()["results"],
+            key=lambda item: item["relevance_score"],
             reverse=True,
         )
 
         return [
-            (float(score), result)
-            for score, result in ranked
+            (float(item["relevance_score"]), results[item["index"]])
+            for item in ranked
         ]

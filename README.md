@@ -1,6 +1,6 @@
 # Patent RAG & Semantic Search System
 
-A production-ready, token-aware Patent Retrieval-Augmented Generation (RAG) system built with **Python**, **Qdrant Vector DB**, **Qwen Embedding & Reranker Models**, and **Sentence-Transformers**.
+A production-ready, token-aware Patent Retrieval-Augmented Generation (RAG) system built with **Python**, **Qdrant Vector DB**, **Qwen Embedding Model**, **Sentence-Transformers**, and a **remote reranking server**.
 
 The pipeline handles end-to-end processing of complex technical patent documents: from raw document parsing and multi-stage semantic chunking, through validation, vector embedding, batch indexing, cross-encoder reranking, to patent-level result aggregation and RAG prompt synthesis.
 
@@ -24,7 +24,7 @@ flowchart TD
     subgraph Search_Pipeline ["2. Search & RAG Retrieval Pipeline"]
         J["User Search Query"] --> K["Embed Query (app/embedder.py)"]
         K --> L["Vector Search in Qdrant (Top-50 Chunks)"]
-        L --> M["Cross-Encoder Reranker (Qwen3-Reranker-0.6B)"]
+        L --> M["Remote Reranker (HTTP /rerank endpoint)"]
         M --> N["Patent Aggregation (app/semantic_search.py)"]
         N --> O["PatentSearchResult (Patent-Level Scoring)"]
         O --> P["Prompt Builder (app/prompt_builder.py)"]
@@ -103,11 +103,11 @@ When a user submits a natural language search query:
 
 ---
 
-### Stage 7: Cross-Encoder Reranking (`app/reranker.py`)
-Vector retrieval relies on bi-encoder dot-products. To dramatically increase precision, candidate chunks are reranked using a Cross-Encoder:
+### Stage 7: Remote Reranking (`app/reranker.py`)
+Vector retrieval relies on bi-encoder dot-products. To dramatically increase precision, candidate chunks are reranked by a remotely-hosted cross-encoder server:
 
-* **Model**: `Qwen/Qwen3-Reranker-0.6B` using `sentence-transformers.CrossEncoder`.
-* **Method**: Pairs the query with each candidate chunk text `(query, chunk_text)` and computes cross-attention relevance scores.
+* **Server**: A TEI-style `/rerank` HTTP endpoint, configured via `RERANKER_REMOTE_BASE_URL` / `RERANKER_REMOTE_MODEL` in `app/config.py`. No reranking model is loaded locally.
+* **Method**: Sends the query and candidate chunk texts in one request; the server returns each chunk's relevance score.
 * **Selection**: Filters and sorts candidates down to top `FINAL_TOP_K` (default: 10 chunks).
 
 ---
@@ -151,7 +151,8 @@ All system thresholds are centrally managed in `app/config.py`:
 | | `BATCH_SIZE` | `100` | Points per Qdrant upload batch |
 | **Validator** | `VALIDATOR_LOW_INFO_THRESHOLD` | `0.30` | Minimum ratio of alpha characters required |
 | | `VALIDATOR_REJECT_HEADING_ONLY` | `True` | Reject standalone heading chunks |
-| **Reranker** | `RERANKER_MODEL` | `"Qwen/Qwen3-Reranker-0.6B"` | CrossEncoder reranking model |
+| **Reranker** | `RERANKER_REMOTE_BASE_URL` | `"http://<host>:<port>"` | Remote reranking server URL |
+| | `RERANKER_REMOTE_MODEL` | `"<model-name>"` | Remote reranking model name |
 | | `VECTOR_TOP_K` | `50` | Candidates retrieved from Qdrant |
 | | `FINAL_TOP_K` | `10` | Final reranked results returned |
 
@@ -178,7 +179,7 @@ rag_demo/
 │   ├── qdrant_db.py                    # Qdrant client connection & query layer
 │   ├── ingest.py                       # Ingestion pipeline script
 │   ├── show_indexed_patents.py         # Summary table generator for all Qdrant-indexed patents
-│   ├── reranker.py                     # Qwen CrossEncoder reranking engine
+│   ├── reranker.py                     # Remote reranking client (HTTP /rerank)
 │   ├── semantic_search.py              # Patent-level semantic search coordinator
 │   ├── prompt_builder.py               # RAG prompt generation helper
 │   ├── test_semantic_search.py         # End-to-end semantic search test runner

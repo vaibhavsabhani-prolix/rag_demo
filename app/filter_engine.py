@@ -136,6 +136,12 @@ class FilterEngine:
 
     @staticmethod
     def _matches_one(metadata: dict, f: MetadataFilter) -> bool:
+        """
+        A patent with no stored value for the field never matches -
+        including a "not_equals"/"not_contains" exclusion, since there's
+        nothing on record to confirm the exclusion against.
+        """
+
         spec = _check_filter(f)
 
         actual = metadata.get(spec["real_key"])
@@ -147,8 +153,9 @@ class FilterEngine:
         if isinstance(actual, list):
             values = [str(v) for v in actual]
 
-            if op == "contains":
-                return any(str(f.value).lower() in v.lower() for v in values)
+            if op in ("contains", "not_contains"):
+                found = any(str(f.value).lower() in v.lower() for v in values)
+                return not found if op == "not_contains" else found
 
             try:
                 numbers = [float(v) for v in values]
@@ -156,14 +163,16 @@ class FilterEngine:
                 return False
             return any(FilterEngine._compare(n, op, float(f.value)) for n in numbers)
 
-        if op == "contains":
-            return str(f.value).lower() in str(actual).lower()
+        if op in ("contains", "not_contains"):
+            found = str(f.value).lower() in str(actual).lower()
+            return not found if op == "not_contains" else found
 
-        if op == "equals":
+        if op in ("equals", "not_equals"):
             try:
-                return float(actual) == float(f.value)
+                equal = float(actual) == float(f.value)
             except (TypeError, ValueError):
-                return str(actual).lower() == str(f.value).lower()
+                equal = str(actual).lower() == str(f.value).lower()
+            return not equal if op == "not_equals" else equal
 
         try:
             return FilterEngine._compare(float(actual), op, float(f.value))
