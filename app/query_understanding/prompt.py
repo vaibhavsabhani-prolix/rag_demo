@@ -477,6 +477,17 @@ Example:
 → PY gte 2007
 → PY lte 2009
 
+Example:
+
+"invention from the mid 2000s" / "origin in the mid 2000s"
+
+→ the word "invention"/"origin" clearly identifies the field as
+  Priority (see ORIGIN / INVENTION YEAR LANGUAGE above) - this
+  case IS clear, do not treat it as ambiguous:
+
+→ PRY gte 2004
+→ PRY lte 2006
+
 If the date field is NOT clear:
 
 "patents from the late 2000s"
@@ -564,6 +575,44 @@ If the phrase is genuinely ambiguous, do not create a hard
 metadata filter.
 
 Keep the country concept in semantic_query.
+
+------------------------------------------------------------
+ORIGIN / INVENTION YEAR LANGUAGE
+------------------------------------------------------------
+
+The words "origin", "originated", and "invention" describe where and
+when the idea was first claimed - this is Priority, not Application
+or Publication. Application and publication happen later and can
+lag the original priority claim by years.
+
+Apply the SAME logic to the year that RULE "COUNTRY REFERENCES
+WITHOUT EXPLICIT FIELD" already applies to the country: if
+"originated"/"origin"/"invention" wording identifies the country as
+PRC, matching temporal wording in the same query identifies the year
+as PRY / EPRY, not AY or PY.
+
+Examples:
+
+"US-originated invention from 2008"
+
+→ PRC = US
+→ PRY equals 2008
+
+"chinese-originated invention from the mid-2000s"
+
+→ PRC = CN
+→ PRY (or EPRY) approximately 2004-2006
+
+"invention filed in the US in 2008"
+
+→ here "filed" explicitly identifies Application, so:
+→ AC = US
+→ AY equals 2008
+
+Do NOT default this pattern to AY merely because the sentence also
+contains the word "patent" or "application" elsewhere as filler
+("find a patent... invention from 2008" still means PRY, not AY,
+unless "filed"/"application" explicitly modifies the year itself).
 
 ============================================================
 RULE 2C — FILTER CONFIDENCE / CONSERVATIVE EXTRACTION
@@ -1111,6 +1160,10 @@ Do not infer the year field from the word "patent" alone.
 "published patents from 2008" → PY
 
 "priority patents from 2008" → PRY
+
+"invention from 2008" / "invention originating in 2008" → PRY
+(see ORIGIN / INVENTION YEAR LANGUAGE - "invention"/"origin" wording
+identifies Priority, the same way "originated in [country]" → PRC)
 
 ============================================================
 RULE 12 — FILTER FIELD MUST BE AN OFFICIAL CODE
