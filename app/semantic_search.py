@@ -67,7 +67,9 @@ Reranker, aggregation) are called.
 
 from __future__ import annotations
 
+import time
 from collections import defaultdict
+from typing import Callable
 
 from app.config import FINAL_TOP_K
 from app.embedder import Embedder
@@ -88,7 +90,9 @@ class SemanticSearch:
         self.query_understanding = QueryUnderstanding()
 
     def search_detailed(
-        self, query: str
+        self,
+        query: str,
+        on_stage: Callable[[str, float], None] | None = None,
     ) -> tuple[ParsedQuery, list, list, list[tuple[float, object]], list[PatentSearchResult]]:
         """
         Search for patents and return results at each pipeline stage:
@@ -100,10 +104,22 @@ class SemanticSearch:
            to identify it
         4. Reranked candidate chunks (list of (reranker_score, ScoredPoint))
         5. Aggregated PatentSearchResult list
+
+        If *on_stage* is given, it's called after each pipeline stage
+        completes with (stage_name, elapsed_seconds) - lets a caller
+        (e.g. the UI) report per-stage progress and timing as the
+        search runs, rather than only after everything finishes.
         """
 
+        def _run(stage_name, fn, *args, **kwargs):
+            start = time.perf_counter()
+            result = fn(*args, **kwargs)
+            if on_stage is not None:
+                on_stage(stage_name, time.perf_counter() - start)
+            return result
+
         # Step 0: Query Understanding
-        parsed = self.query_understanding.parse(query)
+        parsed = _run("Query Understanding", self.query_understanding.parse, query)
 
         # A query that is purely metadata filters with no real topic
         # (e.g. "applications filed in 2008 by Wyeth") comes back from
@@ -114,19 +130,19 @@ class SemanticSearch:
         # an embedding of a non-existent topic. Filter the whole
         # collection directly instead.
         if parsed.is_metadata_only:
-            return self._search_by_metadata_only(parsed)
+            return self._search_by_metadata_only(parsed, on_stage=on_stage)
 
         # Step 1: Embed the semantic portion only - metadata-filter
         # phrases were already split off by Query Understanding, so
         # neither embedding nor reranking ever sees e.g. "US" or
         # "Coca Cola" as if they were part of the topic being searched.
-        query_vector = self.embedder.embed_query(parsed.semantic_query)
+        query_vector = _run("Embedding", self.embedder.embed_query, parsed.semantic_query)
 
         # Step 2: Pure semantic vector search - no metadata filter here.
         # Identifies the top candidate PATENTS only (one representative
         # best-matching chunk each) - not the chunk pool that gets
         # filtered/reranked next.
-        qdrant_results = self.db.search(query_vector=query_vector)
+        qdrant_results = _run("Vector Search", self.db.search, query_vector=query_vector)
 
         candidate_patent_ids = list(
             dict.fromkeys(
@@ -139,13 +155,17 @@ class SemanticSearch:
         # Fetch every chunk belonging to those candidate patents - each
         # patent's full chunk set, unbounded, not an arbitrary fixed cap
         # per patent. This is what actually gets filtered and reranked.
-        candidate_chunks = self.db.get_chunks_for_patent_ids(candidate_patent_ids)
+        candidate_chunks = _run(
+            "Chunk Retrieval", self.db.get_chunks_for_patent_ids, candidate_patent_ids
+        )
 
         # Step 3: Metadata filtering, on the candidates just fetched.
         # Only patents that are already semantic candidates ever get
         # their metadata looked up - never the whole "patents" collection.
         if parsed.metadata_filters:
-            filtered_results = self._filter_candidates_by_metadata(
+            filtered_results = _run(
+                "Metadata Filtering",
+                self._filter_candidates_by_metadata,
                 candidate_chunks,
                 parsed.metadata_filters,
             )
@@ -153,7 +173,9 @@ class SemanticSearch:
             filtered_results = candidate_chunks
 
         # Step 4: Rerank whatever survived filtering.
-        reranked_results = self.reranker.rerank(
+        reranked_results = _run(
+            "Reranking",
+            self.reranker.rerank,
             query=parsed.semantic_query,
             results=filtered_results,
         )
@@ -163,7 +185,9 @@ class SemanticSearch:
         # here (post-aggregation) rather than on the chunk list means a
         # patent survives on its best chunk regardless of how many other
         # patents' chunks outscored its weaker ones.
-        patent_results = self._aggregate_by_patent(reranked_results)[:FINAL_TOP_K]
+        patent_results = _run(
+            "Aggregation", lambda: self._aggregate_by_patent(reranked_results)[:FINAL_TOP_K]
+        )
 
         return parsed, qdrant_results, filtered_results, reranked_results, patent_results
 
@@ -182,7 +206,9 @@ class SemanticSearch:
     # ==============================================================
 
     def _search_by_metadata_only(
-        self, parsed: ParsedQuery
+        self,
+        parsed: ParsedQuery,
+        on_stage: Callable[[str, float], None] | None = None,
     ) -> tuple[ParsedQuery, list, list, list[tuple[float, object]], list[PatentSearchResult]]:
         """
         Handle a query whose semantic_query came back empty (see
@@ -196,12 +222,21 @@ class SemanticSearch:
         reranker, since there's no query text to score chunks against.
         """
 
-        matching_patent_ids = self.db.filter_patent_ids(parsed.metadata_filters)
+        def _run(stage_name, fn, *args, **kwargs):
+            start = time.perf_counter()
+            result = fn(*args, **kwargs)
+            if on_stage is not None:
+                on_stage(stage_name, time.perf_counter() - start)
+            return result
+
+        matching_patent_ids = _run(
+            "Metadata Filtering", self.db.filter_patent_ids, parsed.metadata_filters
+        )
 
         if not matching_patent_ids:
             return parsed, [], [], [], []
 
-        chunks = self.db.get_chunks_for_patent_ids(matching_patent_ids)
+        chunks = _run("Chunk Retrieval", self.db.get_chunks_for_patent_ids, matching_patent_ids)
 
         # chunks already carry a placeholder .score (see
         # QdrantDB.get_chunks_for_patent_ids) so they slot straight into
@@ -209,7 +244,7 @@ class SemanticSearch:
         # reranker, without actually reranking anything.
         reranked_results = [(chunk.score, chunk) for chunk in chunks]
 
-        patent_results = self._aggregate_by_patent(reranked_results)
+        patent_results = _run("Aggregation", self._aggregate_by_patent, reranked_results)
 
         return parsed, chunks, chunks, reranked_results, patent_results
 
