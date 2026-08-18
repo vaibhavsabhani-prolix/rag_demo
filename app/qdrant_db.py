@@ -28,6 +28,7 @@ from qdrant_client.models import (
 )
 
 from app.config import (
+    CANDIDATE_CHUNKS_PER_PATENT,
     CHUNKS_COLLECTION_NAME,
     PATENT_CANDIDATE_TOP_K,
     PATENTS_COLLECTION_NAME,
@@ -356,16 +357,16 @@ class QdrantDB:
         against the patent_ids present in the returned candidates (see
         SemanticSearch._filter_candidates_by_metadata) - not here.
 
-        Uses Qdrant's group-by search with group_size=1 so *limit*
-        bounds the number of distinct PATENTS returned, not chunks - a
-        single patent with many similar-scoring chunks can't crowd other
-        relevant patents out of the candidate pool the way a flat top-K
-        chunk search could. Only each patent's single best-matching
-        chunk is returned here (for candidate identification and
-        diagnostics score display) - callers that need every chunk of a
-        candidate patent (e.g. for reranking) should follow up with
-        get_chunks_for_patent_ids(), which fetches a patent's full,
-        unbounded chunk set rather than an arbitrary fixed cap.
+        Uses Qdrant's group-by search with group_size=CANDIDATE_CHUNKS_PER_PATENT
+        so *limit* bounds the number of distinct PATENTS returned, not
+        chunks - a single patent with many similar-scoring chunks can't
+        crowd other relevant patents out of the candidate pool the way a
+        flat top-K chunk search could. Only each patent's top
+        CANDIDATE_CHUNKS_PER_PATENT best-matching chunks are returned
+        here, capping reranker cost/latency per patent - callers that
+        need every chunk of a candidate patent (e.g. the metadata-only
+        path) should use get_chunks_for_patent_ids() instead, which
+        fetches a patent's full, unbounded chunk set.
         """
 
         result = self.client.query_points_groups(
@@ -373,7 +374,7 @@ class QdrantDB:
             query=query_vector,
             group_by="patent_id",
             limit=limit,
-            group_size=1,
+            group_size=CANDIDATE_CHUNKS_PER_PATENT,
             score_threshold=score_threshold,
         )
 

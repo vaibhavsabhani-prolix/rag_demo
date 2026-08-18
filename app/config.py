@@ -105,10 +105,26 @@ TOKEN_COUNT_CACHE_SIZE = 4096
 
 PATENT_DIRECTORY = "patents-processed"
 
+# ==========================
+# UI Configuration
+# ==========================
+
+# External patent detail page. {patent_id} is substituted with the
+# patent's ID to build the "view patent" link in the search results UI.
+PATENT_VIEW_URL_TEMPLATE = "https://www.qubeip.com/en/patent-view/{patent_id}"
+
 
 # ==========================
 # Reranker Configuration
 # ==========================
+
+# True = use the remote reranker server.
+# False = use the local sentence-transformers CrossEncoder.
+USE_REMOTE_RERANKER = False
+
+# Local reranker model to use when USE_REMOTE_RERANKER is False.
+# Smaller and CPU-friendly than Qwen 8B, while still giving reasonable reranking.
+LOCAL_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
 # Base URL of the remote reranking server (OpenAI/TEI-style /rerank endpoint).
 RERANKER_REMOTE_BASE_URL = "http://192.168.2.213:8001"
@@ -137,6 +153,13 @@ RERANKER_REQUEST_TIMEOUT = 360.0
 # narrower metadata filter can only ever shrink the candidate pool
 # already retrieved here, never look beyond it.
 PATENT_CANDIDATE_TOP_K = 100
+
+# Number of chunks per candidate patent returned by the initial vector
+# search (Qdrant group-by search group_size), used as the reranking
+# pool. Caps reranker cost/latency per patent while still letting a
+# patent's best-matching chunk win on something other than its single
+# top vector hit.
+CANDIDATE_CHUNKS_PER_PATENT = 3
 
 # Number of patents returned after reranking.
 #

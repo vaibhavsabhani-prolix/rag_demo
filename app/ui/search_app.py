@@ -17,6 +17,7 @@ Run:
 import html
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -24,6 +25,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 import streamlit as st
 
+from app.config import PATENT_VIEW_URL_TEMPLATE
 from app.semantic_search import SemanticSearch
 
 st.set_page_config(page_title="Patent Semantic Search", layout="wide")
@@ -91,7 +93,7 @@ def _render_results_table(results: list) -> None:
     columns = ["#", "Patent ID", "Score", "Best Chunk", "Section", "Best Matching Chunk (Full Text)"]
 
     parts = [
-        '<div style="max-height:75vh; overflow-y:auto; border:1px solid rgba(128,128,128,0.4); border-radius:6px;">',
+        '<div style="border:1px solid rgba(128,128,128,0.4); border-radius:6px;">',
         '<table style="width:100%; border-collapse:collapse; font-size:0.85rem;">',
         "<thead><tr>",
         "".join(f'<th style="{_HEADER_STYLE}">{col}</th>' for col in columns),
@@ -100,10 +102,15 @@ def _render_results_table(results: list) -> None:
 
     for rank, patent in enumerate(results, start=1):
         best = patent.best_chunk
+        patent_url = PATENT_VIEW_URL_TEMPLATE.format(
+            patent_id=quote(str(patent.patent_id), safe="")
+        )
         parts.append(
             "<tr>"
             f'<td style="{_CELL_STYLE}">{rank}</td>'
-            f'<td style="{_CELL_STYLE} font-weight:600;">{_escape(patent.patent_id)}</td>'
+            f'<td style="{_CELL_STYLE} font-weight:600;">'
+            f'<a href="{_escape(patent_url)}" target="_blank" rel="noopener noreferrer">'
+            f'{_escape(patent.patent_id)}</a></td>'
             f'<td style="{_CELL_STYLE}">{patent.score:.4f}</td>'
             f'<td style="{_CELL_STYLE}">{best.chunk_id}</td>'
             f'<td style="{_CELL_STYLE}">{_escape(best.section)}</td>'
