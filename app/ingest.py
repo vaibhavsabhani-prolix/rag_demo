@@ -21,7 +21,7 @@ def ingest_directory(directory: str):
     embedder = Embedder()
     db = QdrantDB()
 
-    txt_files = sorted(Path(directory).glob("*.txt"))[2001:3001]
+    txt_files = sorted(Path(directory).glob("*.txt"))
 
     print(f"\nFound {len(txt_files)} patent files.\n")
 
