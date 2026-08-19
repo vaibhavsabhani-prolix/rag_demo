@@ -367,6 +367,16 @@ class QdrantDB:
         need every chunk of a candidate patent (e.g. the metadata-only
         path) should use get_chunks_for_patent_ids() instead, which
         fetches a patent's full, unbounded chunk set.
+
+        NOTE: the returned list is flattened across groups (`hit for
+        group in result.groups for hit in group.hits`), so the SAME
+        patent_id can appear up to CANDIDATE_CHUNKS_PER_PATENT times in
+        it - this is intentional here (callers that need the full
+        per-patent chunk pool, e.g. for reranking, want that), but a
+        caller that needs a patent-level, one-row-per-patent view must
+        collapse duplicates itself (see
+        app.semantic_search._dedupe_top_chunk_per_patent) rather than
+        assume this method already returns unique patent_ids.
         """
 
         result = self.client.query_points_groups(

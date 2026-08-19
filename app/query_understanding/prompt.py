@@ -32,6 +32,12 @@ STRICT JSON containing:
 2. filters
    Metadata constraints found in the user's query.
 
+3. A dynamic requirements structure (concepts, goals, constraints,
+   optimization, exclusions, relationships, requirements, ranking_weights)
+   describing what a downstream reranker should evaluate candidate patent
+   chunks against. See RULE 13 below. This works for ANY technology,
+   industry, or field - never hardcode it to a particular domain.
+
 IMPORTANT:
 You MUST select filter fields ONLY from the field-code allowlist below.
 NEVER invent a field code, field name, or metadata field.
@@ -46,7 +52,8 @@ ALLOWED METADATA FIELD CODES
 OUTPUT FORMAT
 ============================================================
 
-Return ONLY valid JSON:
+Return ONLY valid JSON with exactly this shape (empty arrays/objects
+where a section doesn't apply - never omit a key):
 
 {{
   "semantic_query": "...",
@@ -56,24 +63,51 @@ Return ONLY valid JSON:
       "operator": "equals|contains|not_equals|not_contains|gt|gte|lt|lte",
       "value": "VALUE"
     }}
-  ]
+  ],
+
+  "intent": "one sentence describing what the user is actually looking for",
+  "query_type": ["simple_topic|object_search|technology_search|problem_solution|goal_oriented|multi_concept|constrained_search|optimization|tradeoff|comparative|method_search|component_search|material_search|process_search|prior_art|cross_domain|other"],
+  "concepts": [
+    {{"id": "C1", "text": "...", "role": "object|technology|component|material|process|method|action|problem|goal|optimization_goal|constraint|attribute|condition|performance_requirement|quantity|exclusion|context", "importance": 0.0, "required": true, "semantic_variants": ["..."]}}
+  ],
+  "goals": [
+    {{"id": "G1", "text": "what the invention should accomplish", "importance": 0.0, "required": true, "keywords": ["2-4 short literal phrases likely to appear in patent text expressing this goal"]}}
+  ],
+  "constraints": [
+    {{"id": "K1", "text": "a condition that must stay satisfied while achieving a goal", "type": "...", "importance": 0.0, "required": true, "keywords": ["short literal phrases for this constraint"]}}
+  ],
+  "optimization": [
+    {{"id": "O1", "property": "the property being optimized", "direction": "maximize|minimize", "importance": 0.0}}
+  ],
+  "exclusions": ["literal terms/phrases the result must NOT involve"],
+  "relationships": [
+    {{"source": "...", "relation": "used_for|improves|controls|requires|produces|...", "target": "...", "importance": 0.0}}
+  ],
+  "requirements": [
+    {{"id": "R1", "description": "a single checkable requirement for reranking", "type": "semantic_match|concept_coverage|goal_satisfaction|constraint_satisfaction|relationship_satisfaction|technical_match|object_match|problem_match|performance_match|optimization_match|exclusion_check|evidence_strength", "importance": 0.0, "required": true, "evaluation_hint": "what evidence in a patent would satisfy this", "keywords": ["short literal phrases for this requirement"]}}
+  ],
+  "ranking_weights": {{
+    "semantic_relevance": 0.0,
+    "requirement_satisfaction": 0.0,
+    "relationship_satisfaction": 0.0,
+    "constraint_satisfaction": 0.0,
+    "evidence_strength": 0.0,
+    "exact_match": 0.0
+  }}
 }}
 
 "not_equals" and "not_contains" are EXCLUSIONS - the user wants patents
 that do NOT match the value (e.g. "not from China" → operator
 "not_contains"). See RULE 3B below.
 
-If there are no metadata filters:
-
-{{
-  "semantic_query": "...",
-  "filters": []
-}}
+If there are no metadata filters, "filters" is simply [] - the
+requirements-structure keys are still always present (using empty
+arrays / neutral defaults when a section doesn't apply to the query).
 
 Do NOT return Markdown.
 Do NOT return explanations.
 Do NOT return comments.
-Do NOT return additional keys.
+Do NOT return keys other than the ones defined above.
 
 ============================================================
 CORE RULES
@@ -1236,6 +1270,12 @@ Before producing the JSON, internally verify:
     "other than X") is expressed with "not_equals"/"not_contains" (or
     the opposite gt/gte/lt/lte for a range), not silently dropped and
     not left as a plain inclusion filter.
+15. All of intent, query_type, concepts, goals, constraints,
+    optimization, exclusions, relationships, requirements, and
+    ranking_weights are present (empty array/neutral default when not
+    applicable) - see RULE 13.
+16. No concept/goal/constraint/requirement was invented beyond what
+    the query actually supports, and ranking_weights sum to ~1.0.
 
 ============================================================
 EXAMPLES
@@ -1544,6 +1584,86 @@ Interpretation:
   growth → semantic_query
 
 Do not invent a year.
+
+============================================================
+RULE 13 — DYNAMIC REQUIREMENTS STRUCTURE (concepts/goals/constraints/
+          optimization/exclusions/relationships/requirements/weights)
+============================================================
+
+This section is ADDITIVE to everything above - it never changes how
+semantic_query or filters are produced. It works for ANY technology,
+industry, product, material, process, or field. Never hardcode it to
+a particular domain, and never invent a requirement not supported by
+the query.
+
+First understand the user's actual INTENT, not just the literal
+words - e.g. "make plant meat taste better" is a goal-oriented search
+for technologies that improve the sensory qualities of plant-based
+meat.
+
+CONCEPTS - one entry per important object/technology/component/
+material/process/method/goal/constraint/attribute/etc. actually
+present in the query (role picks which). Only include semantic_variants
+that are genuinely equivalent (e.g. "camera" ~ "imaging device"/"vision
+sensor") - don't build an uncontrolled synonym list. importance in
+[0,1]; required=true only when removing the concept would materially
+change what the user is searching for.
+
+GOALS vs CONSTRAINTS - a GOAL is what the invention should accomplish;
+a CONSTRAINT is a condition that must stay satisfied while achieving
+it. "improve sweetness while keeping sugar low" is goal="improve
+sweetness", constraint="keep sugar low" - never merge these into one
+concept.
+
+KEYWORDS (goals, constraints, requirements) - a downstream reranker
+checks these against raw patent text via plain substring matching, so
+`text`/`description` alone (a full natural-language sentence) will
+almost never match verbatim. Populate `keywords` with a few short
+literal phrases someone would realistically write in a patent to
+express that goal/constraint/requirement - the same idea as a
+concept's semantic_variants, just for these fields.
+
+OPTIMIZATION - recognize optimization directions generically (reduce/
+minimize/lower vs increase/maximize/improve, faster/slower/cheaper/
+smaller/higher efficiency/etc.) as {{property, direction}} pairs. Never
+invent a numeric threshold the user didn't give.
+
+EXCLUSIONS - literal terms/phrases the result must NOT involve
+("without X", "excluding X", "non-invasive"). Never assume a concept
+the user simply didn't mention is an exclusion.
+
+RELATIONSHIPS - a (source, relation, target) triple whenever concepts
+must co-occur meaningfully, not just both be present independently
+(e.g. "detect defects using cameras and AI" -> camera -used_for->
+defect detection, AI -used_for-> defect detection). `relation` is
+templated into a sentence downstream ("{{source}} {{relation}} {{target}}"),
+so keep it a short, plain verb-phrase in snake_case (e.g. "used_for",
+"reduces", "controls", "produces") - not a full clause.
+
+REQUIREMENTS - restate the concepts/goals/constraints/relationships
+above as a checklist a downstream reranker can evaluate a candidate
+patent chunk against. evaluation_hint describes what evidence would
+satisfy it (prefer direct technical evidence - "a neural network
+identifies defects from camera images" is strong evidence for a
+defect-detection requirement; "the system may include a camera" is
+weak; the mere word "camera" appearing is very weak). Do not require
+literal query wording - a technical synonym satisfies the same
+requirement.
+
+RANKING_WEIGHTS - six floats that should sum to ~1.0, reflecting the
+ACTUAL query structure:
+- simple, single-topic queries -> semantic_relevance should dominate
+  (e.g. 0.8+), other weights near 0.
+- queries with real goals/constraints/relationships -> raise
+  requirement_satisfaction/constraint_satisfaction/
+  relationship_satisfaction accordingly, but semantic_relevance should
+  still normally stay one of the strongest signals.
+- exact_match should never dominate semantic_relevance - patent
+  language rarely matches the user's exact wording.
+
+If a section doesn't apply to the query, return it as an empty array
+(concepts/goals/constraints/optimization/exclusions/relationships/
+requirements) - never fabricate content to fill it.
 
 ============================================================
 FINAL INSTRUCTION

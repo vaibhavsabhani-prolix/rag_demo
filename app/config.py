@@ -120,25 +120,25 @@ PATENT_VIEW_URL_TEMPLATE = "https://www.qubeip.com/en/patent-view/{patent_id}"
 
 # True = use the remote reranker server.
 # False = use the local sentence-transformers CrossEncoder.
-USE_REMOTE_RERANKER = False
+USE_REMOTE_RERANKER = True
 
 # Local reranker model to use when USE_REMOTE_RERANKER is False.
-# Smaller and CPU-friendly than Qwen 8B, while still giving reasonable reranking.
+# CPU-friendly while still giving reasonable reranking.
 LOCAL_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
 # Base URL of the remote reranking server (OpenAI/TEI-style /rerank endpoint).
 RERANKER_REMOTE_BASE_URL = "http://192.168.2.213:8001"
 
 # Model name the remote reranking server expects.
-RERANKER_REMOTE_MODEL = "Qwen/Qwen3-Reranker-8B"
+RERANKER_REMOTE_MODEL = "BAAI/bge-reranker-v2-m3"
 
 # The server does not require a real API key.
 RERANKER_REMOTE_API_KEY = "EMPTY"
 
 # Seconds to wait for the remote reranker's response. A single call can
 # carry every chunk from up to PATENT_CANDIDATE_TOP_K patents (unbounded
-# per patent), which an 8B reranker can take well over a minute to score
-# in one batch - so this needs more headroom than a typical HTTP call.
+# per patent), which can take well over a minute to score in one batch -
+# so this needs more headroom than a typical HTTP call.
 RERANKER_REQUEST_TIMEOUT = 360.0
 
 # Number of distinct PATENTS retrieved as candidates from Qdrant.
@@ -168,6 +168,102 @@ CANDIDATE_CHUNKS_PER_PATENT = 3
 # before aggregation, which could otherwise drop a patent entirely if
 # none of its chunks made a flat top-K chunk cut.
 FINAL_TOP_K = 10
+
+# ==========================
+# Reranker Blend Weights
+#
+# Bounds applied by app/reranker.py's _compute_weights() to the
+# semantic/structured/relationship/optimization/lexical/exact_match
+# blend. The LLM's ParsedQuery.ranking_weights is read as an advisory
+# signal only where a dedicated field exists (relationship_satisfaction)
+# - these constants are what actually enforce "semantic relevance must
+# remain dominant," never trusting LLM-generated floats directly.
+# ==========================
+
+# Minimum combined weight share for semantic_score (original query) +
+# structured_score (composite requirements sentence). Enforced
+# regardless of what the LLM's ranking_weights say.
+MIN_SEMANTIC_WEIGHT = 0.55
+
+# Maximum weight share any single secondary category (relationship,
+# optimization) may receive.
+MAX_SECONDARY_WEIGHT = 0.20
+
+# Maximum weight share for the "weak supporting" signals (lexical
+# keyword coverage, exact match) - these must never meaningfully
+# compete with semantic relevance.
+MAX_WEAK_SIGNAL_WEIGHT = 0.10
+
+# Fixed split of the combined semantic+structured weight budget between
+# semantic_score and structured_score - never LLM-controlled, since
+# structured_score is a secondary corroborating signal, not a parallel
+# primary one. 0.7 means semantic_score gets 70% of that combined share.
+SEM_STRUCT_SPLIT_RATIO = 0.7
+
+# Fraction of final_score subtracted per fully-confirmed exclusion
+# match. A soft penalty, never a hard filter, by default (see
+# EXCLUSION_HARD_FILTER_THRESHOLD) - an excluded patent should rank
+# near the bottom, not silently vanish from results.
+EXCLUSION_PENALTY_WEIGHT = 0.5
+
+# If set to a 0..1 confidence value, a candidate whose exclusion
+# evidence meets/exceeds this threshold is dropped outright instead of
+# merely penalized. Disabled (None) by default for two independent
+# reasons:
+# 1. Hard filtering risks silently dropping a relevant patent on a
+#    false-positive exclusion match (e.g. a negated mention like
+#    "free of lithium").
+# 2. Exclusion evidence is only ever computed during the fine stage
+#    (see RERANK_FINE_STAGE_TOP_N) - a candidate outside that subset
+#    has no exclusion_penalty at all (defaults to 0.0), not because it
+#    was cleared of the exclusion, but because it was never evaluated.
+#    Enabling hard filtering today would filter fine-stage candidates
+#    on real evidence while silently passing everyone else through
+#    unevaluated - inconsistent filtering behavior. Do not enable this
+#    unless exclusion evaluation is extended to every candidate that
+#    could be hard-filtered, not just the fine-stage subset.
+EXCLUSION_HARD_FILTER_THRESHOLD = None
+
+# Multiplier floor applied to a fine-stage chunk's final_score based on how
+# well it covers the query's already-extracted structure (structured_score +
+# relationship_score - see Reranker._blend_and_sort). A chunk with ZERO
+# measured structured/relationship coverage has its blended score multiplied
+# by this floor; full coverage (=1.0) leaves the score unchanged. This can
+# only shrink a score, never boost one - it exists so a chunk that is only
+# broadly/genuinely on-topic can't outrank a chunk that actually satisfies
+# the query's complete required structure (multiple required concepts,
+# goals, constraints, relationships, or a problem->solution combination)
+# purely on raw semantic similarity, which the additive weight caps above
+# (MAX_SECONDARY_WEIGHT, MIN_SEMANTIC_WEIGHT) otherwise allow. Only applies
+# when the query actually has a structured sentence and/or relationships to
+# check coverage against - a plain-topic query with neither is unaffected
+# (multiplier stays 1.0).
+STRUCTURE_COVERAGE_MIN_MULTIPLIER = 0.7
+
+# Number of top coarse-semantic-scored candidate chunks that receive
+# the full "fine stage" evaluation (composite/relationship/
+# optimization/exclusion synthetic-query scoring). Bounds CPU cost
+# regardless of how large PATENT_CANDIDATE_TOP_K is - chunks outside
+# this cutoff keep their coarse-only semantic score untouched.
+RERANK_FINE_STAGE_TOP_N = 40
+
+# Safety caps on how many relationships/optimization targets/exclusions
+# get their own synthetic-query reranker pass, in case a malformed LLM
+# response returns an implausibly large structure.
+MAX_RELATIONSHIPS_SCORED = 5
+MAX_OPTIMIZATION_TARGETS_SCORED = 5
+MAX_EXCLUSIONS_SCORED = 5
+
+# Flat importance boost a required concept/goal/constraint gets over an
+# equally-scored optional one, so a required item still outranks an
+# optional one when only one of the two is covered by a given chunk.
+REQUIRED_IMPORTANCE_BOOST = 0.2
+
+# Minimum importance for a concept/goal/constraint to be included in
+# the composite structured-requirement sentence (see
+# app/reranker.py's _build_structured_sentence) - required items are
+# always included regardless of this threshold.
+STRUCTURED_SIGNAL_MIN_IMPORTANCE = 0.5
 
 # ==========================
 # Metadata Filtering (Query Understanding LLM)

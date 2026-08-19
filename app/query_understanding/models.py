@@ -50,6 +50,111 @@ class MetadataFilter:
 
 
 @dataclass
+class Concept:
+    """
+    A single concept extracted from the query (object, technology,
+    component, material, process, goal, constraint, attribute, etc. -
+    see `role`). Generic across domains - the LLM decides what's
+    present, nothing here is hardcoded to a technology.
+    """
+
+    id: str
+    text: str
+    role: str
+    importance: float = 0.5
+    required: bool = False
+    semantic_variants: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Goal:
+    """
+    What the invention should accomplish (as distinct from a Constraint).
+
+    keywords: short literal phrases likely to actually appear in patent
+    text (distinct from `text`, which is the natural-language
+    description) - mirrors Concept.semantic_variants, since coverage
+    checking (see app/reranker.py) is plain substring matching and a
+    single natural-language sentence rarely appears verbatim in a patent.
+    """
+
+    id: str
+    text: str
+    importance: float = 0.5
+    required: bool = False
+    keywords: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Constraint:
+    """A condition that must remain satisfied while achieving a Goal."""
+
+    id: str
+    text: str
+    type: str = ""
+    importance: float = 0.5
+    required: bool = False
+    keywords: list[str] = field(default_factory=list)
+
+
+@dataclass
+class OptimizationTarget:
+    """A property the invention should maximize or minimize (e.g. power consumption -> minimize)."""
+
+    id: str
+    property: str
+    direction: str = "maximize"
+    importance: float = 0.5
+
+
+@dataclass
+class Relationship:
+    """A directed relation between two concepts (e.g. camera -> used_for -> defect detection)."""
+
+    source: str
+    relation: str
+    target: str
+    importance: float = 0.5
+
+
+@dataclass
+class Requirement:
+    """
+    A single reranking-time requirement derived from the query's
+    concepts/goals/constraints - what a downstream reranker should
+    evaluate a candidate chunk against.
+    """
+
+    id: str
+    description: str
+    type: str = ""
+    importance: float = 0.5
+    required: bool = False
+    evaluation_hint: str = ""
+    keywords: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RankingWeights:
+    """
+    Relative weights (should sum to ~1.0) for blending the reranker's
+    semantic score with the requirement/relationship/constraint
+    coverage signals computed from the fields above. See
+    Reranker._blend_scores in app/reranker.py for how these are
+    actually applied - weights for signals the query has no data for
+    (e.g. no constraints extracted) are redistributed into
+    semantic_relevance rather than penalizing every candidate equally.
+    """
+
+    semantic_relevance: float = 1.0
+    requirement_satisfaction: float = 0.0
+    relationship_satisfaction: float = 0.0
+    constraint_satisfaction: float = 0.0
+    evidence_strength: float = 0.0
+    exact_match: float = 0.0
+
+
+@dataclass
 class ParsedQuery:
     """
     Output of QueryUnderstanding.parse().
@@ -59,12 +164,31 @@ class ParsedQuery:
     metadata-filter phrases are removed from it (see parser.py).
     candidate_filters holds raw (meaning, value) candidates extracted by the LLM.
     metadata_filters holds the validated MetadataFilter objects after FIELD_MAPPING resolution.
+
+    The remaining fields (concepts, goals, constraints, optimization,
+    exclusions, relationships, requirements, ranking_weights) are the
+    dynamic, domain-agnostic requirements structure used by
+    Reranker.rerank() to blend a requirement/constraint/relationship
+    coverage score in with the semantic cross-encoder score - see
+    app/reranker.py. They default to empty/neutral so existing code
+    that only cares about semantic_query/metadata_filters is unaffected.
     """
 
     original_query: str
     semantic_query: str
     candidate_filters: list[CandidateFilter] = field(default_factory=list)
     metadata_filters: list[MetadataFilter] = field(default_factory=list)
+
+    intent: str = ""
+    query_type: list[str] = field(default_factory=list)
+    concepts: list[Concept] = field(default_factory=list)
+    goals: list[Goal] = field(default_factory=list)
+    constraints: list[Constraint] = field(default_factory=list)
+    optimization: list[OptimizationTarget] = field(default_factory=list)
+    exclusions: list[str] = field(default_factory=list)
+    relationships: list[Relationship] = field(default_factory=list)
+    requirements: list[Requirement] = field(default_factory=list)
+    ranking_weights: RankingWeights = field(default_factory=RankingWeights)
 
     @property
     def has_filters(self) -> bool:
@@ -79,3 +203,26 @@ class ParsedQuery:
         vector search + rerank (see SemanticSearch._search_by_metadata_only).
         """
         return not self.semantic_query.strip() and self.has_filters
+
+    @property
+    def has_requirements_structure(self) -> bool:
+        """
+        True when query understanding extracted any of the dynamic
+        requirements fields - lets Reranker fall back to pure semantic
+        ranking when there's nothing to blend in.
+
+        Includes `optimization` explicitly - a pure-optimization query
+        (e.g. "reduce power consumption in semiconductor devices") could
+        in principle extract an OptimizationTarget without a matching
+        Concept, and would otherwise incorrectly fall back to
+        pure-semantic-only ranking.
+        """
+        return bool(
+            self.concepts
+            or self.goals
+            or self.constraints
+            or self.optimization
+            or self.relationships
+            or self.exclusions
+            or self.requirements
+        )

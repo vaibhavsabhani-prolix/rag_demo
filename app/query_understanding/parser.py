@@ -30,7 +30,18 @@ from app.config import (
     USE_REMOTE_LLM,
 )
 from app.query_understanding.field_mapping import CODE_TO_FIELD, FIELD_MAPPING
-from app.query_understanding.models import CandidateFilter, MetadataFilter, ParsedQuery
+from app.query_understanding.models import (
+    CandidateFilter,
+    Concept,
+    Constraint,
+    Goal,
+    MetadataFilter,
+    OptimizationTarget,
+    ParsedQuery,
+    RankingWeights,
+    Relationship,
+    Requirement,
+)
 from app.query_understanding.normalizer import normalize_country, normalize_org_name
 from app.query_understanding.prompt import build_prompt
 
@@ -111,6 +122,162 @@ def _normalize_value(field_name: str, spec: dict, value: Any) -> Any:
         return int(num) if num.is_integer() else num
 
     return val_str
+
+
+# ==============================================================
+# Dynamic requirements structure (concepts/goals/constraints/
+# optimization/exclusions/relationships/requirements/ranking_weights)
+#
+# Purely additive to the semantic_query/filters extraction above -
+# parsed leniently since it feeds Reranker's blended scoring (see
+# app/reranker.py), not FIELD_MAPPING-validated metadata truth. A
+# malformed entry is dropped rather than raising, and a missing/older
+# LLM response (no such keys) simply yields empty lists / defaults.
+# ==============================================================
+
+
+def _as_float(value: Any, default: float = 0.5) -> float:
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(1.0, num))
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+    return bool(value)
+
+
+def _as_str_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _parse_concepts(raw: Any) -> list[Concept]:
+    concepts: list[Concept] = []
+    for item in raw or []:
+        if not isinstance(item, dict) or not item.get("text"):
+            continue
+        concepts.append(
+            Concept(
+                id=str(item.get("id", "")),
+                text=str(item["text"]).strip(),
+                role=str(item.get("role", "")).strip(),
+                importance=_as_float(item.get("importance")),
+                required=_as_bool(item.get("required", False)),
+                semantic_variants=_as_str_list(item.get("semantic_variants")),
+            )
+        )
+    return concepts
+
+
+def _parse_goals(raw: Any) -> list[Goal]:
+    goals: list[Goal] = []
+    for item in raw or []:
+        if not isinstance(item, dict) or not item.get("text"):
+            continue
+        goals.append(
+            Goal(
+                id=str(item.get("id", "")),
+                text=str(item["text"]).strip(),
+                importance=_as_float(item.get("importance")),
+                required=_as_bool(item.get("required", False)),
+                keywords=_as_str_list(item.get("keywords")),
+            )
+        )
+    return goals
+
+
+def _parse_constraints(raw: Any) -> list[Constraint]:
+    constraints: list[Constraint] = []
+    for item in raw or []:
+        if not isinstance(item, dict) or not item.get("text"):
+            continue
+        constraints.append(
+            Constraint(
+                id=str(item.get("id", "")),
+                text=str(item["text"]).strip(),
+                type=str(item.get("type", "")).strip(),
+                importance=_as_float(item.get("importance")),
+                required=_as_bool(item.get("required", False)),
+                keywords=_as_str_list(item.get("keywords")),
+            )
+        )
+    return constraints
+
+
+def _parse_optimization(raw: Any) -> list[OptimizationTarget]:
+    targets: list[OptimizationTarget] = []
+    for item in raw or []:
+        if not isinstance(item, dict) or not item.get("property"):
+            continue
+        direction = str(item.get("direction", "maximize")).strip().lower()
+        if direction not in ("maximize", "minimize"):
+            direction = "maximize"
+        targets.append(
+            OptimizationTarget(
+                id=str(item.get("id", "")),
+                property=str(item["property"]).strip(),
+                direction=direction,
+                importance=_as_float(item.get("importance")),
+            )
+        )
+    return targets
+
+
+def _parse_relationships(raw: Any) -> list[Relationship]:
+    relationships: list[Relationship] = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source", "")).strip()
+        target = str(item.get("target", "")).strip()
+        if not source or not target:
+            continue
+        relationships.append(
+            Relationship(
+                source=source,
+                relation=str(item.get("relation", "")).strip(),
+                target=target,
+                importance=_as_float(item.get("importance")),
+            )
+        )
+    return relationships
+
+
+def _parse_requirements(raw: Any) -> list[Requirement]:
+    requirements: list[Requirement] = []
+    for item in raw or []:
+        if not isinstance(item, dict) or not item.get("description"):
+            continue
+        requirements.append(
+            Requirement(
+                id=str(item.get("id", "")),
+                description=str(item["description"]).strip(),
+                type=str(item.get("type", "")).strip(),
+                importance=_as_float(item.get("importance")),
+                required=_as_bool(item.get("required", False)),
+                evaluation_hint=str(item.get("evaluation_hint", "")).strip(),
+                keywords=_as_str_list(item.get("keywords")),
+            )
+        )
+    return requirements
+
+
+def _parse_ranking_weights(raw: Any) -> RankingWeights:
+    if not isinstance(raw, dict):
+        return RankingWeights()
+    return RankingWeights(
+        semantic_relevance=_as_float(raw.get("semantic_relevance"), 1.0),
+        requirement_satisfaction=_as_float(raw.get("requirement_satisfaction"), 0.0),
+        relationship_satisfaction=_as_float(raw.get("relationship_satisfaction"), 0.0),
+        constraint_satisfaction=_as_float(raw.get("constraint_satisfaction"), 0.0),
+        evidence_strength=_as_float(raw.get("evidence_strength"), 0.0),
+        exact_match=_as_float(raw.get("exact_match"), 0.0),
+    )
 
 
 class QueryUnderstanding:
@@ -440,4 +607,14 @@ class QueryUnderstanding:
             semantic_query=semantic_query,
             candidate_filters=candidate_filters,
             metadata_filters=metadata_filters,
+            intent=str(llm_res.get("intent") or "").strip(),
+            query_type=_as_str_list(llm_res.get("query_type")),
+            concepts=_parse_concepts(llm_res.get("concepts")),
+            goals=_parse_goals(llm_res.get("goals")),
+            constraints=_parse_constraints(llm_res.get("constraints")),
+            optimization=_parse_optimization(llm_res.get("optimization")),
+            exclusions=_as_str_list(llm_res.get("exclusions")),
+            relationships=_parse_relationships(llm_res.get("relationships")),
+            requirements=_parse_requirements(llm_res.get("requirements")),
+            ranking_weights=_parse_ranking_weights(llm_res.get("ranking_weights")),
         )

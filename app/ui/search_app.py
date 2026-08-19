@@ -168,6 +168,49 @@ def main() -> None:
         else:
             st.write("**Resolved filters:** (none)")
 
+        if parsed.has_requirements_structure:
+            st.write("**Reranking requirements structure:**")
+            if parsed.intent:
+                st.write(f"- Intent: {parsed.intent}")
+            if parsed.query_type:
+                st.write(f"- Query type: {', '.join(parsed.query_type)}")
+            if parsed.concepts:
+                st.write(
+                    "- Concepts: "
+                    + ", ".join(
+                        f"{c.text} ({c.role}{', required' if c.required else ''})"
+                        for c in parsed.concepts
+                    )
+                )
+            if parsed.goals:
+                st.write("- Goals: " + ", ".join(g.text for g in parsed.goals))
+            if parsed.constraints:
+                st.write("- Constraints: " + ", ".join(k.text for k in parsed.constraints))
+            if parsed.optimization:
+                st.write(
+                    "- Optimization: "
+                    + ", ".join(f"{o.direction} {o.property}" for o in parsed.optimization)
+                )
+            if parsed.exclusions:
+                st.write("- Exclusions: " + ", ".join(parsed.exclusions))
+            if parsed.relationships:
+                st.write(
+                    "- Relationships: "
+                    + ", ".join(
+                        f"{r.source} —{r.relation}→ {r.target}" for r in parsed.relationships
+                    )
+                )
+            w = parsed.ranking_weights
+            st.write(
+                "- Ranking weights: "
+                f"semantic={w.semantic_relevance:.2f}, "
+                f"requirement={w.requirement_satisfaction:.2f}, "
+                f"relationship={w.relationship_satisfaction:.2f}, "
+                f"constraint={w.constraint_satisfaction:.2f}, "
+                f"evidence={w.evidence_strength:.2f}, "
+                f"exact_match={w.exact_match:.2f}"
+            )
+
         st.write("**Pipeline steps:**")
         for name, elapsed in stage_timings:
             st.write(f"- `{name}` — {elapsed * 1000:.0f} ms")
