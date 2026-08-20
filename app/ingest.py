@@ -20,6 +20,7 @@ def ingest_directory(directory: str):
     chunker = PatentChunker()
     embedder = Embedder()
     db = QdrantDB()
+    db.create_collections()
 
     txt_files = sorted(Path(directory).glob("*.txt"))
 

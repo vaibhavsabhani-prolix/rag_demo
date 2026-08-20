@@ -94,7 +94,8 @@ To prevent indexing low-quality vector noise into Qdrant, every chunk passes thr
   * `patents` — one point per patent, metadata only, no vectors. Looked up by `patent_id` for display and metadata filtering; never searched by vector.
 * **Distance Metric**: Cosine Similarity.
 * **Batch Ingestion**:
-  * `app/ingest.py` orchestrates ingestion of patent files from `patents-processed/`.
+  * `app/ingest.py` calls `QdrantDB.create_collections()` on startup (idempotent — no-ops if they already exist), so a fresh Qdrant instance gets both collections created automatically on first run; no manual setup step is required.
+  * It then orchestrates ingestion of patent files from `patents-processed/`.
   * Accumulates embedded chunks in batches of `BATCH_SIZE = 100` and upserts via `QdrantDB.insert_batch()`.
   * Upserts each patent's metadata once via `QdrantDB.upsert_patent_metadata()`.
 * **Chunk Payload Attributes**:
@@ -248,6 +249,10 @@ Verify Qdrant is running at `http://localhost:6333/dashboard`.
 To ingest, chunk, embed, and index patents into Qdrant:
 ```bash
 ./venv/bin/python -m app.ingest
+```
+This automatically creates the `patent_chunks` and `patents` collections on first run if they don't already exist — no separate setup step needed on a fresh Qdrant instance. To wipe and recreate both collections from scratch instead:
+```bash
+./venv/bin/python -c "from app.qdrant_db import QdrantDB; QdrantDB().reset_collections()"
 ```
 
 ### 3.1 View All Indexed Patents Summary Table
