@@ -81,7 +81,6 @@ from collections import defaultdict
 from typing import Callable
 
 from app.config import FINAL_TOP_K
-from app.config import FINAL_TOP_K, MIN_RESULT_SCORE
 from app.embedder import Embedder
 from app.evidence_selector import EvidenceSelector
 from app.filter_engine import FilterEngine
@@ -261,23 +260,11 @@ class SemanticSearch:
         # here (post-aggregation) rather than on the chunk list means a
         # patent survives on its best chunk regardless of how many other
         # patents' chunks outscored its weaker ones.
-        # Step 5: Aggregate chunks into patent-level results, filter by minimum
-        # score threshold (score > MIN_RESULT_SCORE), then keep only the top
-        # FINAL_TOP_K patents by patent score.
         patent_results = _run(
             "Aggregation",
             lambda: self._aggregate_by_patent(
                 reranked_results, is_question=parsed.is_question, parsed_query=parsed
             )[:FINAL_TOP_K],
-            lambda: [
-                p
-                for p in self._aggregate_by_patent(
-                    reranked_results,
-                    is_question=parsed.is_question,
-                    parsed_query=parsed,
-                )
-                if p.score > MIN_RESULT_SCORE
-            ][:FINAL_TOP_K],
         )
 
         return (
