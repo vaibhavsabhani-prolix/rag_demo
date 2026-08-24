@@ -31,6 +31,9 @@ class ScoreBreakdown:
     weights_used: dict = field(default_factory=dict)
     question_score: float = 0.0
     answer_relevance_score: float = 0.0
+    request_satisfaction_score: float = 0.0
+    request_satisfaction_label: str = "UNASSESSED"
+    request_satisfaction_reason: str = ""
 
 
 @dataclass
@@ -127,3 +130,24 @@ class PatentSearchResult:
     def preview(self) -> str:
         """Preview text from the best matching chunk."""
         return self.best_chunk.text
+
+    @property
+    def request_satisfaction_score(self) -> float:
+        """Patent-level request satisfaction score from its best representative chunk."""
+        if self.best_chunk and self.best_chunk.breakdown:
+            return self.best_chunk.breakdown.request_satisfaction_score
+        return 0.0
+
+    @property
+    def request_satisfaction_label(self) -> str:
+        """Patent-level request satisfaction label ('DIRECT_MATCH', 'PARTIAL_MATCH', 'NON_MATCH', 'UNASSESSED')."""
+        if self.best_chunk and self.best_chunk.breakdown:
+            return self.best_chunk.breakdown.request_satisfaction_label
+        return "UNASSESSED"
+
+    @property
+    def request_satisfaction_reason(self) -> str:
+        """Patent-level request satisfaction reason from its best representative chunk."""
+        if self.best_chunk and self.best_chunk.breakdown:
+            return self.best_chunk.breakdown.request_satisfaction_reason
+        return ""

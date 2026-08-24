@@ -45,6 +45,7 @@ from sentence_transformers import CrossEncoder
 from app.config import (
     EXCLUSION_HARD_FILTER_THRESHOLD,
     EXCLUSION_PENALTY_WEIGHT,
+    FILTER_NON_MATCH_CANDIDATES,
     LOCAL_RERANKER_MODEL,
     MAX_EXCLUSIONS_SCORED,
     MAX_OPTIMIZATION_TARGETS_SCORED,
@@ -52,6 +53,11 @@ from app.config import (
     MAX_SECONDARY_WEIGHT,
     MAX_WEAK_SIGNAL_WEIGHT,
     MIN_SEMANTIC_WEIGHT,
+    NON_MATCH_PENALTY_MULTIPLIER,
+    PARTIAL_MATCH_PENALTY_MULTIPLIER,
+    REQUEST_SATISFACTION_DIRECT_THRESHOLD,
+    REQUEST_SATISFACTION_NON_MATCH_THRESHOLD,
+    REQUEST_SATISFACTION_WEIGHT,
     REQUIRED_IMPORTANCE_BOOST,
     RERANK_FINE_STAGE_TOP_N,
     RERANKER_REMOTE_API_KEY,
@@ -228,6 +234,86 @@ def _build_exclusion_probe(term: str) -> str:
     return f"the invention uses, includes, or involves {term}"
 
 
+def _format_candidate_context(payload: dict | None) -> str:
+    """
+    Format the technical context for a candidate chunk, including its section
+    to provide structural context.
+    """
+    if not payload:
+        return ""
+    section = (payload.get("section") or "").strip()
+    text = (payload.get("text") or "").strip()
+    if section and text:
+        return f"Section: {section}\n{text}"
+    return text
+
+
+def _build_request_satisfaction_probe(
+    requirements: ParsedQuery | None, query: str
+) -> str:
+    """
+    Dynamically constructs a natural-language contextual satisfaction probe from
+    the query and any extracted requirements (concepts, goals, requirements,
+    constraints, question intent).
+
+    This probe is evaluated against candidate passages to determine if the candidate
+    in context actually satisfies what was requested, rather than merely sharing
+    semantic vocabulary or vector similarity.
+    """
+    if requirements is not None:
+        if requirements.is_question and requirements.question_intent:
+            qi = requirements.question_intent
+            target = qi.target or requirements.original_query or query
+            if qi.answer_criteria:
+                return f"Discloses direct information and evidence answering {target}, specifically {qi.answer_criteria}"
+            return f"Discloses direct information and evidence answering {target}"
+
+        # Structured query components
+        concept_terms = [
+            c.text
+            for c in requirements.concepts
+            if c.required or c.importance >= STRUCTURED_SIGNAL_MIN_IMPORTANCE
+        ]
+        goal_terms = [
+            g.text
+            for g in requirements.goals
+            if g.required or g.importance >= STRUCTURED_SIGNAL_MIN_IMPORTANCE
+        ]
+        req_terms = [
+            r.description
+            for r in requirements.requirements
+            if r.required or r.importance >= STRUCTURED_SIGNAL_MIN_IMPORTANCE
+        ]
+        constraint_terms = [
+            k.text
+            for k in requirements.constraints
+            if k.required or k.importance >= STRUCTURED_SIGNAL_MIN_IMPORTANCE
+        ]
+
+        parts = []
+        if requirements.intent:
+            parts.append(f"specifically directed to {requirements.intent}")
+        elif concept_terms:
+            parts.append(f"specifically directed to {', '.join(concept_terms)}")
+
+        if goal_terms:
+            parts.append(f"specifically achieving {', '.join(goal_terms)}")
+        if req_terms:
+            parts.append(f"fulfilling technical requirement of {', '.join(req_terms)}")
+        if constraint_terms:
+            parts.append(f"operating under constraint {', '.join(constraint_terms)}")
+
+        if parts:
+            return "The disclosed patent subject matter is " + " and ".join(parts)
+
+        if requirements.semantic_query:
+            return f"The disclosed patent subject matter is specifically directed to {requirements.semantic_query.strip()}"
+
+    # Fallback to query text
+    q = (query or "").strip()
+    return f"The disclosed patent subject matter is specifically directed to {q}"
+
+
 # ==================================================================
 # Bounded, application-enforced weight computation. The LLM's
 # ranking_weights is read only where a dedicated field exists
@@ -250,13 +336,10 @@ def _compute_weights(requirements: ParsedQuery) -> dict:
         or bool(requirements.constraints)
         or bool(requirements.exclusions)
     )
+    has_sat = True
 
-    # Step 1/2: clamp per-category weight. relationship_satisfaction is
-    # the only RankingWeights field with a direct new-category mapping;
-    # optimization/lexical have no dedicated LLM field in the current
-    # schema (no schema change per the approved plan), so they get a
-    # fixed ceiling value when the category has data, same spirit as
-    # "a small fixed ceiling" already specified for lexical/exact.
+    # Step 1/2: clamp per-category weight.
+    w_sat = REQUEST_SATISFACTION_WEIGHT if has_sat else 0.0
     w_rel = (
         min(max(llm.relationship_satisfaction, 0.0), MAX_SECONDARY_WEIGHT)
         if has_rel
@@ -268,10 +351,11 @@ def _compute_weights(requirements: ParsedQuery) -> dict:
 
     # Step 3: shrink the clamped remainder further if needed so
     # semantic+structured never drops below its floor.
-    remainder = w_rel + w_opt + w_lex + w_exact
+    remainder = w_sat + w_rel + w_opt + w_lex + w_exact
     sem_and_struct = 1.0 - remainder
     if sem_and_struct < MIN_SEMANTIC_WEIGHT and remainder > 0:
         scale = (1.0 - MIN_SEMANTIC_WEIGHT) / remainder
+        w_sat *= scale
         w_rel *= scale
         w_opt *= scale
         w_lex *= scale
@@ -289,6 +373,7 @@ def _compute_weights(requirements: ParsedQuery) -> dict:
     weights = {
         "semantic": w_sem,
         "structured": w_struct,
+        "request_satisfaction": w_sat,
         "relationship": w_rel,
         "optimization": w_opt,
         "lexical": w_lex,
@@ -378,7 +463,11 @@ class Reranker:
                     float(score),
                     chunk,
                     ScoreBreakdown(
-                        semantic_score=float(score), final_score=float(score)
+                        semantic_score=float(score),
+                        final_score=float(score),
+                        request_satisfaction_score=0.0,
+                        request_satisfaction_label="UNASSESSED",
+                        request_satisfaction_reason="Fallback semantic scoring without requirements structure",
                     ),
                 )
                 for score, chunk in ranked
@@ -532,6 +621,87 @@ class Reranker:
             result[idx] = worst
         return result
 
+    def _score_request_satisfaction(
+        self,
+        requirements: ParsedQuery | None,
+        query: str,
+        fine_indices: list[int],
+        fine_texts: list[str],
+        results: list | None = None,
+    ) -> dict[int, tuple[float, str, str]]:
+        """
+        Dynamically evaluate how strongly each fine-stage candidate chunk satisfies
+        the user's actual request (subject, function, relationships, constraints, question intent)
+        in its patent context, distinguishing true satisfaction from incidental semantic similarity.
+
+        Returns a mapping from chunk index to (satisfaction_score, label, reason), where
+        label is one of 'DIRECT_MATCH', 'PARTIAL_MATCH', or 'NON_MATCH'.
+        """
+        if not fine_indices or not fine_texts:
+            return {}
+
+        # Use candidate contexts formatted with section/structure when available
+        if results:
+            candidate_contexts = [
+                _format_candidate_context(results[i].payload)
+                if hasattr(results[i], "payload")
+                else fine_texts[pos]
+                for pos, i in enumerate(fine_indices)
+            ]
+        else:
+            candidate_contexts = fine_texts
+
+        import math
+
+        try:
+            probe = _build_request_satisfaction_probe(requirements, query)
+            raw_scores = self._score(probe, candidate_contexts)
+        except Exception:
+            raw_scores = [0.0] * len(fine_indices)
+
+        # Multi-part query analysis: if both distinct concepts and constraints/goals exist
+        has_multi_part = (
+            requirements is not None
+            and bool(requirements.concepts)
+            and (
+                bool(requirements.goals)
+                or bool(requirements.constraints)
+                or bool(requirements.requirements)
+            )
+        )
+
+        result: dict[int, tuple[float, str, str]] = {}
+        for pos, idx in enumerate(fine_indices):
+            raw = raw_scores[pos] if pos < len(raw_scores) else 0.0
+            if math.isnan(raw) or math.isinf(raw):
+                sat_score = 0.0
+            else:
+                sat_score = max(0.0, min(1.0, float(raw)))
+
+            if sat_score >= REQUEST_SATISFACTION_DIRECT_THRESHOLD:
+                label = "DIRECT_MATCH"
+                if requirements and requirements.is_question:
+                    reason = f"DIRECT_MATCH: context directly provides evidence answering the question target (satisfaction: {sat_score:.2f})"
+                elif has_multi_part:
+                    reason = f"DIRECT_MATCH: context directly satisfies both requested subject and functional/constraint requirements (satisfaction: {sat_score:.2f})"
+                else:
+                    reason = f"DIRECT_MATCH: context directly satisfies the requested technical subject/purpose (satisfaction: {sat_score:.2f})"
+            elif sat_score >= REQUEST_SATISFACTION_NON_MATCH_THRESHOLD:
+                label = "PARTIAL_MATCH"
+                if requirements and requirements.is_question:
+                    reason = f"PARTIAL_MATCH: context is related to question topic but does not fully satisfy answer criteria (satisfaction: {sat_score:.2f})"
+                elif has_multi_part:
+                    reason = f"PARTIAL_MATCH: context satisfies some requested aspects but does not fully fulfill complete requirements (satisfaction: {sat_score:.2f})"
+                else:
+                    reason = f"PARTIAL_MATCH: context partially satisfies request or has moderate compatibility (satisfaction: {sat_score:.2f})"
+            else:
+                label = "NON_MATCH"
+                reason = f"NON_MATCH: context fails to satisfy the user's actual request despite potential terminology overlap (satisfaction: {sat_score:.2f})"
+
+            result[idx] = (sat_score, label, reason)
+
+        return result
+
     def _blend_and_sort(
         self,
         query: str,
@@ -575,6 +745,10 @@ class Reranker:
             exclusions, fine_indices, fine_texts, results
         )
 
+        satisfaction_data = self._score_request_satisfaction(
+            requirements, query, fine_indices, fine_texts, results
+        )
+
         weights = _compute_weights(requirements)
 
         # has_struct/has_rel gate the structural-coverage penalty below -
@@ -594,10 +768,14 @@ class Reranker:
                 lex = _lexical_score(text_lower, requirements)
                 exact = _exact_match_score(text_lower, query)
                 excl = exclusion_scores.get(i, 0.0)
+                sat_score, sat_label, sat_reason = satisfaction_data.get(
+                    i, (0.0, "UNASSESSED", "Unassessed candidate")
+                )
 
                 final = (
                     weights["semantic"] * sem
                     + weights["structured"] * struct
+                    + weights.get("request_satisfaction", 0.0) * sat_score
                     + weights["relationship"] * rel
                     + weights["optimization"] * opt
                     + weights["lexical"] * lex
@@ -634,6 +812,13 @@ class Reranker:
                 else:
                     structure_coverage = 1.0
 
+                # Apply request satisfaction compatibility gating / penalty:
+                # Semantic similarity must not rescue a NON_MATCH candidate.
+                if sat_label == "NON_MATCH":
+                    final *= NON_MATCH_PENALTY_MULTIPLIER
+                elif sat_label == "PARTIAL_MATCH":
+                    final *= PARTIAL_MATCH_PENALTY_MULTIPLIER
+
                 final = max(0.0, final)
 
                 breakdown = ScoreBreakdown(
@@ -645,13 +830,21 @@ class Reranker:
                     exact_match=exact,
                     exclusion_penalty=excl,
                     structure_coverage=structure_coverage,
+                    request_satisfaction_score=sat_score,
+                    request_satisfaction_label=sat_label,
+                    request_satisfaction_reason=sat_reason,
                     final_score=final,
                     weights_used=weights,
                 )
             else:
                 final = semantic_scores[i]
                 breakdown = ScoreBreakdown(
-                    semantic_score=final, final_score=final, weights_used=weights
+                    semantic_score=final,
+                    final_score=final,
+                    request_satisfaction_score=0.0,
+                    request_satisfaction_label="UNASSESSED",
+                    request_satisfaction_reason="Coarse candidate not evaluated in fine stage",
+                    weights_used=weights,
                 )
 
             blended.append((final, chunk, breakdown))
@@ -668,6 +861,15 @@ class Reranker:
                 for item in blended
                 if item[2].exclusion_penalty < EXCLUSION_HARD_FILTER_THRESHOLD
             ]
+
+        if FILTER_NON_MATCH_CANDIDATES:
+            surviving = [
+                item
+                for item in blended
+                if item[2].request_satisfaction_label != "NON_MATCH"
+            ]
+            if surviving:
+                blended = surviving
 
         blended.sort(key=lambda item: item[0], reverse=True)
         return blended

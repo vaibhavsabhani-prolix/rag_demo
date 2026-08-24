@@ -81,6 +81,7 @@ from collections import defaultdict
 from typing import Callable
 
 from app.config import FINAL_TOP_K
+from app.config import FINAL_TOP_K, MIN_RESULT_SCORE
 from app.embedder import Embedder
 from app.evidence_selector import EvidenceSelector
 from app.filter_engine import FilterEngine
@@ -260,11 +261,23 @@ class SemanticSearch:
         # here (post-aggregation) rather than on the chunk list means a
         # patent survives on its best chunk regardless of how many other
         # patents' chunks outscored its weaker ones.
+        # Step 5: Aggregate chunks into patent-level results, filter by minimum
+        # score threshold (score > MIN_RESULT_SCORE), then keep only the top
+        # FINAL_TOP_K patents by patent score.
         patent_results = _run(
             "Aggregation",
             lambda: self._aggregate_by_patent(
                 reranked_results, is_question=parsed.is_question, parsed_query=parsed
             )[:FINAL_TOP_K],
+            lambda: [
+                p
+                for p in self._aggregate_by_patent(
+                    reranked_results,
+                    is_question=parsed.is_question,
+                    parsed_query=parsed,
+                )
+                if p.score > MIN_RESULT_SCORE
+            ][:FINAL_TOP_K],
         )
 
         return (
@@ -449,9 +462,24 @@ class SemanticSearch:
         # ---- Build PatentSearchResult per patent ----
         patent_results: list[PatentSearchResult] = []
 
+        def _chunk_rank_key(c: RankedChunk) -> tuple[int, float]:
+            label = (
+                c.breakdown.request_satisfaction_label if c.breakdown else "UNASSESSED"
+            )
+            priority = (
+                3
+                if label == "DIRECT_MATCH"
+                else (
+                    2
+                    if label == "PARTIAL_MATCH"
+                    else (1 if label == "UNASSESSED" else 0)
+                )
+            )
+            return (priority, c.score)
+
         for patent_id, chunks in patent_chunks.items():
-            # Sort chunks by reranker score descending
-            chunks.sort(key=lambda c: c.score, reverse=True)
+            # Sort chunks prioritizing request satisfaction quality, then score descending
+            chunks.sort(key=_chunk_rank_key, reverse=True)
 
             best = chunks[0]
 
@@ -525,7 +553,30 @@ class SemanticSearch:
                 )
             )
 
-        # ---- Sort patents by score descending ----
-        patent_results.sort(key=lambda p: p.score, reverse=True)
+        # ---- Sort patents by satisfaction priority then score descending ----
+        def _patent_rank_key(p: PatentSearchResult) -> tuple[int, float]:
+            priority = (
+                3
+                if p.request_satisfaction_label == "DIRECT_MATCH"
+                else (
+                    2
+                    if p.request_satisfaction_label == "PARTIAL_MATCH"
+                    else (1 if p.request_satisfaction_label == "UNASSESSED" else 0)
+                )
+            )
+            return (priority, p.score)
+
+        # Filter out patents whose evidence is only NON_MATCH when satisfying patents exist
+        satisfying_patents = [
+            p
+            for p in patent_results
+            if p.request_satisfaction_label in ("DIRECT_MATCH", "PARTIAL_MATCH")
+        ]
+        if satisfying_patents:
+            patent_results = [
+                p for p in patent_results if p.request_satisfaction_label != "NON_MATCH"
+            ]
+
+        patent_results.sort(key=_patent_rank_key, reverse=True)
 
         return patent_results
