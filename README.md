@@ -1,8 +1,8 @@
 # Patent Semantic Search System
 
-A production-ready Patent Retrieval & Semantic Search system built with **Python**, **Qdrant Vector DB**, the **Qwen3 Embedding Model**, an **LLM-based Query Understanding layer**, **metadata filtering**, and a **cross-encoder reranker**.
+A production-ready Patent Retrieval & Semantic Search system built with **Python**, **Qdrant Vector DB**, the **Qwen3 Embedding Model**, an **LLM-based Query Understanding layer**, **metadata filtering**, a **cross-encoder reranker**, and an **Answer Evidence Extraction & Highlighting engine**.
 
-The pipeline handles end-to-end processing of complex technical patent documents: from raw document parsing and multi-stage semantic chunking, through validation, vector embedding, and batch indexing — to natural-language query understanding, patent-grouped vector search, post-retrieval metadata filtering, cross-encoder reranking, and patent-level result aggregation. A Streamlit UI and CLI tools are included for search and index inspection.
+The pipeline handles end-to-end processing of complex technical patent documents: from raw document parsing and multi-stage semantic chunking, through validation, vector embedding, and batch indexing — to natural-language query understanding, answer-target-preserving semantic retrieval for questions, patent-grouped vector search, post-retrieval metadata filtering, cross-encoder reranking, evidence selection, and patent-level result aggregation. A Streamlit UI and CLI tools are included for search and index inspection.
 
 ---
 
@@ -24,15 +24,37 @@ flowchart TD
 
     subgraph Search_Pipeline ["2. Query Understanding & Search Pipeline"]
         J["User Search Query"] --> K["Query Understanding LLM (app/query_understanding/)"]
-        K --> K1["semantic_query + metadata_filters + structured requirements"]
-        K1 -->|"metadata filters only, no topic"| MO["Metadata-only lookup\n(app/qdrant_db.py filter_patent_ids)"]
-        K1 -->|"has semantic topic"| L["Embed semantic_query (app/embedder.py)"]
-        L --> M["Qdrant Vector Search grouped by patent_id\n(Top PATENT_CANDIDATE_TOP_K patents)"]
-        M --> N["Metadata Filtering (app/filter_engine.py)"]
-        N --> O["Cross-Encoder Reranker (remote or local, app/reranker.py)"]
-        MO --> P
-        O --> P["Patent Aggregation (app/semantic_search.py)"]
-        P --> Q["PatentSearchResult list (patent-level scoring)"]
+        K --> K1["ParsedQuery: semantic_query + metadata_filters +\nis_question + question_intent + dynamic requirements"]
+        
+        K1 -->|"is_metadata_only: filters, no topic"| MO1["Filter whole patents_latest collection\n(QdrantDB.filter_patent_ids)"]
+        MO1 --> MO2["Fetch every chunk of matching patents\n(QdrantDB.get_chunks_for_patent_ids) - unbounded, no rerank"]
+        MO2 --> P
+        
+        K1 -->|"Topic Query (is_question=false)"| L1["semantic_query = core topic\n(e.g., 'material property determination')"]
+        K1 -->|"Question Query (is_question=true)"| L2["semantic_query = answer-target-preserving retrieval query\n(e.g., 'properties determined based on identified material')"]
+        
+        L1 --> L["Embed semantic_query ONLY (app/embedder.py)"]
+        L2 --> L
+        
+        L --> M["Qdrant group-by-patent_id search on patent_chunks_latest\n(top PATENT_CANDIDATE_TOP_K patents x CANDIDATE_CHUNKS_PER_PATENT chunks)"]
+        M --> M1["Dedup to 1 best chunk/patent for display only\n(_dedupe_top_chunk_per_patent -> qdrant_results)"]
+        M --> N{"metadata_filters present?"}
+        N -->|"yes"| N1["Fetch metadata for candidate patent_ids only,\nFilterEngine.matches() per patent - keep matching chunks"]
+        N -->|"no"| O
+        N1 --> O["Cross-Encoder Reranker (remote or local, app/reranker.py)"]
+        
+        O --> O1{"has_requirements_structure?"}
+        O1 -->|"no"| O2["Pure semantic score, sorted descending"]
+        O1 -->|"yes"| O3["Coarse semantic score for all candidates ->\ntop RERANK_FINE_STAGE_TOP_N get fine blend\n(structured sentence + relationships + optimization\n+ exclusions + lexical/exact, bounded weights,\nstructure-coverage penalty)"]
+        
+        O2 --> ES{"is_question?"}
+        O3 --> ES
+        
+        ES -->|"yes"| ES1["Evidence Selector & Answer Extractor (app/evidence_selector.py)\nExtracts answer, verbatim evidence, confidence, and character spans"]
+        ES -->|"no"| P["Patent Aggregation (app/semantic_search.py)"]
+        ES1 --> P
+        
+        P --> Q["PatentSearchResult list, top FINAL_TOP_K\n(patent score = best chunk score, inline highlighted text)"]
         Q --> R["Streamlit UI (app/ui/search_app.py) / CLI"]
     end
 ```
@@ -90,8 +112,8 @@ To prevent indexing low-quality vector noise into Qdrant, every chunk passes thr
 ### Stage 5: Vector DB Indexing & Storage (`app/qdrant_db.py` & `app/ingest.py`)
 * **Vector Store**: **Qdrant** running via Docker on port `6333`.
 * **Two Collections**:
-  * `patent_chunks` — one point per chunk, with its embedding vector and full chunk payload. Searched.
-  * `patents` — one point per patent, metadata only, no vectors. Looked up by `patent_id` for display and metadata filtering; never searched by vector.
+  * `patent_chunks_latest` — one point per chunk, with its embedding vector and full chunk payload. Searched.
+  * `patents_latest` — one point per patent, metadata only, no vectors. Looked up by `patent_id` for display and metadata filtering; never searched by vector.
 * **Distance Metric**: Cosine Similarity.
 * **Batch Ingestion**:
   * `app/ingest.py` calls `QdrantDB.create_collections()` on startup (idempotent — no-ops if they already exist), so a fresh Qdrant instance gets both collections created automatically on first run; no manual setup step is required.
@@ -103,50 +125,91 @@ To prevent indexing low-quality vector noise into Qdrant, every chunk passes thr
 
 ---
 
-### Stage 6: Query Understanding (`app/query_understanding/`)
-Before anything is embedded, the raw natural-language query is sent to an instruction LLM (remote OpenAI-compatible endpoint by default, with a local Qwen fallback) that splits it into:
+### Stage 6: Query Understanding & Question Processing (`app/query_understanding/`)
+Before anything is embedded, the raw natural-language query is processed by the Query Understanding LLM (remote endpoint with local fallback). It classifies the query type and extracts structured representations into a `ParsedQuery`:
 
-* **`semantic_query`**: the pure topic, stripped of any metadata phrasing, to be embedded and reranked.
-* **`metadata_filters`**: structured `(field, operator, value)` triples, validated against the `FIELD_MAPPING` allowlist (`app/query_understanding/field_mapping.py`) so the LLM can never invent a field — e.g. *"published in 2008 by Wyeth"* → `PY equals 2008` + assignee filter.
-* **A structured requirements breakdown** (concepts, goals, constraints, optimization targets, exclusions, relationships, ranking weights) used later by the reranker to score more than raw topical similarity.
-* If the LLM determines the query is **pure metadata with no topic** (e.g. *"applications filed in 2008 by Wyeth"*), `semantic_query` comes back empty and the search skips embedding/vector search/reranking entirely, filtering the `patents` collection directly instead.
+1. **Query Intent Classification (`is_question`)**:
+   * **Topic Search (`is_question = false`)**: User wants to find patents about a topic or technology (e.g., *"material-aware 3D scanning"*, *"methods for determining material properties"*).
+   * **Question / Answer-Seeking Query (`is_question = true`)**: User seeks specific factual information from patent text (e.g., *"What types of image capture devices can be used in the system?"*, *"How is material determined based on detected features?"*).
 
-Falls back to a pure-semantic query (no filters) if the LLM is unavailable or returns unparseable output.
+2. **Adaptive Semantic Query Generation (`semantic_query`)**:
+   * **Rule 4A (Topic Search)**: Strips recognized metadata filter phrases and outputs the clean invention/technology topic.
+   * **Rule 4B (Question Search)**: Generates an answer-target-preserving retrieval query:
+     $$\text{semantic\_query} = \text{requested\_answer\_target} + \text{target\_entity} + \text{important\_relationship}$$
+     * Preserves the exact answer target (*types of devices*, *properties*, *methods*, *reasons*, *components*, *differences*) and qualifying context (*used in the system*, *based on detected features*).
+     * Prevents over-summarization (does **not** reduce *"What types of image capture devices can be used in the system?"* to *"image capture devices"* or *"image capture system"*).
+     * Avoids over-expansion and hallucinated keyword dumps.
+
+3. **Metadata Filters (`metadata_filters`)**:
+   * Extracts structured `(field, operator, value)` constraints mapped strictly to the allowlist (e.g. `CAN_EN`, `AAPS`, `PY`, `PRC`). Filters are preserved separately from `semantic_query` even in question queries.
+
+4. **Dynamic Requirements Structure & Question Intent**:
+   * For topic searches: extracts `concepts`, `goals`, `constraints`, `optimization`, `exclusions`, and `relationships` for reranker blending.
+   * For questions: populates `question_intent` with `target`, `expected_answer_type`, and `answer_criteria`.
+
+---
+
+### Stage 6B: Metadata-Only Fast Path (`SemanticSearch._search_by_metadata_only`)
+Taken whenever `parsed.is_metadata_only` is `True` (e.g. *"applications filed in 2008 by Wyeth"*):
+
+1. `QdrantDB.filter_patent_ids()` scrolls the entire `patents_latest` collection and returns every `patent_id` matching all `metadata_filters`.
+2. `QdrantDB.get_chunks_for_patent_ids()` fetches every chunk belonging to those patents from `patent_chunks_latest` without vector search or reranking.
+3. Chunks slot directly into aggregation with placeholder `score = 1.0`.
 
 ---
 
 ### Stage 7: Semantic Vector Search (`app/semantic_search.py` + `app/qdrant_db.py`)
-1. `Embedder.embed_query(parsed.semantic_query)` converts the semantic portion of the query into a normalized vector.
-2. `QdrantDB.search()` runs a **group-by-`patent_id`** search against `patent_chunks`, retrieving the top `PATENT_CANDIDATE_TOP_K` (default: 100) distinct candidate **patents**, each contributing its top `CANDIDATE_CHUNKS_PER_PATENT` (default: 3) best-matching chunks. Metadata filtering is *not* applied at this stage — it is pure semantic retrieval.
+1. `Embedder.embed_query(parsed.semantic_query)` embeds the retrieval-optimized `semantic_query`.
+2. `QdrantDB.search()` executes a **group-by-`patent_id`** vector search against `patent_chunks_latest`, retrieving the top `PATENT_CANDIDATE_TOP_K` (default: 100) candidate patents, each contributing up to `CANDIDATE_CHUNKS_PER_PATENT` (default: 3) chunks.
+3. Two internal views are created:
+   * `candidate_chunks`: the multi-chunk pool per patent that feeds filtering and reranking.
+   * `qdrant_results`: a deduplicated display-only view (top chunk per patent) for candidate inspection.
 
 ---
 
 ### Stage 8: Metadata Filtering (`app/filter_engine.py`)
-If Query Understanding produced any `metadata_filters`:
-* Unique `patent_id`s from the semantic candidates are batch-fetched from the `patents` collection (`QdrantDB.get_patents_metadata()`).
-* `FilterEngine.matches()` evaluates every filter against each candidate patent's stored metadata.
-* Only chunks belonging to a patent that satisfies **every** filter survive into reranking.
-
-Filtering always happens **after** vector search, narrowing the semantic candidate pool — never widening or bypassing it.
+If `metadata_filters` exist:
+* Candidate patent IDs are batch-fetched from the `patents_latest` collection.
+* `FilterEngine.matches()` checks every metadata constraint against each candidate patent.
+* Non-matching patent chunks are pruned before reranking.
 
 ---
 
 ### Stage 9: Cross-Encoder Reranking (`app/reranker.py`)
-* **Server / Model**: A remote TEI-style `/rerank` endpoint by default (`USE_REMOTE_RERANKER = True`, configured via `RERANKER_REMOTE_BASE_URL` / `RERANKER_REMOTE_MODEL`), with a local `sentence-transformers` `CrossEncoder` as fallback.
-* **Base scoring**: The query and every surviving candidate chunk's text are scored for relevance.
-* **Structured blending**: When Query Understanding extracted a requirements structure, the same model additionally scores a small, bounded set of deterministic synthetic queries built from that structure (a composite requirements sentence, relationship pairs, optimization targets, exclusion probes) and blends them in — bounded weights (`MIN_SEMANTIC_WEIGHT`, `MAX_SECONDARY_WEIGHT`, `MAX_WEAK_SIGNAL_WEIGHT`) always keep semantic relevance dominant regardless of what the LLM suggests.
-* **Selection**: Candidates are sorted by blended final score.
+* Evaluates candidate chunks with a cross-encoder model (remote TEI endpoint with local fallback).
+* **Pure Semantic Scoring**: If no dynamic requirements structure exists, ranks chunks by `CrossEncoder(semantic_query, chunk_text)`.
+* **Fine Structured Blend**: For queries with requirements:
+  1. **Coarse Stage**: Scores all candidate chunks semantically.
+  2. **Fine Stage**: Takes top `RERANK_FINE_STAGE_TOP_N` chunks and blends:
+     * Structured query sentence matching (goals + constraints)
+     * Direct relationship evaluation triples
+     * Directional optimization target matching
+     * Exclusion term penalty subtraction
+     * Lexical & exact keyword coverage
+     * Structure coverage multiplier
 
 ---
 
-### Stage 10: Patent-Level Aggregation (`app/semantic_search.py`)
-While search operates on **Chunks** internally for precise retrieval, results are presented as **Patents**:
+### Stage 10: Answer Evidence Selection & Span Highlighting (`app/evidence_selector.py`)
+For question queries (`parsed.is_question = True`), candidate chunks pass through the `EvidenceSelector`:
 
+1. **Answer & Evidence Extraction**:
+   * Analyzes top reranked chunks against `parsed.question_intent`.
+   * Extracts a concise **answer summary** and verbatim **supporting evidence sentences**.
+   * Employs remote LLM extraction with an automated deterministic fallback algorithm based on target directness and core term coverage.
+2. **Exact Character Span Resolution**:
+   * `locate_span_in_text()` calculates precise character offsets `[start_char, end_char]` inside the original chunk text.
+3. **HTML Highlighting**:
+   * `highlight_spans()` wraps matched evidence in `<mark>` tags for UI presentation.
+4. Attaches `answer`, `answer_evidence`, `answer_span`, `answer_score`, and `highlighted_text` to the chunk payload.
+
+---
+
+### Stage 11: Patent-Level Aggregation (`app/semantic_search.py`)
 * `SemanticSearch._aggregate_by_patent()` groups reranked chunks by `patent_id`.
-* **Patent Score**: The maximum reranker score among all matching chunks for that patent.
-* **Result Payload (`PatentSearchResult`)**:
-  * `patent_id`, `score` (best chunk's score), `best_chunk` (`RankedChunk`), `matching_chunks` (sorted descending), `metadata` (full patent metadata).
-* Truncated to the top `FINAL_TOP_K` (default: 10) patents **after** aggregation, so a patent survives on its single best chunk regardless of how its weaker chunks scored.
+* **Patent Score**: Assigned as the highest scoring chunk for that patent.
+* Preserves question answers and highlighted evidence in `PatentSearchResult`.
+* Results are truncated to `FINAL_TOP_K` (default: 10) patents.
 
 ---
 
@@ -157,8 +220,8 @@ All system thresholds are centrally managed in `app/config.py`:
 | Component | Setting | Default Value | Description |
 | :--- | :--- | :--- | :--- |
 | **Qdrant** | `QDRANT_HOST` / `PORT` | `localhost:6333` | Qdrant vector database connection |
-| | `CHUNKS_COLLECTION_NAME` | `"patent_chunks"` | Searchable chunk collection (vectors + payload) |
-| | `PATENTS_COLLECTION_NAME` | `"patents"` | Patent metadata collection (no vectors) |
+| | `CHUNKS_COLLECTION_NAME` | `"patent_chunks_latest"` | Searchable chunk collection (vectors + payload) |
+| | `PATENTS_COLLECTION_NAME` | `"patents_latest"` | Patent metadata collection (no vectors) |
 | **Embedding** | `EMBEDDING_MODEL` | `"Qwen/Qwen3-Embedding-0.6B"` | SentenceTransformer embedding model |
 | | `VECTOR_SIZE` | `1024` | Vector dimensionality |
 | **Chunking** | `MAX_CHUNK_TOKENS` | `512` | Token capacity limit per chunk |
@@ -166,18 +229,21 @@ All system thresholds are centrally managed in `app/config.py`:
 | | `BATCH_SIZE` | `100` | Points per Qdrant upload batch |
 | **Validator** | `VALIDATOR_LOW_INFO_THRESHOLD` | `0.30` | Minimum ratio of alpha characters required |
 | | `VALIDATOR_DEGENERATE_OVERLAP_THRESHOLD` | `0.9` | Minimum unique-content ratio vs. previous chunk |
-| **Query Understanding** | `USE_REMOTE_LLM` | `True` | Use the remote query-understanding LLM vs. local |
+| **Query Understanding** | `USE_REMOTE_LLM` | `True` | Use remote query LLM vs. local fallback |
 | | `QUERY_LLM_REMOTE_BASE_URL` / `_MODEL` | — | Remote OpenAI-compatible endpoint & model |
 | | `QUERY_LLM_MODEL` | `"Qwen/Qwen2.5-1.5B-Instruct"` | Local fallback model |
-| **Reranker** | `USE_REMOTE_RERANKER` | `True` | Use the remote reranker server vs. a local CrossEncoder |
+| **Reranker** | `USE_REMOTE_RERANKER` | `True` | Use remote reranker server vs. local CrossEncoder |
 | | `RERANKER_REMOTE_BASE_URL` / `_MODEL` | — | Remote reranking server URL & model |
 | | `PATENT_CANDIDATE_TOP_K` | `100` | Distinct candidate patents from vector search |
 | | `CANDIDATE_CHUNKS_PER_PATENT` | `3` | Chunks per candidate patent fed to reranking |
 | | `RERANK_FINE_STAGE_TOP_N` | `40` | Candidates that receive full structured-blend scoring |
 | | `FINAL_TOP_K` | `10` | Final reranked patents returned |
-| | `MIN_SEMANTIC_WEIGHT` | `0.55` | Minimum combined semantic+structured score weight share |
+| | `MIN_SEMANTIC_WEIGHT` | `0.55` | Floor on combined semantic+structured weight share |
 | | `MAX_SECONDARY_WEIGHT` | `0.20` | Cap on relationship/optimization weight share |
 | | `MAX_WEAK_SIGNAL_WEIGHT` | `0.10` | Cap on lexical/exact-match weight share |
+| | `SEM_STRUCT_SPLIT_RATIO` | `0.7` | Fixed semantic/structured split of combined budget |
+| | `EXCLUSION_PENALTY_WEIGHT` | `0.5` | Penalty weight subtracted per unit of exclusion match |
+| | `STRUCTURE_COVERAGE_MIN_MULTIPLIER` | `0.7` | Floor for structure-coverage penalty multiplier |
 | **UI** | `PATENT_VIEW_URL_TEMPLATE` | — | External patent detail page URL template |
 
 ---
@@ -195,23 +261,26 @@ rag_demo/
 │   │   └── token_counter.py            # HuggingFace token counter with LRU cache
 │   ├── query_understanding/            # LLM-based natural-language query parsing
 │   │   ├── parser.py                   # QueryUnderstanding: query -> ParsedQuery
-│   │   ├── models.py                   # ParsedQuery, MetadataFilter, Concept, Goal, etc.
-│   │   ├── prompt.py                   # Query-understanding LLM prompt template
+│   │   ├── models.py                   # ParsedQuery, MetadataFilter, Concept, QuestionIntent, etc.
+│   │   ├── prompt.py                   # Query-understanding prompt template (Rules 4A/4B, 7)
 │   │   ├── field_mapping.py            # Filterable metadata field allowlist
 │   │   ├── metadata_field_codes.py     # Field code reference used in prompts
 │   │   └── normalizer.py               # Country / organization name normalization
 │   ├── models/                         # Dataclasses & schema definitions
 │   │   ├── patent_chunk.py             # PatentChunk dataclass
 │   │   ├── patent_document.py          # Raw parsed PatentDocument dataclass
-│   │   ├── patent_search_result.py     # PatentSearchResult, RankedChunk, ScoreBreakdown
+│   │   ├── patent_search_result.py     # PatentSearchResult, RankedChunk, ScoreBreakdown, AnswerEvidence
 │   │   └── search_result.py            # Shared search result helpers
 │   ├── ui/
-│   │   └── search_app.py               # Streamlit search UI (search-only, no admin)
+│   │   └── search_app.py               # Streamlit search UI with answer badges & highlight rendering
 │   ├── scripts/
 │   │   └── show_indexed_patents.py     # Summary table generator for all Qdrant-indexed patents
 │   ├── _tests_/                        # Component & end-to-end test/diagnostic scripts
 │   │   ├── test_semantic_search.py     # End-to-end search pipeline diagnostics
-│   │   └── test_*.py                   # Per-component tests (parser, chunker, embedding, etc.)
+│   │   ├── test_question_search_pipeline.py # Question-answering pipeline test cases
+│   │   ├── test_evidence_selector.py   # Evidence extraction & span resolution tests
+│   │   ├── test_query_understanding.py # Query Understanding & field parsing tests
+│   │   └── test_*.py                   # Per-component tests (chunker, reranker, qdrant, etc.)
 │   ├── config.py                       # Project configuration & hyperparameter tunables
 │   ├── parser.py                       # Reads .txt and .json patent source files
 │   ├── chunker.py                      # Orchestrates the chunking subsystem
@@ -220,11 +289,13 @@ rag_demo/
 │   ├── ingest.py                       # Ingestion pipeline script
 │   ├── filter_engine.py                # Post-retrieval metadata filter evaluation
 │   ├── reranker.py                     # Remote/local cross-encoder reranking + structured blend
+│   ├── evidence_selector.py            # Answer evidence extraction & exact character span highlighting
 │   └── semantic_search.py              # Patent-level semantic search coordinator
 ├── docker-compose.yml                  # Docker setup for Qdrant Vector DB
 ├── requirements.txt                    # Python dependencies
 └── README.md                           # Comprehensive documentation
 ```
+
 ---
 
 ## 🚀 Quickstart & Usage Guide
@@ -250,13 +321,13 @@ To ingest, chunk, embed, and index patents into Qdrant:
 ```bash
 ./venv/bin/python -m app.ingest
 ```
-This automatically creates the `patent_chunks` and `patents` collections on first run if they don't already exist — no separate setup step needed on a fresh Qdrant instance. To wipe and recreate both collections from scratch instead:
+This automatically creates the `patent_chunks` and `patents` collections on first run. To wipe and recreate both collections from scratch:
 ```bash
 ./venv/bin/python -c "from app.qdrant_db import QdrantDB; QdrantDB().reset_collections()"
 ```
 
 ### 3.1 View All Indexed Patents Summary Table
-To view a complete table of all indexed patents in Qdrant with chunk counts, section statistics, token totals, and metadata:
+To view a complete table of all indexed patents in Qdrant with chunk counts, section statistics, and token totals:
 ```bash
 ./venv/bin/python -m app.scripts.show_indexed_patents
 ```
@@ -266,39 +337,41 @@ For detailed section-by-section breakdown:
 ./venv/bin/python -m app.scripts.show_indexed_patents -v
 ```
 
-### 4. Run Semantic Search
-Run the end-to-end search pipeline diagnostics tool, showing every stage (query understanding, vector candidates, metadata filtering, reranking, final patents):
+### 4. Run Semantic Search Diagnostics
+Run the end-to-end search pipeline diagnostics tool:
 ```bash
 ./venv/bin/python -m app._tests_.test_semantic_search "Microdrilling"
 ```
 
 ### 4.1 Run the Search UI
-A browser-based search UI - a search bar and a results table showing every
-matching chunk's full text (no truncation). Search-only, no
-ingestion/admin controls:
+Launch the interactive Streamlit search application:
 ```bash
 ./venv/bin/streamlit run app/ui/search_app.py
 ```
+* Supports topic searches, metadata-filtered queries, and question queries.
+* For questions, renders extracted answer summary badges and visual `<mark>` evidence highlighting.
 
 ### 5. Running Component Verification Tests
-Component tests live under `app/_tests_/` and are run as modules, e.g.:
-* Test Qdrant database connection:
-  ```bash
-  ./venv/bin/python -m app._tests_.test_connection
-  ```
-* Test embedding model loading & vector generation:
-  ```bash
-  ./venv/bin/python -m app._tests_.test_embedding
-  ```
-* Test section detection and token chunking:
-  ```bash
-  ./venv/bin/python -m app._tests_.test_chunker
-  ```
-* Test the query understanding LLM parsing:
+Component tests live under `app/_tests_/` and can be executed via python:
+* Test query understanding parser and prompt:
   ```bash
   ./venv/bin/python -m app._tests_.test_query_understanding
   ```
-* Test the reranker:
+* Test question-answering search pipeline:
+  ```bash
+  ./venv/bin/python -m app._tests_.test_question_search_pipeline
+  ```
+* Test evidence selection and span highlighting:
+  ```bash
+  ./venv/bin/python -m app._tests_.test_evidence_selector
+  ```
+* Test cross-encoder reranker:
   ```bash
   ./venv/bin/python -m app._tests_.test_reranker
   ```
+* Test Qdrant connection and operations:
+  ```bash
+  ./venv/bin/python -m app._tests_.test_connection
+  ./venv/bin/python -m app._tests_.test_qdrant
+  ```
+

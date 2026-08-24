@@ -30,6 +30,8 @@ qdrant_storage/
 patents-processed/
 us-patent/
 data/
+new_patents/
+television/
 
 # Jupyter
 .ipynb_checkpoints/
