@@ -80,7 +80,9 @@ def _weight(importance: float, required: bool) -> float:
 # ==================================================================
 
 
-def _weighted_term_coverage(text_lower: str, terms: list[tuple[list[str], float]]) -> float:
+def _weighted_term_coverage(
+    text_lower: str, terms: list[tuple[list[str], float]]
+) -> float:
     if not terms:
         return 0.0
 
@@ -243,8 +245,10 @@ def _compute_weights(requirements: ParsedQuery) -> dict:
     has_struct = _build_structured_sentence(requirements) is not None
     has_rel = bool(requirements.relationships)
     has_opt = bool(requirements.optimization)
-    has_lex = bool(_concept_terms(requirements)) or bool(requirements.constraints) or bool(
-        requirements.exclusions
+    has_lex = (
+        bool(_concept_terms(requirements))
+        or bool(requirements.constraints)
+        or bool(requirements.exclusions)
     )
 
     # Step 1/2: clamp per-category weight. relationship_satisfaction is
@@ -253,7 +257,11 @@ def _compute_weights(requirements: ParsedQuery) -> dict:
     # schema (no schema change per the approved plan), so they get a
     # fixed ceiling value when the category has data, same spirit as
     # "a small fixed ceiling" already specified for lexical/exact.
-    w_rel = min(max(llm.relationship_satisfaction, 0.0), MAX_SECONDARY_WEIGHT) if has_rel else 0.0
+    w_rel = (
+        min(max(llm.relationship_satisfaction, 0.0), MAX_SECONDARY_WEIGHT)
+        if has_rel
+        else 0.0
+    )
     w_opt = MAX_SECONDARY_WEIGHT if has_opt else 0.0
     w_lex = MAX_WEAK_SIGNAL_WEIGHT if has_lex else 0.0
     w_exact = MAX_WEAK_SIGNAL_WEIGHT
@@ -369,7 +377,9 @@ class Reranker:
                 (
                     float(score),
                     chunk,
-                    ScoreBreakdown(semantic_score=float(score), final_score=float(score)),
+                    ScoreBreakdown(
+                        semantic_score=float(score), final_score=float(score)
+                    ),
                 )
                 for score, chunk in ranked
             ]
@@ -408,7 +418,9 @@ class Reranker:
             # it never transforms an in-range score.
             scores = [0.0] * len(texts)
             for item in response.json()["results"]:
-                scores[item["index"]] = _validate_remote_score(float(item["relevance_score"]))
+                scores[item["index"]] = _validate_remote_score(
+                    float(item["relevance_score"])
+                )
             return scores
 
         # Local CrossEncoder returns unbounded logits by default -
@@ -458,7 +470,11 @@ class Reranker:
         for target in targets:
             aligned, opposed = _build_optimization_pair(target)
             per_target.append(
-                (target.importance, self._score(aligned, fine_texts), self._score(opposed, fine_texts))
+                (
+                    target.importance,
+                    self._score(aligned, fine_texts),
+                    self._score(opposed, fine_texts),
+                )
             )
         total_weight = sum(w for w, _, _ in per_target) or 1.0
 
@@ -488,7 +504,12 @@ class Reranker:
             return {}
 
         per_term = [
-            (term, self._score(_build_exclusion_probe(term), fine_texts) if fine_texts else [])
+            (
+                term,
+                self._score(_build_exclusion_probe(term), fine_texts)
+                if fine_texts
+                else [],
+            )
             for term in exclusions
         ]
 
@@ -538,15 +559,21 @@ class Reranker:
         )
 
         relationships = requirements.relationships[:MAX_RELATIONSHIPS_SCORED]
-        relationship_scores = self._score_relationships(relationships, fine_indices, fine_texts)
+        relationship_scores = self._score_relationships(
+            relationships, fine_indices, fine_texts
+        )
 
-        optimization_targets = requirements.optimization[:MAX_OPTIMIZATION_TARGETS_SCORED]
+        optimization_targets = requirements.optimization[
+            :MAX_OPTIMIZATION_TARGETS_SCORED
+        ]
         optimization_scores = self._score_optimization(
             optimization_targets, fine_indices, fine_texts
         )
 
         exclusions = requirements.exclusions[:MAX_EXCLUSIONS_SCORED]
-        exclusion_scores = self._score_exclusions(exclusions, fine_indices, fine_texts, results)
+        exclusion_scores = self._score_exclusions(
+            exclusions, fine_indices, fine_texts, results
+        )
 
         weights = _compute_weights(requirements)
 
@@ -595,12 +622,15 @@ class Reranker:
                 # coverage against.
                 if has_struct or has_rel:
                     coverage_signals = [
-                        v for v, present in ((struct, has_struct), (rel, has_rel)) if present
+                        v
+                        for v, present in ((struct, has_struct), (rel, has_rel))
+                        if present
                     ]
                     structure_coverage = sum(coverage_signals) / len(coverage_signals)
-                    final *= STRUCTURE_COVERAGE_MIN_MULTIPLIER + (
-                        1 - STRUCTURE_COVERAGE_MIN_MULTIPLIER
-                    ) * structure_coverage
+                    final *= (
+                        STRUCTURE_COVERAGE_MIN_MULTIPLIER
+                        + (1 - STRUCTURE_COVERAGE_MIN_MULTIPLIER) * structure_coverage
+                    )
                 else:
                     structure_coverage = 1.0
 
@@ -634,7 +664,9 @@ class Reranker:
         # candidate that could be hard-filtered.
         if EXCLUSION_HARD_FILTER_THRESHOLD is not None:
             blended = [
-                item for item in blended if item[2].exclusion_penalty < EXCLUSION_HARD_FILTER_THRESHOLD
+                item
+                for item in blended
+                if item[2].exclusion_penalty < EXCLUSION_HARD_FILTER_THRESHOLD
             ]
 
         blended.sort(key=lambda item: item[0], reverse=True)

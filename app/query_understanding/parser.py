@@ -38,6 +38,7 @@ from app.query_understanding.models import (
     MetadataFilter,
     OptimizationTarget,
     ParsedQuery,
+    QuestionIntent,
     RankingWeights,
     Relationship,
     Requirement,
@@ -69,6 +70,32 @@ _ALLOWED_OPERATORS = {
     "lt",
     "lte",
 }
+
+_QUESTION_PREFIXES = (
+    "what",
+    "which",
+    "how",
+    "why",
+    "where",
+    "when",
+    "who",
+    "whom",
+    "whose",
+)
+
+_QUESTION_PHRASES = (
+    "what properties",
+    "which properties",
+    "properties determined",
+    "problem solved",
+    "advantages of",
+    "method used",
+    "methods used",
+    "components used",
+    "used to",
+    "used for",
+    "based on",
+)
 
 
 def resolve_filter(field_code: Any, operator: Any, value: Any) -> MetadataFilter | None:
@@ -280,6 +307,58 @@ def _parse_ranking_weights(raw: Any) -> RankingWeights:
     )
 
 
+def _fallback_is_question(query: str) -> bool:
+    q = query.strip().lower()
+    if not q:
+        return False
+    if "?" in q:
+        return True
+    if any(q.startswith(prefix + " ") for prefix in _QUESTION_PREFIXES):
+        return True
+    return any(phrase in q for phrase in _QUESTION_PHRASES)
+
+
+def _extract_question_fields(
+    query: str, llm_res: dict[str, Any]
+) -> tuple[bool, QuestionIntent | None]:
+    raw_is_question = llm_res.get("is_question")
+    intent_obj = llm_res.get("question_intent")
+
+    question_intent: QuestionIntent | None = None
+    if isinstance(intent_obj, dict):
+        target = str(intent_obj.get("target") or "").strip()
+        expected_answer_type = str(intent_obj.get("expected_answer_type") or "").strip()
+        answer_criteria = str(intent_obj.get("answer_criteria") or "").strip()
+
+        if target or expected_answer_type or answer_criteria:
+            question_intent = QuestionIntent(
+                is_question=True,
+                target=target,
+                expected_answer_type=expected_answer_type,
+                answer_criteria=answer_criteria,
+            )
+
+    if isinstance(raw_is_question, bool):
+        is_question = raw_is_question
+    elif isinstance(raw_is_question, str):
+        is_question = raw_is_question.strip().lower() in ("true", "yes", "1")
+    else:
+        is_question = question_intent is not None or _fallback_is_question(query)
+
+    if not is_question:
+        return False, None
+
+    if question_intent is None:
+        question_intent = QuestionIntent(
+            is_question=True,
+            target="",
+            expected_answer_type="",
+            answer_criteria="",
+        )
+
+    return True, question_intent
+
+
 class QueryUnderstanding:
     """
     LLM-based Query Understanding: the LLM is given the field-code
@@ -354,7 +433,7 @@ class QueryUnderstanding:
             self._remote_client = client
             self._remote_available = True
 
-            print(f"Remote Query LLM available: " f"{QUERY_LLM_REMOTE_MODEL}")
+            print(f"Remote Query LLM available: {QUERY_LLM_REMOTE_MODEL}")
 
         except Exception as e:
             self._remote_client = None
@@ -452,14 +531,12 @@ class QueryUnderstanding:
                     return json.loads(match.group(0))
                 except json.JSONDecodeError as e:
                     self._last_remote_error = (
-                        f"Invalid JSON in response: {e}. "
-                        f"Raw content: {content[:500]}"
+                        f"Invalid JSON in response: {e}. Raw content: {content[:500]}"
                     )
                     return None
 
             self._last_remote_error = (
-                "No JSON object found in remote response. "
-                f"Raw content: {content[:500]}"
+                f"No JSON object found in remote response. Raw content: {content[:500]}"
             )
             return None
 
@@ -501,10 +578,7 @@ class QueryUnderstanding:
 
         first_error = self._last_remote_error or "unknown error"
 
-        print(
-            f"[QueryUnderstanding] Remote Qwen first attempt failed: "
-            f"{first_error}"
-        )
+        print(f"[QueryUnderstanding] Remote Qwen first attempt failed: {first_error}")
 
         # ------------------------------------------------------
         # Retry remote once
@@ -521,10 +595,7 @@ class QueryUnderstanding:
 
         second_error = self._last_remote_error or "unknown error"
 
-        print(
-            f"[QueryUnderstanding] Remote Qwen retry failed: "
-            f"{second_error}."
-        )
+        print(f"[QueryUnderstanding] Remote Qwen retry failed: {second_error}.")
 
         # Remote is considered unavailable only after retry fails
         self._remote_available = False
@@ -547,8 +618,15 @@ class QueryUnderstanding:
             or not isinstance(llm_res, dict)
             or "semantic_query" not in llm_res
         ):
+            is_question = _fallback_is_question(query)
             return ParsedQuery(
-                original_query=original, semantic_query=query, metadata_filters=[]
+                original_query=original,
+                semantic_query=query,
+                metadata_filters=[],
+                is_question=is_question,
+                question_intent=(
+                    QuestionIntent(is_question=True) if is_question else None
+                ),
             )
 
         raw_semantic = str(llm_res.get("semantic_query") or "").strip()
@@ -602,6 +680,8 @@ class QueryUnderstanding:
         # fall back to the raw query text instead.
         semantic_query = raw_semantic if (raw_semantic or metadata_filters) else query
 
+        is_question, question_intent = _extract_question_fields(query, llm_res)
+
         return ParsedQuery(
             original_query=original,
             semantic_query=semantic_query,
@@ -617,4 +697,6 @@ class QueryUnderstanding:
             relationships=_parse_relationships(llm_res.get("relationships")),
             requirements=_parse_requirements(llm_res.get("requirements")),
             ranking_weights=_parse_ranking_weights(llm_res.get("ranking_weights")),
+            is_question=is_question,
+            question_intent=question_intent,
         )

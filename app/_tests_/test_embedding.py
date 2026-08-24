@@ -9,9 +9,7 @@ def main():
 
     parser = PatentParser()
 
-    document = parser.load_patent(
-        Path("patents-processed/AP170S1.txt")
-    )
+    document = parser.load_patent(Path("patents-processed/AP170S1.txt"))
 
     chunker = PatentChunker()
 

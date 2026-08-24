@@ -8,7 +8,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from app.chunker import PatentChunker
-from app.config import BATCH_SIZE
+from app.config import BATCH_SIZE, PATENT_DIRECTORY
 from app.embedder import Embedder
 from app.parser import PatentParser
 from app.qdrant_db import QdrantDB
@@ -36,9 +36,7 @@ def ingest_directory(directory: str):
     start_time = time.time()
 
     for txt_file in tqdm(txt_files, desc="Indexing Patents"):
-
         try:
-
             document = parser.load_patent(txt_file)
 
             db.upsert_patent_metadata(document.patent_id, document.metadata)
@@ -49,20 +47,17 @@ def ingest_directory(directory: str):
             total_chunks += len(chunks)
 
             for chunk in chunks:
-
                 embedder.embed(chunk)
 
                 batch.append(chunk)
 
             if len(batch) >= BATCH_SIZE:
-
                 db.insert_batch(batch)
 
                 batch.clear()
 
             # Print progress every 500 patents
             if total_patents % 500 == 0:
-
                 elapsed = time.time() - start_time
 
                 print("\n" + "=" * 60)
@@ -73,7 +68,6 @@ def ingest_directory(directory: str):
                 print("=" * 60)
 
         except Exception as e:
-
             failed_patents += 1
             failed_files.append(txt_file.name)
 
@@ -82,7 +76,6 @@ def ingest_directory(directory: str):
 
     # Insert remaining chunks
     if batch:
-
         db.insert_batch(batch)
 
     elapsed = time.time() - start_time
@@ -97,14 +90,11 @@ def ingest_directory(directory: str):
     print("=" * 60)
 
     if failed_files:
-
         print("\nFailed Files:")
 
         for file in failed_files:
-
             print(f"- {file}")
 
 
 if __name__ == "__main__":
-
-    ingest_directory("patents-processed")
+    ingest_directory(PATENT_DIRECTORY)

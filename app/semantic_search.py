@@ -82,8 +82,13 @@ from typing import Callable
 
 from app.config import FINAL_TOP_K
 from app.embedder import Embedder
+from app.evidence_selector import EvidenceSelector
 from app.filter_engine import FilterEngine
-from app.models.patent_search_result import PatentSearchResult, RankedChunk, ScoreBreakdown
+from app.models.patent_search_result import (
+    PatentSearchResult,
+    RankedChunk,
+    ScoreBreakdown,
+)
 from app.qdrant_db import QdrantDB
 from app.query_understanding import ParsedQuery, QueryUnderstanding
 from app.reranker import Reranker
@@ -126,13 +131,18 @@ class SemanticSearch:
         self.db = QdrantDB()
         self.reranker = Reranker()
         self.query_understanding = QueryUnderstanding()
+        self.evidence_selector = EvidenceSelector()
 
     def search_detailed(
         self,
         query: str,
         on_stage: Callable[[str, float], None] | None = None,
     ) -> tuple[
-        ParsedQuery, list, list, list[tuple[float, object, ScoreBreakdown]], list[PatentSearchResult]
+        ParsedQuery,
+        list,
+        list,
+        list[tuple[float, object, ScoreBreakdown]],
+        list[PatentSearchResult],
     ]:
         """
         Search for patents and return results at each pipeline stage:
@@ -235,6 +245,15 @@ class SemanticSearch:
             requirements=parsed,
         )
 
+        # Step 4b: For question queries, extract answer evidence and spans
+        if parsed.is_question:
+            reranked_results = _run(
+                "Answer Evidence",
+                self.evidence_selector.select_and_extract,
+                reranked_results,
+                parsed,
+            )
+
         # Step 5: Aggregate chunks into patent-level results, then keep
         # only the top FINAL_TOP_K patents by patent score. Truncating
         # here (post-aggregation) rather than on the chunk list means a
@@ -242,7 +261,9 @@ class SemanticSearch:
         # patents' chunks outscored its weaker ones.
         patent_results = _run(
             "Aggregation",
-            lambda: self._aggregate_by_patent(reranked_results)[:FINAL_TOP_K],
+            lambda: self._aggregate_by_patent(
+                reranked_results, is_question=parsed.is_question, parsed_query=parsed
+            )[:FINAL_TOP_K],
         )
 
         return (
@@ -272,7 +293,11 @@ class SemanticSearch:
         parsed: ParsedQuery,
         on_stage: Callable[[str, float], None] | None = None,
     ) -> tuple[
-        ParsedQuery, list, list, list[tuple[float, object, ScoreBreakdown]], list[PatentSearchResult]
+        ParsedQuery,
+        list,
+        list,
+        list[tuple[float, object, ScoreBreakdown]],
+        list[PatentSearchResult],
     ]:
         """
         Handle a query whose semantic_query came back empty (see
@@ -309,12 +334,19 @@ class SemanticSearch:
         # the (score, chunk, breakdown) shape _aggregate_by_patent expects
         # from the reranker, without actually reranking anything.
         reranked_results = [
-            (chunk.score, chunk, ScoreBreakdown(semantic_score=chunk.score, final_score=chunk.score))
+            (
+                chunk.score,
+                chunk,
+                ScoreBreakdown(semantic_score=chunk.score, final_score=chunk.score),
+            )
             for chunk in chunks
         ]
 
         patent_results = _run(
-            "Aggregation", self._aggregate_by_patent, reranked_results
+            "Aggregation",
+            lambda: self._aggregate_by_patent(
+                reranked_results, is_question=False, parsed_query=parsed
+            ),
         )
 
         return parsed, chunks, chunks, reranked_results, patent_results
@@ -367,6 +399,8 @@ class SemanticSearch:
     def _aggregate_by_patent(
         self,
         reranked: list[tuple[float, object, ScoreBreakdown]],
+        is_question: bool = False,
+        parsed_query: ParsedQuery | None = None,
     ) -> list[PatentSearchResult]:
         """
         Group reranked chunks by patent_id and produce one
@@ -384,6 +418,8 @@ class SemanticSearch:
         for score, result, breakdown in reranked:
             payload = result.payload
             patent_id = payload["patent_id"]
+            payload = getattr(result, "payload", {}) or {}
+            patent_id = payload.get("patent_id", "")
 
             ranked_chunk = RankedChunk(
                 chunk_id=payload.get("chunk_id", 0),
@@ -396,6 +432,12 @@ class SemanticSearch:
                 document_chunk_index=payload.get("document_chunk_index", 0),
                 total_chunks=payload.get("total_chunks", 0),
                 breakdown=breakdown,
+                answer=payload.get("answer"),
+                answer_evidence=payload.get("answer_evidence") or [],
+                answer_span=payload.get("answer_span"),
+                answer_score=payload.get("answer_score"),
+                highlighted_text=payload.get("highlighted_text"),
+                answer_debug=payload.get("answer_debug"),
             )
 
             patent_chunks[patent_id].append(ranked_chunk)
@@ -412,6 +454,60 @@ class SemanticSearch:
 
             best = chunks[0]
 
+            answer_chunk = best
+            answer_text = None
+            answer_evidence = []
+            answer_span = None
+            answer_score = None
+            highlighted_text = None
+            answer_debug = None
+
+            if is_question:
+                answered_chunks = [c for c in chunks if (c.answer_score or 0.0) > 0.0]
+                if answered_chunks:
+                    answered_chunks.sort(
+                        key=lambda c: ((c.answer_score or 0.0), c.score), reverse=True
+                    )
+                    answer_chunk = answered_chunks[0]
+
+                answer_text = answer_chunk.answer
+                answer_evidence = answer_chunk.answer_evidence
+                answer_span = answer_chunk.answer_span
+                answer_score = answer_chunk.answer_score
+                highlighted_text = answer_chunk.highlighted_text
+                answer_debug = answer_chunk.answer_debug
+
+                # For comparison-style questions, merge top two direct answers when available.
+                query_types = [
+                    qt.lower()
+                    for qt in (parsed_query.query_type if parsed_query else [])
+                ]
+                is_comparative = any(
+                    qt in ("comparative", "tradeoff") for qt in query_types
+                )
+                if is_comparative and len(answered_chunks) >= 2:
+                    first = answered_chunks[0]
+                    second = answered_chunks[1]
+                    if first.answer and second.answer and first.answer != second.answer:
+                        answer_text = f"{first.answer} | {second.answer}"
+                        answer_evidence = [
+                            *first.answer_evidence,
+                            *second.answer_evidence,
+                        ]
+                        answer_score = max(
+                            first.answer_score or 0.0, second.answer_score or 0.0
+                        )
+                        highlighted_text = (
+                            first.highlighted_text or second.highlighted_text
+                        )
+                        answer_debug = {
+                            "mode": "multi_chunk_comparison",
+                            "selected_chunks": [first.chunk_id, second.chunk_id],
+                            "combined_answer": answer_text,
+                            "primary": first.answer_debug,
+                            "secondary": second.answer_debug,
+                        }
+
             patent_results.append(
                 PatentSearchResult(
                     patent_id=patent_id,
@@ -419,6 +515,12 @@ class SemanticSearch:
                     best_chunk=best,
                     matching_chunks=chunks,
                     metadata=patent_metadata.get(patent_id, {}),
+                    answer=answer_text if is_question else None,
+                    answer_evidence=answer_evidence if is_question else [],
+                    answer_span=answer_span if is_question else None,
+                    answer_score=answer_score if is_question else None,
+                    highlighted_text=highlighted_text if is_question else None,
+                    answer_debug=answer_debug if is_question else None,
                 )
             )
 

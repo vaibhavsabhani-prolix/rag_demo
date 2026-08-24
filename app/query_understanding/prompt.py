@@ -82,11 +82,16 @@ comments, or keys other than the ones below.
     "evidence_strength": 0.0,
     "exact_match": 0.0
   }}
+  }},
+  "is_question": false,
+  "question_intent": null
 }}
 
 If there are no metadata filters, "filters" is []. The requirements-structure
 keys are still always present (empty array/neutral default when a section
-doesn't apply). "not_equals"/"not_contains" are EXCLUSIONS - the user wants
+doesn't apply). When "is_question" is true, "question_intent" is populated with
+{{"target": "...", "expected_answer_type": "...", "answer_criteria": "..."}}.
+"not_equals"/"not_contains" are EXCLUSIONS - the user wants
 patents that do NOT match the value (e.g. "not from China" -> not_contains).
 
 ============================================================
@@ -174,16 +179,84 @@ ISO codes yourself.
 RULE 4 — SEMANTIC QUERY
 ============================================================
 
-semantic_query is the actual invention/topic, with recognized metadata
-phrases removed ("bottle designs patented by Coca Cola in the US" ->
-"bottle designs"). Only strip phrases confidently converted into a filter -
-an ambiguous phrase you deliberately did NOT filter on (e.g. an unclear
-"late 2000s") stays in semantic_query.
+semantic_query is the retrieval-oriented representation of the user's
+information need, with recognized metadata phrases removed. Only strip
+phrases confidently converted into a filter - an ambiguous phrase you
+deliberately did NOT filter on (e.g. an unclear "late 2000s") stays in
+semantic_query.
 
 If the query is ENTIRELY metadata filters with no real invention/topic -
 even phrased as a question ("which patents...") or a chain of filters
 joined by "and" - set semantic_query to null. Never use filler like
 "patent", "patents", or "find" as the semantic_query.
+
+------------------------------------------------------------
+RULE 4A — SEMANTIC QUERY FOR TOPIC QUERIES (is_question = false)
+------------------------------------------------------------
+
+When the query is a TOPIC SEARCH, semantic_query is the invention /
+technology / topic to search via vector search, with metadata phrases
+removed (e.g. "bottle designs patented by Coca Cola in the US" ->
+"bottle designs").
+
+This is the existing behavior. No change needed.
+
+------------------------------------------------------------
+RULE 4B — SEMANTIC QUERY FOR QUESTION QUERIES (is_question = true)
+------------------------------------------------------------
+
+When the query is ANSWER-SEEKING (is_question = true), the semantic_query
+must be a concise retrieval-oriented representation that preserves the
+user's COMPLETE information need. This is critical because the
+semantic_query is used for vector/embedding retrieval, and an
+over-summarized query will fail to retrieve the patent chunks that
+actually contain the answer.
+
+PROCESS for generating a question semantic_query:
+
+1. Identify the REQUESTED ANSWER TARGET — what specific information is
+   the user asking for? (types, properties, methods, reasons, components,
+   advantages, differences, etc.)
+
+2. Identify the TARGET ENTITY/CONCEPT — what is the answer about?
+   (image capture devices, material, cooling, the invention, etc.)
+
+3. Identify the IMPORTANT RELATIONSHIP/CONTEXT — what constrains or
+   qualifies the answer? ("used in the system", "based on detected
+   features", "based on identified material", etc.)
+
+4. Compose: semantic_query = requested_answer_target + target_entity +
+   important_relationship, as a concise declarative phrase. Remove
+   conversational words (what, which, how, why, can, does, is, are, do)
+   but keep ALL substantive content.
+
+CRITICAL RULES for question semantic_query:
+
+- Do NOT reduce the query to only the topic/entity. The answer target
+  and relationship must remain.
+
+- Do NOT over-summarize. "What types of image capture devices can be
+  used in the system?" must NOT become "image capture devices" or
+  "image capture system". It must preserve "types of image capture
+  devices used in the system".
+
+- Do NOT over-expand. Do not add concepts, synonyms, or related terms
+  that the user did not ask for.
+
+- Do NOT blindly copy the original question. Convert it to a concise
+  retrieval phrase.
+
+- Do NOT mix metadata filters into the semantic_query when they have
+  already been extracted as structured filters.
+
+- For HOW questions: the semantic_query should express the method/process.
+  "How is material determined?" -> "method for determining material"
+
+- For WHY questions: the semantic_query should express the reason/purpose.
+  "Why is cooling required?" -> "reason cooling is required"
+
+- For comparison questions: preserve all comparison targets.
+  "How do X and Y differ?" -> "difference between X and Y"
 
 ============================================================
 RULE 5 — SELF-CHECK BEFORE ANSWERING
@@ -199,6 +272,11 @@ RULE 5 — SELF-CHECK BEFORE ANSWERING
 - Every exclusion phrase used not_equals/not_contains (or the flipped
   comparison for a range), not a plain inclusion filter.
 - semantic_query is null (not filler text) when the query is pure filters.
+- For question queries (is_question = true), semantic_query preserves BOTH
+  the requested answer target and the important relationship/context
+  (RULE 4B). It must NEVER be reduced to a bare topic or entity.
+- For normal/topic queries (is_question = false), semantic_query preserves
+  the invention/technology/topic without question transformation (RULE 4A).
 - intent/query_type/concepts/goals/constraints/optimization/exclusions/
   relationships/requirements/ranking_weights are all present, nothing was
   fabricated beyond what the query supports, and ranking_weights sum to
@@ -249,6 +327,82 @@ alone does not identify application/publication/priority for "late 2000s",
 so the date phrase is kept in semantic_query instead of guessed:
 {{"semantic_query": "cancer treatment patents from the late 2000s", "filters": [
   {{"field": "ALD", "operator": "equals", "value": "Alive"}}]}}
+
+"What types of image capture devices can be used in the system?" ->
+Question query: answer target is "types of image capture devices", relationship
+is "used in the system". Must NOT be reduced to "image capture devices" or
+"image capture system":
+{{"semantic_query": "types of image capture devices used in the system", "filters": [],
+  "is_question": true,
+  "question_intent": {{
+    "target": "types of image capture devices used in the system",
+    "expected_answer_type": "enumeration or description of image capture device types",
+    "answer_criteria": "patent text specifying image capture devices, sensors, or cameras used in the system"
+  }}}}
+
+"What properties are determined based on identified material?" ->
+Question query: answer target is "properties", relationship is "determined based on identified material":
+{{"semantic_query": "properties determined based on identified material", "filters": [],
+  "is_question": true,
+  "question_intent": {{
+    "target": "properties determined based on identified material",
+    "expected_answer_type": "physical, optical, or material properties",
+    "answer_criteria": "patent text describing properties calculated or determined following material identification"
+  }}}}
+
+"How is material determined based on detected features?" ->
+Question query: answer target is the method/process ("method for determining material"), relationship is "based on detected features":
+{{"semantic_query": "method for determining material based on detected features", "filters": [],
+  "is_question": true,
+  "question_intent": {{
+    "target": "method for determining material based on detected features",
+    "expected_answer_type": "process, algorithm, or methodology description",
+    "answer_criteria": "patent text detailing how material is determined from detected features"
+  }}}}
+
+"Why is cooling required?" ->
+Question query: answer target is "reason cooling is required":
+{{"semantic_query": "reason cooling is required", "filters": [],
+  "is_question": true,
+  "question_intent": {{
+    "target": "reason or necessity for cooling",
+    "expected_answer_type": "explanation or technical justification",
+    "answer_criteria": "patent text explaining why cooling is necessary or what problem it prevents"
+  }}}}
+
+"Which component performs material recognition?" ->
+Question query: answer target is "component that performs material recognition":
+{{"semantic_query": "component that performs material recognition", "filters": [],
+  "is_question": true,
+  "question_intent": {{
+    "target": "component responsible for material recognition",
+    "expected_answer_type": "hardware component, module, or unit name",
+    "answer_criteria": "patent text identifying the specific component or unit executing material recognition"
+  }}}}
+
+"What types of image capture devices are used in the system in patents filed by Canon after 2018?" ->
+Question query with metadata filters: semantic query preserves answer target + relationship, filters separated:
+{{"semantic_query": "types of image capture devices used in the system", "filters": [
+  {{"field": "AAPS", "operator": "contains", "value": "Canon"}},
+  {{"field": "AY", "operator": "gt", "value": "2018"}}],
+  "is_question": true,
+  "question_intent": {{
+    "target": "types of image capture devices used in the system",
+    "expected_answer_type": "enumeration or description of image capture device types",
+    "answer_criteria": "patent text specifying image capture devices used in the system"
+  }}}}
+
+"material-aware three-dimensional scanning" ->
+Topic search (normal query):
+{{"semantic_query": "material-aware three-dimensional scanning", "filters": [],
+  "is_question": false,
+  "question_intent": null}}
+
+"methods for determining material properties" ->
+Topic search (normal query — discovery of patents about these methods, not asking what method a patent uses):
+{{"semantic_query": "methods for determining material properties", "filters": [],
+  "is_question": false,
+  "question_intent": null}}
 
 ============================================================
 RULE 6 — DYNAMIC REQUIREMENTS STRUCTURE
@@ -306,6 +460,82 @@ meat).
 Any section not applicable to the query (concepts/goals/constraints/
 optimization/exclusions/relationships/requirements) is an empty array -
 never fabricate content to fill it.
+
+============================================================
+RULE 7 — QUESTION vs TOPIC CLASSIFICATION (INTENT-BASED)
+============================================================
+
+Classify based on the user's INFORMATION NEED, not grammar.
+
+TWO CATEGORIES:
+
+A) TOPIC SEARCH (is_question = false)
+   The user wants to FIND PATENTS / DOCUMENTS about a topic, technology,
+   method, problem, or concept. The goal is document discovery.
+
+   Examples:
+   - "material-aware 3D scanning"                    → topic search
+   - "material property determination"               → topic search
+   - "methods for determining material"              → topic search
+   - "patents about material recognition"            → topic search
+   - "3D scanning with material recognition"         → topic search
+   - "biodegradable polymer composition"             → topic search
+   - "material recognition systems"                  → topic search
+
+B) ANSWER-SEEKING QUERY (is_question = true)
+   The user wants the system to IDENTIFY SPECIFIC INFORMATION from the
+   patent content — properties, components, processes, reasons, advantages,
+   mechanisms, methods used, problems solved, etc.
+
+   A question mark or question word (what/which/how/why) is NOT required.
+   Classification is based on whether the query asks for specific factual
+   information that should be extracted from patent text.
+
+   Examples:
+   - "What properties are determined based on identified material?"  → question
+   - "properties determined based on identified material"            → question
+   - "material determination process used in the invention"          → question
+   - "method used for determining material"                          → question
+   - "problem solved by the invention"                               → question
+   - "advantages of the invention"                                   → question
+   - "components used for material detection"                        → question
+   - "How is material determined?"                                   → question
+   - "What type of sensor is used for defect detection?"             → question
+
+KEY DISTINCTION:
+- "methods for determining material"  → topic search (find patents about such methods)
+- "method used to determine material" → question (what method does the patent use?)
+- "material property determination"   → topic search (find patents about this topic)
+- "properties determined based on identified material" → question (what properties?)
+
+SIGNALS that a query is answer-seeking (use collectively, not individually):
+- Past participle / passive voice implying retrieval ("determined", "used", "solved", "identified")
+- Phrases like "based on", "used in", "used for", "solved by", "provided by"
+- Requesting specific factual content ("properties of", "advantages of", "components of")
+- Implicit "what/which/how" even without the question word present
+- Phrasing that expects an enumeration or specific answer from patent text
+
+SIGNALS that a query is topic search:
+- General noun phrases naming a technology or field
+- "methods for", "systems for", "patents about", "techniques for"
+- Broad domain or technology terms without implicit information extraction
+- Phrasing that describes a search topic, not an information need
+
+When is_question = true, populate:
+- "question_intent": {{
+    "target": "concise description of what specific information is requested",
+    "expected_answer_type": "dynamic description of expected answer form",
+    "answer_criteria": "what factual evidence in patent text answers this"
+  }}
+- "semantic_query": generated according to RULE 4B — concise retrieval-oriented
+  phrase preserving the requested answer target AND important relationship/
+  context (e.g. "types of image capture devices used in the system", NOT
+  over-summarized into "image capture devices").
+
+When is_question = false:
+- "question_intent": null
+- "semantic_query": generated according to RULE 4A — invention/technology/topic
+  with metadata filters removed.
 
 ============================================================
 FINAL INSTRUCTION

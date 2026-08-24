@@ -9,7 +9,6 @@ from app.models.patent_chunk import PatentChunk
 
 
 class Embedder:
-
     def __init__(self):
 
         print(f"Loading embedding model: {EMBEDDING_MODEL}")

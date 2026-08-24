@@ -1,10 +1,12 @@
 """
-Query Understanding Models
+Domain-Agnostic Query Understanding Data Structures
 
-Structured representation of a user's natural-language search query.
-This is the single contract between QueryUnderstanding (parser.py) and
-the search pipeline (app/semantic_search.py) - the pipeline never sees
-or interprets natural language, only these typed objects.
+Typed dataclasses representing the parsed query, its metadata filters,
+and its dynamic requirements structure for reranking.
+
+The domain-specific aspects live entirely in the LLM prompt and the
+allowlists (FIELD_MAPPING, CODE_TO_FIELD). These structures are generic
+across any technology domain.
 """
 
 from __future__ import annotations
@@ -15,135 +17,131 @@ from dataclasses import dataclass, field
 @dataclass
 class CandidateFilter:
     """
-    A candidate filter extracted by LLM query understanding before field resolution.
-
-    meaning: Natural language phrase or relation (e.g. "patented by", "in the US").
-    value:   Extracted candidate value (e.g. "Coca Cola", "US").
+    A raw (meaning, value) candidate extracted by the LLM before validation.
+    Kept on ParsedQuery for debugging and telemetry.
     """
 
     meaning: str
-    value: object
+    value: str | int | float
 
 
 @dataclass
 class MetadataFilter:
     """
-    A single structured metadata constraint.
+    A validated metadata filter ready to apply against Qdrant.
 
-    field:    Canonical snake_case field name. Must be a key in
-              FIELD_MAPPING (see field_mapping.py) - the pipeline never
-              accepts a field it doesn't recognize.
-    operator: One of "equals", "contains", "not_equals", "not_contains",
-              "gt", "gte", "lt", "lte" - restricted to what the field's
-              type supports (see field_mapping.py's per-field
-              "operators" list). "not_equals"/"not_contains" express an
-              exclusion ("not from China", "excluding Coca Cola") -
-              gt/gte/lt/lte need no negated variant since their
-              opposite is just another comparison operator
-              (e.g. "not after 2018" is "lte 2018").
-    value:    Normalized filter value (see normalizer.py).
+    field:    The canonical Python-side field name (e.g. 'publication_year').
+    operator: One of the allowed operators for this field's type
+              ('equals', 'gt', 'gte', 'lt', 'lte', 'contains').
+    value:    The typed value (int, str, list of str).
     """
 
     field: str
     operator: str
-    value: object
+    value: str | int | float | list[str]
+
+
+# ==================================================================
+# Dynamic requirements structure for reranking
+# ==================================================================
 
 
 @dataclass
 class Concept:
     """
-    A single concept extracted from the query (object, technology,
-    component, material, process, goal, constraint, attribute, etc. -
-    see `role`). Generic across domains - the LLM decides what's
-    present, nothing here is hardcoded to a technology.
+    A key domain concept identified in the query, with its role and importance.
+    Extracted entirely by the LLM - no hardcoded entity types.
     """
 
     id: str
     text: str
-    role: str
-    importance: float = 0.5
+    role: str = "primary_concept"
+    importance: float = 1.0
     required: bool = False
     semantic_variants: list[str] = field(default_factory=list)
 
 
 @dataclass
 class Goal:
-    """
-    What the invention should accomplish (as distinct from a Constraint).
-
-    keywords: short literal phrases likely to actually appear in patent
-    text (distinct from `text`, which is the natural-language
-    description) - mirrors Concept.semantic_variants, since coverage
-    checking (see app/reranker.py) is plain substring matching and a
-    single natural-language sentence rarely appears verbatim in a patent.
-    """
+    """A functional goal or objective the user wants to achieve."""
 
     id: str
     text: str
-    importance: float = 0.5
+    importance: float = 1.0
     required: bool = False
     keywords: list[str] = field(default_factory=list)
 
 
 @dataclass
 class Constraint:
-    """A condition that must remain satisfied while achieving a Goal."""
+    """
+    A domain/engineering constraint mentioned in the query (distinct from
+    metadata filters like date or jurisdiction).
+    """
 
     id: str
     text: str
     type: str = ""
-    importance: float = 0.5
+    importance: float = 1.0
     required: bool = False
     keywords: list[str] = field(default_factory=list)
+    strictness: str = "hard"
 
 
 @dataclass
 class OptimizationTarget:
-    """A property the invention should maximize or minimize (e.g. power consumption -> minimize)."""
+    """
+    A property to maximize or minimize (e.g. minimize latency, maximize yield).
+
+    direction: "maximize" | "minimize"
+    property:  The property name (e.g. "latency", "power consumption")
+    target_value: Optional target specification
+    """
 
     id: str
     property: str
     direction: str = "maximize"
-    importance: float = 0.5
+    target_value: str = ""
+    importance: float = 1.0
 
 
 @dataclass
 class Relationship:
-    """A directed relation between two concepts (e.g. camera -> used_for -> defect detection)."""
+    """
+    A relationship between two concepts/entities that must hold in relevant patents.
+    Generic triple representation: source -[relation]-> target.
+    """
 
     source: str
     relation: str
     target: str
-    importance: float = 0.5
+    id: str = ""
+    importance: float = 1.0
 
 
 @dataclass
 class Requirement:
     """
-    A single reranking-time requirement derived from the query's
-    concepts/goals/constraints - what a downstream reranker should
-    evaluate a candidate chunk against.
+    A specific technical requirement that candidate patents must satisfy.
+    Derived from concepts, goals, and constraints.
     """
 
     id: str
     description: str
-    type: str = ""
-    importance: float = 0.5
+    type: str = "semantic_match"
+    importance: float = 1.0
     required: bool = False
     evaluation_hint: str = ""
     keywords: list[str] = field(default_factory=list)
+    priority: str = "medium"
+    verification_hint: str = ""
 
 
 @dataclass
 class RankingWeights:
     """
-    Relative weights (should sum to ~1.0) for blending the reranker's
-    semantic score with the requirement/relationship/constraint
-    coverage signals computed from the fields above. See
-    Reranker._blend_scores in app/reranker.py for how these are
-    actually applied - weights for signals the query has no data for
-    (e.g. no constraints extracted) are redistributed into
-    semantic_relevance rather than penalizing every candidate equally.
+    Adaptive ranking weights suggested by the LLM based on query complexity.
+    Values are in [0, 1] and will be normalized by Reranker._compute_weights().
     """
 
     semantic_relevance: float = 1.0
@@ -152,6 +150,19 @@ class RankingWeights:
     constraint_satisfaction: float = 0.0
     evidence_strength: float = 0.0
     exact_match: float = 0.0
+
+
+@dataclass
+class QuestionIntent:
+    """
+    Dynamic description of requested information when the query is a question.
+    Generic across all technology domains without fixed enums or categories.
+    """
+
+    is_question: bool = True
+    target: str = ""
+    expected_answer_type: str = ""
+    answer_criteria: str = ""
 
 
 @dataclass
@@ -189,6 +200,9 @@ class ParsedQuery:
     relationships: list[Relationship] = field(default_factory=list)
     requirements: list[Requirement] = field(default_factory=list)
     ranking_weights: RankingWeights = field(default_factory=RankingWeights)
+
+    is_question: bool = False
+    question_intent: QuestionIntent | None = None
 
     @property
     def has_filters(self) -> bool:

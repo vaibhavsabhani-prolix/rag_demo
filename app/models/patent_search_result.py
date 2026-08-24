@@ -16,29 +16,7 @@ from dataclasses import dataclass, field
 @dataclass
 class ScoreBreakdown:
     """
-    Per-signal reranker scoring detail for one chunk - a byproduct of
-    Reranker._blend_and_sort's blend that already exists in memory
-    while scoring, kept here for debugging/tuning rather than
-    discarded. Always populated when a chunk goes through the
-    reranker (see app/reranker.py), including the pure-semantic
-    fallback path (where every non-semantic field just stays at its
-    neutral default and final_score == semantic_score).
-
-    All model scores are relevance scores rather than statistical
-    probabilities. Local CrossEncoder scores are sigmoid-bounded to
-    the [0,1] range; remote scores are server-provided relevance
-    scores following the configured endpoint's score contract.
-    Sigmoid bounding does not imply statistical calibration.
-
-    Blend weights are bounded configuration-derived values.
-
-    structure_coverage: how well this chunk covers the query's
-    already-extracted structure (mean of structured_score/
-    relationship_score, whichever are present - see
-    Reranker._blend_and_sort), used as a penalty-only multiplier on
-    final_score. Stays at its neutral default (1.0, i.e. no penalty
-    applied) when the query has no structured sentence/relationships
-    to check coverage against, or for non-fine-stage chunks.
+    Per-signal reranker scoring detail for one chunk.
     """
 
     semantic_score: float = 0.0
@@ -51,6 +29,22 @@ class ScoreBreakdown:
     structure_coverage: float = 1.0
     final_score: float = 0.0
     weights_used: dict = field(default_factory=dict)
+    question_score: float = 0.0
+    answer_relevance_score: float = 0.0
+
+
+@dataclass
+class AnswerEvidence:
+    """
+    Structured answer and exact supporting evidence from the original patent chunk text.
+    start_char and end_char MUST reference exact character indices into chunk.text.
+    """
+
+    answer: str
+    evidence_text: str
+    start_char: int
+    end_char: int
+    confidence: float | None = None
 
 
 @dataclass
@@ -73,6 +67,12 @@ class RankedChunk:
     document_chunk_index: int = 0
     total_chunks: int = 0
     breakdown: ScoreBreakdown | None = None
+    answer: str | None = None
+    answer_evidence: list[AnswerEvidence] = field(default_factory=list)
+    answer_span: tuple[int, int] | None = None
+    answer_score: float | None = None
+    highlighted_text: str | None = None
+    answer_debug: dict | None = None
 
 
 @dataclass
@@ -90,6 +90,11 @@ class PatentSearchResult:
         matching_chunks:  All matching chunks from this patent,
                           sorted by reranker score (descending).
         metadata:         Patent metadata from the original document.
+        answer:           Optional concise extracted answer for question queries.
+        answer_evidence:  Optional list of AnswerEvidence supporting the answer.
+        answer_span:      Optional primary character span (start, end) in chunk text.
+        answer_score:     Optional confidence score that this patent answers the question.
+        highlighted_text: Optional chunk text with highlighted answer evidence spans.
     """
 
     patent_id: str
@@ -97,6 +102,12 @@ class PatentSearchResult:
     best_chunk: RankedChunk
     matching_chunks: list[RankedChunk] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    answer: str | None = None
+    answer_evidence: list[AnswerEvidence] = field(default_factory=list)
+    answer_span: tuple[int, int] | None = None
+    answer_score: float | None = None
+    highlighted_text: str | None = None
+    answer_debug: dict | None = None
 
     @property
     def chunk_count(self) -> int:
