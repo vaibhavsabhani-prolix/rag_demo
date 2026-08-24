@@ -129,6 +129,7 @@ class SemanticSearch:
 
         self.embedder = Embedder()
         self.db = QdrantDB()
+        self.db.ensure_payload_index()
         self.reranker = Reranker()
         self.query_understanding = QueryUnderstanding()
         self.evidence_selector = EvidenceSelector()

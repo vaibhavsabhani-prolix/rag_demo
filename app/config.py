@@ -1,4 +1,3 @@
-
 QDRANT_HOST = "localhost"
 QDRANT_PORT = 6333
 
@@ -51,6 +50,7 @@ PATENT_VIEW_URL_TEMPLATE = "https://www.qubeip.com/en/patent-view/{patent_id}"
 
 STREAMLIT_PAGE_TITLE = "Patent Semantic Search"
 STREAMLIT_LAYOUT = "wide"
+HISTORY_DB_PATH = "data/search_history.db"
 
 PATENT_CANDIDATE_TOP_K = 300
 CANDIDATE_CHUNKS_PER_PATENT = 3

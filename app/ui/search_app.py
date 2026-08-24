@@ -18,6 +18,7 @@ from app.config import (
 
 st.set_page_config(page_title=STREAMLIT_PAGE_TITLE, layout=STREAMLIT_LAYOUT)
 
+from app.history_manager import HistoryManager
 from app.semantic_search import SemanticSearch
 
 _HEADER_STYLE = (
@@ -34,6 +35,11 @@ def _escape(val: object) -> str:
 @st.cache_resource(show_spinner=False)
 def _get_search(_version: str = "v2.1") -> SemanticSearch:
     return SemanticSearch()
+
+
+@st.cache_resource(show_spinner=False)
+def _get_history_manager() -> HistoryManager:
+    return HistoryManager()
 
 
 def _render_qdrant_candidates(candidates: list) -> None:
@@ -119,7 +125,6 @@ def _render_results_table(results: list, is_question: bool = False) -> None:
                 f'padding:6px 10px; border-radius:4px; font-weight:600; font-size:0.85rem; color:#d48800;">'
                 f"{_escape(answer_text)}</div>"
             )
-            # Use highlighted text if available, otherwise fallback to escaped text
             chunk_display = (
                 patent.highlighted_text or best.highlighted_text or _escape(best.text)
             )
@@ -157,15 +162,20 @@ def _render_results_table(results: list, is_question: bool = False) -> None:
     st.markdown("".join(parts), unsafe_allow_html=True)
 
 
-def main() -> None:
+def _render_search_page(history_mgr: HistoryManager) -> None:
     st.title("Patent Semantic Search")
+
+    prefill_val = st.session_state.get("prefill_query", "")
+    auto_trigger = st.session_state.get("auto_submit", False)
 
     with st.form("search_form"):
         col_input, col_button = st.columns([5, 1])
         with col_input:
             query = st.text_input(
                 "Search query",
+                value=prefill_val,
                 placeholder="e.g. What properties can be determined based on the material?",
+                key="search_query_input_box",
             )
         with col_button:
             st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
@@ -173,11 +183,17 @@ def main() -> None:
                 "Search", type="primary", use_container_width=True
             )
 
+    # If triggered via "Run this query" from history, simulate submission
+    if auto_trigger and prefill_val:
+        submitted = True
+        query = prefill_val
+        st.session_state["auto_submit"] = False
+        st.session_state["prefill_query"] = ""
+
     if not (submitted and query.strip()):
         return
 
     search = _get_search()
-
     stage_timings: list[tuple[str, float]] = []
 
     with st.status("Running search pipeline...", expanded=True) as status:
@@ -197,6 +213,29 @@ def main() -> None:
 
         total_ms = sum(elapsed for _, elapsed in stage_timings) * 1000
         status.update(label=f"Pipeline complete — {total_ms:.0f} ms", state="complete")
+
+    # Save search query and metadata to persistent history
+    try:
+        filters_list = (
+            [{"field": f.field, "operator": f.operator, "value": f.value} for f in parsed.metadata_filters]
+            if parsed.metadata_filters
+            else None
+        )
+        top_patents_list = [p.patent_id for p in results[:5]] if results else None
+        extracted_answer = results[0].answer if (results and parsed.is_question) else None
+
+        history_mgr.add_search(
+            query=query.strip(),
+            is_question=parsed.is_question,
+            semantic_query=parsed.semantic_query,
+            result_count=len(results),
+            execution_time_ms=total_ms,
+            filters=filters_list,
+            top_patents=top_patents_list,
+            extracted_answer=extracted_answer,
+        )
+    except Exception as e:
+        st.warning(f"Could not save search to history: {e}")
 
     with st.expander("Query Understanding", expanded=True):
         st.write(
@@ -320,6 +359,169 @@ def main() -> None:
                 reason = debug.get("reason")
                 if reason:
                     st.write(f"**Selection reason:** {reason}")
+
+
+def _render_history_page(history_mgr: HistoryManager) -> None:
+    st.title("Search History")
+    st.caption("Review previous patent searches, inspect extracted answers, and quickly re-run queries.")
+
+    stats = history_mgr.get_stats()
+
+    # Overview Metrics Row
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Searches", stats["total_searches"])
+    m2.metric("Questions Asked", stats["question_count"])
+    m3.metric("Topic Queries", stats["topic_count"])
+    m4.metric("Avg Duration", f"{stats['avg_latency_ms']:.0f} ms" if stats["total_searches"] > 0 else "N/A")
+
+    st.markdown("---")
+
+    if stats["total_searches"] == 0:
+        st.info("No search history found yet. Run some queries from the Search page to see them here!")
+        return
+
+    # Filter & Search Controls
+    col_search, col_filter, col_export = st.columns([3, 2, 2])
+    with col_search:
+        filter_text = st.text_input("🔍 Search History", placeholder="Filter by query or keyword...")
+    with col_filter:
+        type_filter = st.selectbox(
+            "Query Type",
+            ["All Queries", "Questions Only", "Topic Searches Only"],
+            index=0,
+        )
+    with col_export:
+        st.write("")
+        st.write("")
+        csv_data = history_mgr.export_csv()
+        st.download_button(
+            "📥 Export CSV",
+            data=csv_data,
+            file_name="patent_search_history.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    is_question_filter = None
+    if type_filter == "Questions Only":
+        is_question_filter = True
+    elif type_filter == "Topic Searches Only":
+        is_question_filter = False
+
+    history_items = history_mgr.get_history(
+        limit=100,
+        search_term=filter_text,
+        is_question_filter=is_question_filter,
+    )
+
+    # Actions: Clear All History
+    with st.expander("⚙️ History Settings & Management"):
+        col_clear, col_json = st.columns([2, 2])
+        with col_clear:
+            if st.button("🧹 Clear All History", type="secondary"):
+                history_mgr.clear_history()
+                st.success("Search history cleared!")
+                st.rerun()
+        with col_json:
+            json_data = history_mgr.export_json()
+            st.download_button(
+                "📥 Export JSON",
+                data=json_data,
+                file_name="patent_search_history.json",
+                mime="application/json",
+            )
+
+    st.markdown(f"### Historical Searches ({len(history_items)})")
+
+    if not history_items:
+        st.warning("No matching queries found with the current filter.")
+        return
+
+    for item in history_items:
+        item_id = item["id"]
+        query_text = item["query"]
+        is_question = item["is_question"]
+        timestamp = item["timestamp"][:19].replace("T", " ")
+        res_count = item["result_count"]
+        exec_time = item["execution_time_ms"]
+        answer = item.get("extracted_answer")
+        top_patents = item.get("top_patents") or []
+        filters = item.get("filters") or []
+
+        type_badge = "❓ Question" if is_question else "🔍 Topic"
+
+        with st.container(border=True):
+            header_col, action_col = st.columns([4, 1.2])
+
+            with header_col:
+                st.markdown(f"**{_escape(query_text)}**")
+                st.caption(
+                    f"**{type_badge}** | 📅 {timestamp} UTC | ⏱️ {exec_time:.0f} ms | 📄 {res_count} result(s)"
+                )
+
+                if answer:
+                    st.markdown(
+                        f'<div style="background:rgba(255,224,102,0.2); border-left:3px solid #ffcc00; '
+                        f'padding:4px 8px; border-radius:4px; font-size:0.85rem; margin-top:4px; margin-bottom:4px;">'
+                        f'<strong>Answer:</strong> {_escape(answer)}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                if top_patents:
+                    st.caption(f"**Top Patents:** {', '.join(top_patents)}")
+
+                if filters:
+                    filter_str = ", ".join(f"{f.get('field')} {f.get('operator')} {f.get('value')}" for f in filters)
+                    st.caption(f"**Applied Filters:** {filter_str}")
+
+            with action_col:
+                st.write("")
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    if st.button("🔁 Re-run", key=f"rerun_{item_id}", help="Run this query in Search"):
+                        st.session_state["prefill_query"] = query_text
+                        st.session_state["auto_submit"] = True
+                        st.session_state["selected_page"] = "🔍 Search"
+                        st.rerun()
+                with col_btn2:
+                    if st.button("🗑️", key=f"del_{item_id}", help="Delete from history"):
+                        history_mgr.delete_search(item_id)
+                        st.rerun()
+
+
+def main() -> None:
+    history_mgr = _get_history_manager()
+
+    # Sidebar Navigation
+    st.sidebar.title("Navigation")
+    
+    # Initialize selected_page in session_state if not present
+    if "selected_page" not in st.session_state:
+        st.session_state["selected_page"] = "🔍 Search"
+
+    # Sidebar menu
+    page = st.sidebar.radio(
+        "Go to",
+        ["🔍 Search", "🕒 Search History"],
+        index=0 if st.session_state["selected_page"] == "🔍 Search" else 1,
+        key="main_nav_radio",
+    )
+    
+    # Keep session state in sync
+    st.session_state["selected_page"] = page
+
+    # Quick sidebar stats
+    st.sidebar.markdown("---")
+    stats = history_mgr.get_stats()
+    st.sidebar.caption(f"📊 **Total Searches Logged:** {stats['total_searches']}")
+    if stats["latest_search_time"]:
+        latest_str = stats["latest_search_time"][:19].replace("T", " ")
+        st.sidebar.caption(f"🕒 **Last Search:** {latest_str} UTC")
+
+    if page == "🔍 Search":
+        _render_search_page(history_mgr)
+    else:
+        _render_history_page(history_mgr)
 
 
 if __name__ == "__main__":

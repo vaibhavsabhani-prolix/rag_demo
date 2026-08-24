@@ -34,6 +34,7 @@ from app.config import (
     PATENTS_COLLECTION_NAME,
     QDRANT_HOST,
     QDRANT_PORT,
+    QDRANT_TIMEOUT,
     VECTOR_SIZE,
 )
 
@@ -53,13 +54,24 @@ def _patent_point_id(patent_id: str) -> str:
 
 
 class QdrantDB:
-
-    def __init__(self):
+    def __init__(self, timeout: float = QDRANT_TIMEOUT):
 
         self.client = QdrantClient(
             host=QDRANT_HOST,
             port=QDRANT_PORT,
+            timeout=timeout,
         )
+
+    def ensure_payload_index(self):
+        """Create keyword payload index on patent_id if it does not exist."""
+        try:
+            self.client.create_payload_index(
+                collection_name=CHUNKS_COLLECTION_NAME,
+                field_name="patent_id",
+                field_schema="keyword",
+            )
+        except Exception:
+            pass
 
     # ==============================================================
     # Collection management
@@ -89,6 +101,15 @@ class QdrantDB:
                 distance=Distance.COSINE,
             ),
         )
+
+        try:
+            self.client.create_payload_index(
+                collection_name=CHUNKS_COLLECTION_NAME,
+                field_name="patent_id",
+                field_schema="keyword",
+            )
+        except Exception:
+            pass
 
         print(f"Collection '{CHUNKS_COLLECTION_NAME}' created.")
 
@@ -386,6 +407,7 @@ class QdrantDB:
             limit=limit,
             group_size=CANDIDATE_CHUNKS_PER_PATENT,
             score_threshold=score_threshold,
+            timeout=int(QDRANT_TIMEOUT),
         )
 
         return [hit for group in result.groups for hit in group.hits]
