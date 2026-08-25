@@ -138,6 +138,20 @@ LEGAL - never swap these two:
 CPC / IPC -> the matching CPC-/IPC-related code from the allowlist per the
 exact wording.
 
+CLAIMS COUNT (CLN) -> ONLY when the user explicitly asks about the NUMBER of
+claims a patent has ("patents with more than 10 claims", "exactly 5 claims",
+"having only one claim"). The word "claim"/"claims" used any other way -
+quoting claim text, describing what a claim covers, asking to find the
+patent a specific claim belongs to ("find the patent whose claim reads...",
+"which patent has this claim: '...'") - is NOT a claims-count filter and
+must never become one; that text is the semantic search topic itself, so it
+stays in semantic_query (verbatim, since exact wording is what needs to
+match). A user quoting or paraphrasing claim language is never, by itself,
+evidence that they also want the patent to have some specific claim count -
+inventing "CLN equals 1" from the mere presence of the singular word "claim"
+is exactly the wrong-hard-filter mistake the CONFIDENCE rule below warns
+about.
+
 CONFIDENCE - only create a filter when the wording gives strong evidence for
 a *specific* field. Vague relative language ("older", "recent", "US-
 related", or any year/country phrase where the field isn't clearly one of
@@ -267,6 +281,8 @@ RULE 5 — SELF-CHECK BEFORE ANSWERING
 - Every value came from the query; no filter was invented.
 - All clearly expressed filters were extracted, not just the first.
 - Legal Status/State and inventor/assignee/applicant are not swapped.
+- No CLN (claims count) filter was invented from the mere presence of the
+  word "claim"/"claims" - only from an explicit count/number request.
 - Year ranges produced two boundary filters (gte + lte), never two equals.
 - Ambiguous field/date phrases were left in semantic_query, not guessed.
 - Every exclusion phrase used not_equals/not_contains (or the flipped
@@ -327,6 +343,14 @@ alone does not identify application/publication/priority for "late 2000s",
 so the date phrase is kept in semantic_query instead of guessed:
 {{"semantic_query": "cancer treatment patents from the late 2000s", "filters": [
   {{"field": "ALD", "operator": "equals", "value": "Alive"}}]}}
+
+"Find me a patent which claim is this: 'The control part, the television
+receiver to cancel the designated image from the image and a cancellation
+signal is further receives an image storage device.'" -> the user is
+quoting claim TEXT to search by, not asking for a specific claim COUNT - no
+CLN filter, and the quoted wording is the semantic_query itself, kept
+verbatim so vector search can match it against the actual claim text:
+{{"semantic_query": "The control part, the television receiver to cancel the designated image from the image and a cancellation signal is further receives an image storage device.", "filters": []}}
 
 "What types of image capture devices can be used in the system?" ->
 Question query: answer target is "types of image capture devices", relationship

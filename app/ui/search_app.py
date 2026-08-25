@@ -135,7 +135,7 @@ def _render_results_table(results: list, is_question: bool = False) -> None:
                 f'<td style="{_CELL_STYLE} font-weight:600;">'
                 f'<a href="{_escape(patent_url)}" target="_blank" rel="noopener noreferrer">'
                 f"{_escape(patent.patent_id)}</a></td>"
-                f'<td style="{_CELL_STYLE}">{patent.score:.4f}</td>'
+                f'<td style="{_CELL_STYLE}">{patent.score:.1f}/10</td>'
                 f'<td style="{_CELL_STYLE} min-width:200px;">{answer_badge}</td>'
                 f'<td style="{_CELL_STYLE}">{_escape(best.section)}</td>'
                 f'<td style="{_CELL_STYLE} white-space:pre-wrap; word-break:break-word;">{chunk_display}</td>'
@@ -151,7 +151,7 @@ def _render_results_table(results: list, is_question: bool = False) -> None:
                 f'<td style="{_CELL_STYLE} font-weight:600;">'
                 f'<a href="{_escape(patent_url)}" target="_blank" rel="noopener noreferrer">'
                 f"{_escape(patent.patent_id)}</a></td>"
-                f'<td style="{_CELL_STYLE}">{patent.score:.4f}</td>'
+                f'<td style="{_CELL_STYLE}">{patent.score:.1f}/10</td>'
                 f'<td style="{_CELL_STYLE}">{best.chunk_id}</td>'
                 f'<td style="{_CELL_STYLE}">{_escape(best.section)}</td>'
                 f'<td style="{_CELL_STYLE} white-space:pre-wrap; word-break:break-word;">{chunk_display}</td>'

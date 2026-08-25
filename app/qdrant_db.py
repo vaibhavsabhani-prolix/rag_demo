@@ -257,10 +257,9 @@ class QdrantDB:
     # Metadata-first filtering
     #
     # Used when a query has metadata_filters but no real semantic
-    # content to vector-search with (see
-    # SemanticSearch._is_semantic_query_meaningless) - post-vector
-    # filtering (SemanticSearch._filter_candidates_by_metadata) can
-    # only ever match patents within the PATENT_CANDIDATE_TOP_K candidate pool,
+    # content to vector-search with (see ParsedQuery.is_metadata_only) -
+    # post-vector-search filtering (SemanticSearch._filter_patent_ids_by_metadata)
+    # can only ever match patents within the PATENT_CANDIDATE_TOP_K candidate pool,
     # which is the wrong tool when the query is purely a metadata
     # lookup ("applications filed in 2008 by Wyeth").
     # ==============================================================
@@ -376,7 +375,7 @@ class QdrantDB:
         Pure semantic vector search - no metadata filter involved. Any
         metadata-constraint narrowing happens afterward, in Python,
         against the patent_ids present in the returned candidates (see
-        SemanticSearch._filter_candidates_by_metadata) - not here.
+        SemanticSearch._filter_patent_ids_by_metadata) - not here.
 
         Uses Qdrant's group-by search with group_size=CANDIDATE_CHUNKS_PER_PATENT
         so *limit* bounds the number of distinct PATENTS returned, not

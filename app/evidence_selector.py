@@ -25,7 +25,7 @@ from app.config import (
     QUERY_LLM_REMOTE_MODEL,
     USE_REMOTE_LLM,
 )
-from app.models.patent_search_result import AnswerEvidence, ScoreBreakdown
+from app.models.patent_search_result import AnswerEvidence
 from app.query_understanding.models import ParsedQuery
 
 _STOP_WORDS = {
@@ -302,10 +302,10 @@ class EvidenceSelector:
 
     def select_and_extract(
         self,
-        results: list[tuple[float, object, ScoreBreakdown]],
+        results: list[tuple[float, object]],
         parsed_query: ParsedQuery,
         max_chunks_to_extract: int = 15,
-    ) -> list[tuple[float, object, ScoreBreakdown]]:
+    ) -> list[tuple[float, object]]:
         """
         Process reranked candidate chunks for a query.
         - For question queries (is_question=True): Extracts answers, evidence sentences, and answer spans.
@@ -318,8 +318,8 @@ class EvidenceSelector:
         # Path A: Normal Query Dynamic Highlighting (is_question == False)
         # -------------------------------------------------------------
         if not parsed_query.is_question:
-            processed: list[tuple[float, object, ScoreBreakdown]] = []
-            for idx, (score, chunk_point, breakdown) in enumerate(results):
+            processed: list[tuple[float, object]] = []
+            for idx, (score, chunk_point) in enumerate(results):
                 payload = getattr(chunk_point, "payload", {}) or {}
                 text = payload.get("text", "")
                 if idx < max_chunks_to_extract and text:
@@ -341,15 +341,15 @@ class EvidenceSelector:
                     chunk_point.payload["answer_span"] = None
                     chunk_point.payload["answer_score"] = None
 
-                processed.append((score, chunk_point, breakdown))
+                processed.append((score, chunk_point))
             return processed
 
         # -------------------------------------------------------------
         # Path B: Question Query Answer & Evidence Extraction (is_question == True)
         # -------------------------------------------------------------
-        processed: list[tuple[float, object, ScoreBreakdown]] = []
+        processed: list[tuple[float, object]] = []
 
-        for idx, (score, chunk_point, breakdown) in enumerate(results):
+        for idx, (score, chunk_point) in enumerate(results):
             payload = getattr(chunk_point, "payload", {}) or {}
             text = payload.get("text", "")
             if idx < max_chunks_to_extract and text:
@@ -397,7 +397,7 @@ class EvidenceSelector:
                 chunk_point.payload["highlighted_text"] = extraction["highlighted_text"]
                 chunk_point.payload["answer_debug"] = extraction.get("debug")
 
-            processed.append((score, chunk_point, breakdown))
+            processed.append((score, chunk_point))
 
         return processed
 

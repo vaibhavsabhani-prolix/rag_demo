@@ -32,6 +32,7 @@ us-patent/
 data/
 new_patents/
 television/
+Book-cover-list/
 
 # Jupyter
 .ipynb_checkpoints/

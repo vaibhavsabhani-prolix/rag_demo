@@ -53,42 +53,30 @@ STREAMLIT_PAGE_TITLE = "Patent Semantic Search"
 STREAMLIT_LAYOUT = "wide"
 HISTORY_DB_PATH = "data/search_history.db"
 
-PATENT_CANDIDATE_TOP_K = 300
+# Number of candidate patents identified by vector search that go on
+# to have EVERY one of their indexed chunks checked by the reranker
+# (see app/reranker.py / SemanticSearch.search_detailed) - not a
+# top-K-chunks cut, the patent's complete chunk set. Since a patent can
+# have anywhere from 1 to several thousand chunks, this is the lever
+# for total reranking cost per query: lower it to examine fewer
+# candidate patents (each still checked completely), raise it to
+# consider more candidates at higher latency cost.
+PATENT_CANDIDATE_TOP_K = 50
+
+# Chunks per candidate patent returned by the INITIAL vector-search
+# step only (QdrantDB.search's group_size) - used for identifying
+# candidate patents and the "Qdrant Vector Search Candidates" display
+# view. Reranking itself does not use this; it checks every chunk a
+# candidate patent has (see PATENT_CANDIDATE_TOP_K above).
 CANDIDATE_CHUNKS_PER_PATENT = 3
 FINAL_TOP_K = 10
-MIN_SEMANTIC_WEIGHT = 0.55
-MAX_SECONDARY_WEIGHT = 0.20
-MAX_WEAK_SIGNAL_WEIGHT = 0.10
-SEM_STRUCT_SPLIT_RATIO = 0.7
-EXCLUSION_PENALTY_WEIGHT = 0.5
-EXCLUSION_HARD_FILTER_THRESHOLD = None
-STRUCTURE_COVERAGE_MIN_MULTIPLIER = 0.7
-RERANK_FINE_STAGE_TOP_N = 40
-MAX_RELATIONSHIPS_SCORED = 5
-MAX_OPTIMIZATION_TARGETS_SCORED = 5
-MAX_EXCLUSIONS_SCORED = 5
-REQUIRED_IMPORTANCE_BOOST = 0.2
-STRUCTURED_SIGNAL_MIN_IMPORTANCE = 0.5
-REQUEST_SATISFACTION_WEIGHT = 0.20
-REQUEST_SATISFACTION_DIRECT_THRESHOLD = 0.65
-REQUEST_SATISFACTION_NON_MATCH_THRESHOLD = 0.35
-NON_MATCH_PENALTY_MULTIPLIER = 0.20
-PARTIAL_MATCH_PENALTY_MULTIPLIER = 0.85
-FILTER_NON_MATCH_CANDIDATES = False
 
-# Bounds validation for request satisfaction settings
-assert 0.0 <= REQUEST_SATISFACTION_WEIGHT <= 1.0, (
-    "REQUEST_SATISFACTION_WEIGHT must be between 0.0 and 1.0"
-)
-assert (
-    0.0
-    <= REQUEST_SATISFACTION_NON_MATCH_THRESHOLD
-    <= REQUEST_SATISFACTION_DIRECT_THRESHOLD
-    <= 1.0
-), "Thresholds must satisfy 0.0 <= NON_MATCH_THRESHOLD <= DIRECT_THRESHOLD <= 1.0"
-assert 0.0 <= NON_MATCH_PENALTY_MULTIPLIER <= 1.0, (
-    "NON_MATCH_PENALTY_MULTIPLIER must be between 0.0 and 1.0"
-)
-assert 0.0 <= PARTIAL_MATCH_PENALTY_MULTIPLIER <= 1.0, (
-    "PARTIAL_MATCH_PENALTY_MULTIPLIER must be between 0.0 and 1.0"
+# The reranker scores every chunk of a candidate patent individually
+# and takes the MAX as that patent's score (see app/reranker.py), on a
+# 0-10 scale; only patents scoring at or above this are kept as a
+# match. A single hard cutoff, not a tunable weighted blend.
+PATENT_RELEVANCE_THRESHOLD = 7.0
+
+assert 0.0 <= PATENT_RELEVANCE_THRESHOLD <= 10.0, (
+    "PATENT_RELEVANCE_THRESHOLD must be between 0.0 and 10.0"
 )
