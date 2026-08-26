@@ -79,7 +79,16 @@ class FilterEngine:
 
         for f in filters:
             _check_filter(f)
-            if f.operator in NATIVE_OPERATORS and f.field not in QDRANT_UNSAFE_FIELDS:
+            # A grouped (OR-matched) filter can never go through the native
+            # path: to_qdrant_filter() ANDs every condition together, which
+            # would silently turn "matches ANY field in the group" into
+            # "matches ALL of them" - always route it through matches()
+            # instead, which understands groups.
+            if (
+                f.group is None
+                and f.operator in NATIVE_OPERATORS
+                and f.field not in QDRANT_UNSAFE_FIELDS
+            ):
                 native.append(f)
             else:
                 python_only.append(f)
@@ -127,7 +136,29 @@ class FilterEngine:
 
     @staticmethod
     def matches(metadata: dict, filters: list[MetadataFilter]) -> bool:
-        return all(FilterEngine._matches_one(metadata, f) for f in filters)
+        """
+        Every ungrouped filter must match (AND). Filters sharing the same
+        non-null `group` are OR'd against each other - only one field in
+        the group needs to match - and each group as a whole is still
+        required, same as any other filter (AND-of-ORs).
+        """
+
+        ungrouped: list[MetadataFilter] = []
+        grouped: dict[str, list[MetadataFilter]] = {}
+
+        for f in filters:
+            if f.group is None:
+                ungrouped.append(f)
+            else:
+                grouped.setdefault(f.group, []).append(f)
+
+        if not all(FilterEngine._matches_one(metadata, f) for f in ungrouped):
+            return False
+
+        return all(
+            any(FilterEngine._matches_one(metadata, f) for f in group_filters)
+            for group_filters in grouped.values()
+        )
 
     @staticmethod
     def _matches_one(metadata: dict, f: MetadataFilter) -> bool:
@@ -156,7 +187,14 @@ class FilterEngine:
                 numbers = [float(v) for v in values]
             except ValueError:
                 return False
-            return any(FilterEngine._compare(n, op, float(f.value)) for n in numbers)
+
+            target = float(f.value)
+
+            if op in ("equals", "not_equals"):
+                found = any(n == target for n in numbers)
+                return not found if op == "not_equals" else found
+
+            return any(FilterEngine._compare(n, op, target) for n in numbers)
 
         if op in ("contains", "not_contains"):
             found = str(f.value).lower() in str(actual).lower()

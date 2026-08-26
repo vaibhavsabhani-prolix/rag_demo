@@ -34,11 +34,20 @@ class MetadataFilter:
     operator: One of the allowed operators for this field's type
               ('equals', 'gt', 'gte', 'lt', 'lte', 'contains').
     value:    The typed value (int, str, list of str).
+    group:    None for a normal, independently-required filter (AND'd with
+              every other filter). Set to a shared id when this filter is
+              one member of an OR-matched fallback group (e.g. a bare
+              country/year value expanded across every field in that
+              category by an "ANY_COUNTRY"/"ANY_YEAR" LLM field code - see
+              FIELD_GROUPS in field_mapping.py) - a patent needs to satisfy
+              only ONE filter per group, but every group (and every
+              ungrouped filter) is still required. See FilterEngine.matches().
     """
 
     field: str
     operator: str
     value: str | int | float | list[str]
+    group: str | None = None
 
 
 # ==================================================================

@@ -140,7 +140,35 @@ class SemanticSearch:
 
         #  Query Understanding
         parsed = _run("Query Understanding", self.query_understanding.parse, query)
-        
+
+        return self.search_from_parsed(parsed, on_stage=on_stage)
+
+    def search_from_parsed(
+        self,
+        parsed: ParsedQuery,
+        on_stage: Callable[[str, float], None] | None = None,
+    ) -> tuple[
+        ParsedQuery,
+        list,
+        list,
+        list[tuple[float, object]],
+        list[PatentSearchResult],
+    ]:
+        """
+        Everything search_detailed() does AFTER Query Understanding - split
+        out so a caller that already has a ParsedQuery (e.g. the UI, after
+        the user picked one specific field out of an UNCERTAIN FIELD OR
+        group - see MetadataFilter.group) can run the rest of the pipeline
+        without re-invoking the LLM.
+        """
+
+        def _run(stage_name, fn, *args, **kwargs):
+            start = time.perf_counter()
+            result = fn(*args, **kwargs)
+            if on_stage is not None:
+                on_stage(stage_name, time.perf_counter() - start)
+            return result
+
         # filter query only, no semantic query to embed or rerank
         if parsed.is_metadata_only:
             return self._search_by_metadata_only(parsed, on_stage=on_stage)
@@ -275,7 +303,16 @@ class SemanticSearch:
             ),
         )
 
-        return parsed, chunks, chunks, reranked_results, patent_results
+        # qdrant_results (2nd position) is the patent-level candidate view
+        # the UI displays as "Qdrant Vector Search Candidates" - dedupe to
+        # one chunk per patent_id here too, same as the vector-search path
+        # (_dedupe_top_chunk_per_patent in search_detailed), so the count
+        # shown reflects distinct matching PATENTS, not every one of their
+        # chunks. `chunks` (3rd position, filtered_results) stays the full,
+        # unbounded set - that's what aggregation above actually used.
+        qdrant_results = _dedupe_top_chunk_per_patent(chunks)
+
+        return parsed, qdrant_results, chunks, reranked_results, patent_results
 
     # ==============================================================
     # Metadata filtering (post-vector-search, pre-chunk-retrieval)

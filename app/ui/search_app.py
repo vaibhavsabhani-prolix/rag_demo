@@ -1,6 +1,7 @@
 import html
 import os
 import sys
+import time
 from urllib.parse import quote
 
 import streamlit as st
@@ -19,6 +20,8 @@ from app.config import (
 st.set_page_config(page_title=STREAMLIT_PAGE_TITLE, layout=STREAMLIT_LAYOUT)
 
 from app.history_manager import HistoryManager
+from app.query_understanding.field_mapping import FIELD_MAPPING
+from app.query_understanding.models import MetadataFilter
 from app.semantic_search import SemanticSearch
 
 _HEADER_STYLE = (
@@ -78,12 +81,22 @@ def _render_qdrant_candidates(candidates: list) -> None:
     st.markdown("".join(parts), unsafe_allow_html=True)
 
 
-def _render_results_table(results: list, is_question: bool = False) -> None:
+def _render_results_table(
+    results: list, is_question: bool = False, is_metadata_only: bool = False
+) -> None:
     if not results:
         st.info("No matching patents found.")
         return
 
-    if is_question:
+    # A metadata-only query never ran a reranker - there is no relevance
+    # signal to pick a "best" chunk with, so best_chunk is just whichever
+    # chunk happened to be fetched first for that patent (see
+    # SemanticSearch._aggregate_by_patent). Showing it as a "match" would
+    # be misleading, so metadata-only results skip Score/chunk columns
+    # entirely and show only which patents matched the filters.
+    if is_metadata_only:
+        columns = ["#", "Patent ID"]
+    elif is_question:
         columns = [
             "#",
             "Patent ID",
@@ -111,10 +124,22 @@ def _render_results_table(results: list, is_question: bool = False) -> None:
     ]
 
     for rank, patent in enumerate(results, start=1):
-        best = patent.best_chunk
         patent_url = PATENT_VIEW_URL_TEMPLATE.format(
             patent_id=quote(str(patent.patent_id), safe="")
         )
+
+        if is_metadata_only:
+            parts.append(
+                "<tr>"
+                f'<td style="{_CELL_STYLE}">{rank}</td>'
+                f'<td style="{_CELL_STYLE} font-weight:600;">'
+                f'<a href="{_escape(patent_url)}" target="_blank" rel="noopener noreferrer">'
+                f"{_escape(patent.patent_id)}</a></td>"
+                "</tr>"
+            )
+            continue
+
+        best = patent.best_chunk
 
         if is_question:
             answer_text = (
@@ -162,49 +187,89 @@ def _render_results_table(results: list, is_question: bool = False) -> None:
     st.markdown("".join(parts), unsafe_allow_html=True)
 
 
-def _render_search_page(history_mgr: HistoryManager) -> None:
-    st.title("Patent Semantic Search")
+def _uncertain_field_groups(parsed) -> dict:
+    """
+    Groups MetadataFilter entries sharing a `.group` - the LLM listed
+    multiple plausible field codes for the same value instead of guessing
+    one (RULE 1 UNCERTAIN FIELD in query_understanding/prompt.py). Empty
+    dict means nothing to clarify.
+    """
+    groups: dict[str, list] = {}
+    for f in parsed.metadata_filters:
+        if f.group:
+            groups.setdefault(f.group, []).append(f)
+    return groups
 
-    prefill_val = st.session_state.get("prefill_query", "")
-    auto_trigger = st.session_state.get("auto_submit", False)
 
-    with st.form("search_form"):
-        col_input, col_button = st.columns([5, 1])
-        with col_input:
-            query = st.text_input(
-                "Search query",
-                value=prefill_val,
-                placeholder="e.g. What properties can be determined based on the material?",
-                key="search_query_input_box",
-            )
-        with col_button:
-            st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-            submitted = st.form_submit_button(
-                "Search", type="primary", use_container_width=True
-            )
+def _render_clarify_form(pending: dict, history_mgr: HistoryManager) -> None:
+    parsed = pending["parsed"]
+    groups = _uncertain_field_groups(parsed)
 
-    # If triggered via "Run this query" from history, simulate submission
-    if auto_trigger and prefill_val:
-        submitted = True
-        query = prefill_val
-        st.session_state["auto_submit"] = False
-        st.session_state["prefill_query"] = ""
+    st.info(
+        "Couldn't tell which specific field holds this value, so it's ready "
+        "to check every plausible one. Pick a specific field to narrow it down."
+    )
 
-    if not (submitted and query.strip()):
+    choices: dict[str, str | None] = {}
+    with st.form("clarify_form"):
+        for group_id, filters in groups.items():
+            value = filters[0].value
+            field_labels = [FIELD_MAPPING[f.field]["real_key"] for f in filters]
+            label_to_field = dict(zip(field_labels, [f.field for f in filters]))
+            options = ["Any of these (recommended)"] + field_labels
+
+            choice_label = st.radio(f'Which field for "{value}"?', options, key=f"clarify_{group_id}")
+            choices[group_id] = label_to_field.get(choice_label)
+
+        confirmed = st.form_submit_button("Search", type="primary")
+
+    if not confirmed:
         return
 
-    search = _get_search()
-    stage_timings: list[tuple[str, float]] = []
+    narrowed = []
+    for f in parsed.metadata_filters:
+        if f.group is None:
+            narrowed.append(f)
+        elif choices.get(f.group) is None:
+            narrowed.append(f)  # "Any of these" - keep the OR group as-is
+        elif f.field == choices[f.group]:
+            narrowed.append(
+                MetadataFilter(field=f.field, operator=f.operator, value=f.value, group=None)
+            )
+        # else: not the field the user chose for this group - drop it
+
+    parsed.metadata_filters = narrowed
+    st.session_state.pop("clarify", None)
+
+    _run_search_and_render(
+        _get_search(),
+        pending["query"],
+        parsed,
+        history_mgr,
+        prior_stage_timings=[("Query Understanding", pending["qu_elapsed"])],
+    )
+
+
+def _run_search_and_render(
+    search: SemanticSearch,
+    query: str,
+    parsed,
+    history_mgr: HistoryManager,
+    prior_stage_timings: list[tuple[str, float]] | None = None,
+) -> None:
+    stage_timings: list[tuple[str, float]] = list(prior_stage_timings or [])
 
     with st.status("Running search pipeline...", expanded=True) as status:
+        for name, elapsed in stage_timings:
+            status.write(f"✅ {name} — {elapsed * 1000:.0f} ms")
 
         def _on_stage(name: str, elapsed: float) -> None:
             stage_timings.append((name, elapsed))
             status.write(f"✅ {name} — {elapsed * 1000:.0f} ms")
 
         try:
-            parsed, qdrant_results, _, _, results = search.search_detailed(
-                query, on_stage=_on_stage
+            parsed, qdrant_results, _, _, results = search.search_from_parsed(
+                parsed, on_stage=_on_stage
             )
         except Exception as e:
             status.update(label="Search failed", state="error")
@@ -252,9 +317,19 @@ def _render_search_page(history_mgr: HistoryManager) -> None:
                 st.write(f"**Answer criteria:** {qi.answer_criteria}")
 
         if parsed.metadata_filters:
-            st.write("**Resolved filters:**")
+            st.write("**Resolved filters** (ALL of the following must match):")
+
+            grouped: dict[str, list] = {}
             for f in parsed.metadata_filters:
-                st.write(f"- `{f.field}` `{f.operator}` `{f.value}`")
+                if f.group is None:
+                    st.write(f"- `{f.field}` `{f.operator}` `{f.value}`")
+                else:
+                    grouped.setdefault(f.group, []).append(f)
+
+            for filters in grouped.values():
+                st.write("- **ANY** of these:")
+                for f in filters:
+                    st.write(f"  - `{f.field}` `{f.operator}` `{f.value}`")
         else:
             st.write("**Resolved filters:** (none)")
 
@@ -310,12 +385,20 @@ def _render_search_page(history_mgr: HistoryManager) -> None:
         for name, elapsed in stage_timings:
             st.write(f"- `{name}` — {elapsed * 1000:.0f} ms")
 
-    with st.expander(f"Qdrant Vector Search Candidates ({len(qdrant_results)})"):
-        _render_qdrant_candidates(qdrant_results)
+    # A metadata-only query (see ParsedQuery.is_metadata_only) never runs an
+    # embedding/vector search - qdrant_results there is just the same
+    # filtered patent list the results table below already shows, not a
+    # distinct "vector search candidates" view, so there is nothing extra
+    # to surface here.
+    if not parsed.is_metadata_only:
+        with st.expander(f"Qdrant Vector Search Candidates ({len(qdrant_results)})"):
+            _render_qdrant_candidates(qdrant_results)
 
     st.caption(f"{len(results)} matching patent(s)")
 
-    _render_results_table(results, is_question=parsed.is_question)
+    _render_results_table(
+        results, is_question=parsed.is_question, is_metadata_only=parsed.is_metadata_only
+    )
 
     if parsed.is_question and results:
         with st.expander("Answer Evidence Debug", expanded=False):
@@ -359,6 +442,64 @@ def _render_search_page(history_mgr: HistoryManager) -> None:
                 reason = debug.get("reason")
                 if reason:
                     st.write(f"**Selection reason:** {reason}")
+
+
+def _render_search_page(history_mgr: HistoryManager) -> None:
+    st.title("Patent Semantic Search")
+
+    prefill_val = st.session_state.get("prefill_query", "")
+    auto_trigger = st.session_state.get("auto_submit", False)
+
+    with st.form("search_form"):
+        col_input, col_button = st.columns([5, 1])
+        with col_input:
+            query = st.text_input(
+                "Search query",
+                value=prefill_val,
+                placeholder="e.g. What properties can be determined based on the material?",
+                key="search_query_input_box",
+            )
+        with col_button:
+            st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
+            submitted = st.form_submit_button(
+                "Search", type="primary", use_container_width=True
+            )
+
+    # If triggered via "Run this query" from history, simulate submission
+    if auto_trigger and prefill_val:
+        submitted = True
+        query = prefill_val
+        st.session_state["auto_submit"] = False
+        st.session_state["prefill_query"] = ""
+
+    if submitted and query.strip():
+        # A fresh search always supersedes any earlier pending clarification.
+        st.session_state.pop("clarify", None)
+
+        search = _get_search()
+        start = time.perf_counter()
+        parsed = search.query_understanding.parse(query.strip())
+        qu_elapsed = time.perf_counter() - start
+
+        if _uncertain_field_groups(parsed):
+            st.session_state["clarify"] = {
+                "query": query.strip(),
+                "parsed": parsed,
+                "qu_elapsed": qu_elapsed,
+            }
+        else:
+            _run_search_and_render(
+                search,
+                query.strip(),
+                parsed,
+                history_mgr,
+                prior_stage_timings=[("Query Understanding", qu_elapsed)],
+            )
+            return
+
+    pending = st.session_state.get("clarify")
+    if pending:
+        _render_clarify_form(pending, history_mgr)
 
 
 def _render_history_page(history_mgr: HistoryManager) -> None:

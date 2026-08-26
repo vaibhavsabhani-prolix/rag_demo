@@ -48,7 +48,7 @@ comments, or keys other than the ones below.
 {{
   "semantic_query": "...",
   "filters": [
-    {{"field": "FIELD_CODE", "operator": "equals|contains|not_equals|not_contains|gt|gte|lt|lte", "value": "VALUE"}}
+    {{"field": "FIELD_CODE", "operator": "equals|contains|not_equals|not_contains|gt|gte|lt|lte", "value": "VALUE", "uncertain": false}}
   ],
   "intent": "one sentence describing what the user is actually looking for",
   "query_type": ["simple_topic|object_search|technology_search|problem_solution|goal_oriented|multi_concept|constrained_search|optimization|tradeoff|comparative|method_search|component_search|material_search|process_search|prior_art|cross_domain|other"],
@@ -63,92 +63,324 @@ is true, "question_intent" is populated with
 {{"target": "...", "expected_answer_type": "...", "answer_criteria": "..."}}.
 "not_equals"/"not_contains" are EXCLUSIONS - the user wants
 patents that do NOT match the value (e.g. "not from China" -> not_contains).
+"uncertain" (boolean, defaults to false) marks a filter as ONE PLAUSIBLE
+CANDIDATE among several for a value you're not confident belongs to this
+exact field - see RULE 1's UNCERTAIN FIELD guidance. Set it to true ONLY
+on those candidate entries; every ordinary, confident filter - including
+one whose value happens to equal another filter's value, e.g. "application
+country AP" and "publication country AP" both explicitly stated in the
+same query - keeps "uncertain": false (or omit the key) and is REQUIRED
+independently (AND), never treated as an alternative to another filter.
+Every "field" is still always one of the codes from ALLOWED METADATA FIELD
+CODES above.
 
 ============================================================
-RULE 1 — METADATA FIELDS: allowlist, mapping, confidence
+RULE 1 — METADATA FIELDS: dynamic selection + disambiguation
 ============================================================
 
-The "field" value MUST be exactly one of the codes in the allowlist above -
-never invent one (no "creator", "company", "country", "year", "status",
-"inventor_name", etc.). Map the user's wording to the closest official code:
+The "field" value MUST be exactly one of the field codes in the dynamic
+allowlist above. NEVER invent a field code, field name, synonym, or metadata
+field that is not present in the allowlist.
 
-PEOPLE / ORGANIZATIONS - different fields, never confuse them:
-- inventor, creator, invented by, created by        -> IN_EN
-- assigned to, owned by, current owner/assignee      -> the matching Current
-  Assignee field (e.g. CAN_EN)
-- applicant, filed by                                -> the matching
-  Applicant field (e.g. AAPS)
+You are a Patent Semantic Search Query Understanding engine. Understand the
+user's complete query and determine which parts express constraints on patent
+metadata. For each clearly expressed metadata constraint, select the field
+from the dynamic allowlist whose meaning best matches the user's intended
+attribute.
 
-GEOGRAPHY & DATES - map by the verb attached to the country/year, not by
-the country/year alone:
-- "filed in [country/year]", "application (country/year)"   -> AC / AY
-- "published in [country/year]", "publication (country/year)" -> PNC / PY
-- "priority in/from [country/year]"                            -> PRC / PRY
-  ("earliest priority year" -> EPRY)
-- "originated in/from [country]", "[country]-origin", "an invention/origin
-  from [country]" -> PRIORITY (PRC), not application/publication, unless the
-  user explicitly says "filed in"/"published in". The same logic applies to
-  a year attached to that wording: "US-originated invention from 2008" ->
-  PRC=US, PRY=2008. "invention filed in the US in 2008" -> here "filed"
-  explicitly names Application, so AC=US, AY=2008 instead.
-- A bare country/year with none of the above cues is ambiguous - do not
-  default to application. "patents from the late 2000s" (no filed/
-  published/priority cue) stays in semantic_query; "applications from 2008"
-  -> AY; "invention from 2008" -> PRY (origin wording); the word "patent"
-  alone never disambiguates.
-- "early/mid/late <decade>s" -> years 0-3 / 4-6 / 7-9 of that decade (e.g.
-  late 2000s = 2007-2009), and "around/circa/approximately YYYY" -> YYYY-1
-  to YYYY+1 - only once the date FIELD is clearly identified as above (two
-  boundary filters, gte + lte - never "equals" for a range).
+The dynamic allowlist is the source of truth for available metadata fields.
+Use the field descriptions and the user's complete wording/context to select
+the most appropriate field. Do not rely only on keyword matching.
 
-LEGAL - never swap these two:
-- "legal status": Filed / Granted / Ceased  -> LST
-- "legal state": Alive / Dead               -> ALD ("active" -> ALD=Alive)
+IMPORTANT: Some metadata fields are intentionally very similar. For these
+confusable fields, use the following semantic disambiguation rules:
 
-CPC / IPC -> the matching CPC-/IPC-related code from the allowlist per the
-exact wording.
+PEOPLE / ORGANIZATIONS:
+- Distinguish inventor, applicant, and assignee/owner according to the role
+  expressed by the user. Never treat these roles as interchangeable.
+- "invented by", "inventor", or equivalent invention-creator wording refers
+  to the available Inventor field.
+- "applicant", "filed by", or equivalent application-applicant wording refers
+  to the available Applicant field.
+- "assigned to", "owned by", "current owner", or equivalent ownership/
+  assignment wording refers to the available Current Assignee field - but
+  this is the UNCERTAIN FIELD case below for TWO separate reasons, so list
+  ALL of the following together with the identical operator+value, never
+  Current Assignee alone:
+  (1) the allowlist may provide more than one Current Assignee VARIANT
+      (e.g. a "Normalized" and a "Standardized" text-cleaning variant of
+      the exact same current-owner fact) - a given patent's data is not
+      guaranteed to be populated under every variant, so list every
+      Current Assignee variant the allowlist provides, not just one;
+  (2) Current Assignee data (any variant) is typically only recorded once
+      a patent has actually changed hands AFTER grant, so it is
+      frequently empty even for a patent that genuinely belongs to the
+      company being asked about (e.g. a still-pending/Filed application
+      has no ownership-transfer to record) - so ALSO list the combined
+      Assignee/Applicant field (the same field already used for
+      "applicant"/"filed by" wording, since for a patent that never
+      changed hands that combined field is what actually carries the
+      owner).
+- Select the exact corresponding field code from the dynamic allowlist rather
+  than assuming a fixed code if the allowlist provides multiple variants.
+- A bare short code (2-4 uppercase letters, e.g. a jurisdiction/office code)
+  is NEVER by itself evidence of an organization name - an organization is
+  a named entity (a company/institution name), not a bare code. If a short
+  uppercase token is attached to filing/publication/priority/country wording
+  ("filed in AP", "AP patents"), treat it as a jurisdiction/office code under
+  GEOGRAPHY below, never as an applicant/assignee/inventor value.
 
-CLAIMS COUNT (CLN) -> ONLY when the user explicitly asks about the NUMBER of
-claims a patent has ("patents with more than 10 claims", "exactly 5 claims",
-"having only one claim"). The word "claim"/"claims" used any other way -
-quoting claim text, describing what a claim covers, asking to find the
-patent a specific claim belongs to ("find the patent whose claim reads...",
-"which patent has this claim: '...'") - is NOT a claims-count filter and
-must never become one; that text is the semantic search topic itself, so it
-stays in semantic_query (verbatim, since exact wording is what needs to
-match). A user quoting or paraphrasing claim language is never, by itself,
-evidence that they also want the patent to have some specific claim count -
-inventing "CLN equals 1" from the mere presence of the singular word "claim"
-is exactly the wrong-hard-filter mistake the CONFIDENCE rule below warns
-about.
+GEOGRAPHY / DATES:
+- When country or year information is attached to an explicit application/
+  filing context, select the corresponding Application Country/Year field.
+- When country or year information is attached to an explicit publication
+  context, select the corresponding Publication Country/Year field.
+- When country or year information is attached to an explicit priority
+  context, select the corresponding Priority Country/Year field.
+- "originated in/from", "[country]-origin", "origin from", or equivalent
+  invention-origin wording refers to the Priority context unless the user
+  explicitly states an application/filing or publication context.
+- The same contextual distinction applies to years.
+- "earliest priority year" refers specifically to the available earliest
+  priority-year field.
+- The word "patent" alone does not identify which country or year field is
+  intended.
 
-CONFIDENCE - only create a filter when the wording gives strong evidence for
-a *specific* field. Vague relative language ("older", "recent", "US-
-related", or any year/country phrase where the field isn't clearly one of
-the cues above) must NOT become a hard filter - keep it in semantic_query.
-A wrong hard filter can drop the correct patent from retrieval, so prefer
-semantic_query over guessing between fields.
+Use the contextual relationship, not the country/year value itself, to choose
+between similar fields.
+
+YEAR vs DATE - match the FIELD'S granularity to the VALUE'S granularity:
+- Every event (application/publication/priority/earliest-priority) has TWO
+  field variants in the allowlist: a Year field (holds a bare calendar year)
+  and a Date field (holds a full calendar date). The event context (filed/
+  published/priority) picks WHICH event; the VALUE itself - not the wording
+  around it - picks whether it's the Year or the Date variant of that event.
+- A bare year (just the number, e.g. "2014") is a YEAR value - always use
+  that event's Year field, never its Date field, even though "Date" also
+  nominally names that same event.
+- A full calendar date (names a specific day - e.g. "March 3, 2014",
+  "2014-03-15") is a DATE value - use that event's Date field instead.
+- "published in 2014" -> Publication YEAR (bare year); "published on March
+  3, 2014" -> Publication DATE (a specific day).
+
+- "applications from 2008" -> AY (event cue present); "invention from 2008"
+  -> PRY (origin wording, event cue present). A bare code/year with NO event
+  cue ("patents from AP", "AP patents") is exactly the UNCERTAIN FIELD case
+  below - it is a real, concrete value, so it must not be silently dropped
+  into semantic_query (a bare code/year has no descriptive text for vector
+  search to match against anyway) or guessed into one field.
+
+LEGAL:
+- Distinguish Legal Status from Legal State according to the user's wording
+  and the available field descriptions. Never swap them.
+- "legal status" refers to the available Legal Status field.
+- "legal state", "alive/dead", or equivalent state-of-validity wording refers
+  to the available Legal State field.
+- "active" should be interpreted according to the available Legal State
+  semantics when the user is referring to whether the patent is alive.
+
+CPC / IPC:
+- When the user explicitly requests CPC or IPC classification information,
+  select the corresponding CPC/IPC field from the dynamic allowlist according
+  to the exact classification attribute requested.
+- Do not invent a generic classification field.
+- A concrete classification code (e.g. "G06F1/00") with no clear
+  digit-precision (full/12/8/4-digit) or CPC-vs-IPC/IPCR scheme is the
+  UNCERTAIN FIELD case below.
+
+PATENT FAMILY:
+- A patent family ID value ("same family as X", a bare family ID/number)
+  with no indication of which family breadth (complete/domestic/extended/
+  main/simple) is meant is the UNCERTAIN FIELD case below.
+
+CLAIMS:
+- Select the claims-count field ONLY when the user explicitly asks about the
+  NUMBER of claims a patent has.
+- Examples of claims-count intent include "more than 10 claims",
+  "exactly 5 claims", or "having only one claim".
+- If "claim" or "claims" refers to claim text, what a claim covers, quoted
+  claim language, or finding a patent from a specific claim, it is NOT a
+  claims-count filter.
+- In those cases, keep the claim wording in semantic_query rather than
+  inventing a claims-count filter.
+
+DATE EXPRESSIONS:
+- Interpret relative or approximate date expressions only after the date
+  field has been identified from the surrounding context.
+- "early/mid/late <decade>s" represents a bounded range within that decade:
+  early = years 0-3, mid = years 4-6, late = years 7-9.
+- "around", "circa", or "approximately YYYY" represents a bounded range of
+  YYYY-1 through YYYY+1.
+- These expressions must become two boundary filters when they clearly refer
+  to a metadata date field.
+
+CONFIDENCE:
+- Create a metadata filter ONLY when the query provides enough information
+  to identify a specific metadata field with strong confidence.
+- Do not guess a single specific field among similar ones - see UNCERTAIN
+  FIELD below for what to do instead when the value itself is concrete.
+- Vague expressions with NO concrete value at all - "older patents", "recent
+  patents", "US-related patents" (a description, not an actual value) - must
+  NOT be converted into a hard metadata filter. Keep these in semantic_query.
+- A wrong hard filter can remove the correct patent from retrieval, therefore
+  when the specific FIELD is uncertain but the VALUE is concrete, list every
+  plausible field rather than guessing one wrong field or discarding the
+  value.
+
+UNCERTAIN FIELD (a real value, but 2+ specific fields could plausibly hold it):
+- This is about YOUR OWN CONFIDENCE, not about whether a value happens to
+  repeat: it applies ONLY when the query itself does not tell you which
+  single field a value belongs to. If the query explicitly names the field
+  for a value ("application country AP", "publication country AP" - both
+  stated separately in the same query), you are NOT uncertain about either
+  one, even though they happen to share the value "AP" - both are ordinary,
+  confident, independently-REQUIRED filters (RULE 2 MULTIPLE FILTERS), never
+  alternatives to each other.
+- When you genuinely cannot tell which single field a value belongs to: do
+  NOT guess one field, and do NOT drop the value into semantic_query either
+  (it has no descriptive text for vector search to match against). Instead,
+  emit ONE filter entry per plausible field - the SAME operator and the SAME
+  value, once for each real field code from the allowlist that you
+  genuinely think could be correct - and set "uncertain": true on EACH of
+  those candidate entries. Downstream logic OR-groups every filter marked
+  "uncertain": true that shares an (operator, value) pair - "matches if ANY
+  of them holds" - so listing every plausible candidate only widens the
+  match, it never narrows it below a single correct guess. A confident
+  filter is NEVER marked "uncertain": true, no matter what its value is.
+- Only list fields that are genuinely plausible given the value's own
+  meaning (e.g. a country/office code's candidates are only the country-type
+  fields - AC/PNC/PRC/ACC-equivalent - never an applicant/assignee/inventor
+  field; a classification code's candidates are only CPC/IPC-family fields).
+  Never pad the list with implausible fields "just in case".
+- This applies the same way to a bare country/office code (no filed/
+  published/priority/assignee cue), a bare year or full date (no event cue),
+  an under-specified CPC/IPC classification code (unclear digit-precision or
+  scheme), or a family ID (unclear family breadth) - see the worked example
+  below.
+
+DYNAMIC FIELD REQUIREMENT:
+- Do NOT hardcode a complete mapping of natural-language terms to field codes.
+- Use the dynamic allowlist and field descriptions for normal field selection.
+- The explicit disambiguation rules above exist only to resolve semantic
+  relationships that cannot reliably be determined from field names alone.
+- If a required metadata attribute is not represented in the dynamic
+  allowlist, NEVER invent a field for it.
+
+Identify ALL clearly expressed metadata constraints in the query, not just
+the first one.
 
 ============================================================
-RULE 2 — OPERATORS & RANGES
+RULE 2 — OPERATORS & RANGES: dynamic interpretation
 ============================================================
 
-- equals: an exact value ("published in 2008", "legal status is Filed").
-- contains: substring/membership fields - inventor, assignee, applicant,
-  CPC, IPC, country ("invented by RUSCH CHRISTOPH", "priority country
-  China").
-- not_equals / not_contains: the exclusion counterparts, for ANY field.
-  Trigger on "not from X", "excluding X", "except X", "other than X",
-  "non-X", "must not be X" ("not from China" -> AC not_contains "China").
-- gt/gte/lt/lte: "after" / "since, from, at least" / "before" / "up to,
-  until" ("published after 2018" -> PY gt 2018).
-- A RANGE ("from 2005 to 2010", "between X and Y", "around 2008", "late
-  2000s") is always TWO filters - a gte lower bound and an lte upper bound,
-  never two "equals" for the two endpoints.
-- A range EXCLUSION has no not_ operator - flip the comparison instead:
-  "not after 2018" -> lte 2018; "not before 2010" -> gte 2010. Only use
-  not_equals to exclude a single exact value ("year is not 2008").
-- Identify ALL filters clearly expressed in the query, not just the first.
+For every identified metadata filter, determine the operator from the
+user's intended condition and the relationship between the field and value.
+
+Use ONLY these operators:
+
+- equals
+- contains
+- not_equals
+- not_contains
+- gt
+- gte
+- lt
+- lte
+
+The operator must be selected from the meaning of the user's wording and
+context. Do NOT use a hardcoded field-to-operator mapping.
+
+OPERATOR SEMANTICS:
+
+- "equals" means the field must have the specified exact value.
+- "contains" means the field must contain/include the specified value.
+- "not_equals" means the field must not have the specified exact value.
+- "not_contains" means the field must not contain/include the specified
+  value.
+- "gt" means a numeric/date value must be greater than the specified value.
+- "gte" means a numeric/date value must be greater than or equal to the
+  specified value.
+- "lt" means a numeric/date value must be less than the specified value.
+- "lte" means a numeric/date value must be less than or equal to the
+  specified value.
+
+COMPARATIVE LANGUAGE:
+
+Interpret comparative language according to its meaning:
+
+- "after" → gt
+- "since", "from", "at least" → gte
+- "before" → lt
+- "up to", "until" → lte
+- an explicitly exact requirement → equals
+
+Do not determine the operator from the field name alone.
+
+EXCLUSIONS:
+
+Recognize explicit exclusion language, including but not limited to:
+
+- "not"
+- "excluding"
+- "except"
+- "other than"
+- "non-"
+- "must not"
+- "without"
+
+Determine whether the user is excluding an exact value or excluding a value
+from a field that is being matched by containment.
+
+- Excluding one exact value → not_equals
+- Excluding a value from a containment/membership condition → not_contains
+
+Example:
+"year is not 2008" → not_equals 2008
+
+Do not create a negative filter merely because the word "not" appears in the
+query. Understand what the user is actually excluding.
+
+RANGES:
+
+A clearly expressed range is ALWAYS represented by TWO filters:
+
+- lower boundary → gte
+- upper boundary → lte
+
+Examples of range expressions include:
+
+- "from X to Y"
+- "between X and Y"
+- "around X"
+- "approximately X"
+- "circa X"
+- "early/mid/late <decade>s"
+
+Never represent a range as two equals filters.
+
+For approximate or decade ranges, first determine the correct metadata date
+field from RULE 1, then create the two boundary filters.
+
+RANGE EXCLUSIONS:
+
+A range exclusion must NOT use a not_ operator. Reverse the comparison:
+
+- "not after 2018" → lte 2018
+- "not before 2010" → gte 2010
+
+Use not_equals only when the user excludes one exact value.
+
+MULTIPLE FILTERS:
+
+Identify ALL clearly expressed metadata conditions and determine the
+appropriate operator for each one. Do not stop after identifying the first
+condition.
+
+FINAL REQUIREMENT:
+
+The operator must represent the user's intended constraint. Do not infer an
+operator merely from a field name, and do not invent operators outside the
+allowed list.
 
 ============================================================
 RULE 3 — VALUES
@@ -173,6 +405,18 @@ If the query is ENTIRELY metadata filters with no real invention/topic -
 even phrased as a question ("which patents...") or a chain of filters
 joined by "and" - set semantic_query to null. Never use filler like
 "patent", "patents", or "find" as the semantic_query.
+
+This applies to a clause built from ANY metadata field in the allowlist, not
+just a subset of them - a person/organization name, a country, a date, a
+classification code, a legal status, a family ID, a claims count, or any
+other field value is a filter VALUE, never itself an invention/technology
+topic. "patents assigned to X", "patents filed by Y", "patents from Z",
+"patents classified under IPC W" all follow the identical pattern: once
+every phrase in the query has been captured as a filter, semantic_query is
+null, even though the sentence still reads as grammatically complete. Before
+returning ANY non-null semantic_query, re-check whether what's left over is
+a genuine invention/technology description or just the same filter value(s)
+restated in sentence form - if it's the latter, semantic_query is null.
 
 ------------------------------------------------------------
 RULE 4A — SEMANTIC QUERY FOR TOPIC QUERIES (is_question = false)
@@ -246,15 +490,32 @@ CRITICAL RULES for question semantic_query:
 RULE 5 — SELF-CHECK BEFORE ANSWERING
 ============================================================
 
-- Every filter field is from the allowlist; every operator is one of the
-  8 above and makes sense for that field.
+- Every filter field is from the allowlist; every operator is one of the 8
+  above and makes sense for that field.
 - Every value came from the query; no filter was invented.
 - All clearly expressed filters were extracted, not just the first.
 - Legal Status/State and inventor/assignee/applicant are not swapped.
+- "assigned to"/"owned by"/"current owner" wording listed EVERY Current
+  Assignee variant the allowlist provides PLUS the combined Assignee/
+  Applicant field, each marked "uncertain": true (RULE 1 PEOPLE/
+  ORGANIZATIONS UNCERTAIN FIELD case), not a single Current Assignee
+  variant alone.
+- "uncertain": true was used ONLY where the query itself leaves the field
+  genuinely unclear - NEVER on a filter the query explicitly named the
+  field for, even if its value happens to match another explicit filter's
+  value (e.g. "application country AP" and "publication country AP" both
+  stay "uncertain": false/omitted and both stay REQUIRED).
+- A bare year value used that event's YEAR field, never its DATE field
+  (RULE 1 YEAR vs DATE) - e.g. "published in 2014" is PY, not PD.
+- A bare short uppercase code was never mistaken for an organization name
+  (RULE 1 PEOPLE/ORGANIZATIONS) - checked against GEOGRAPHY first.
 - No CLN (claims count) filter was invented from the mere presence of the
   word "claim"/"claims" - only from an explicit count/number request.
 - Year ranges produced two boundary filters (gte + lte), never two equals.
-- Ambiguous field/date phrases were left in semantic_query, not guessed.
+- A vague, non-concrete phrase (no actual value) was left in semantic_query;
+  a value you were genuinely unsure about listed every plausible field, each
+  marked "uncertain": true (RULE 1 UNCERTAIN FIELD), instead of being
+  guessed into one OR discarded.
 - Every exclusion phrase used not_equals/not_contains (or the flipped
   comparison for a range), not a plain inclusion filter.
 - semantic_query is null (not filler text) when the query is pure filters.
@@ -276,9 +537,87 @@ EXAMPLES
 {{"semantic_query": "bottle design", "filters": []}}
 
 "bottle designs patented by Coca Cola invented by RUSCH CHRISTOPH" ->
+"patented by" is ownership wording - this is the UNCERTAIN FIELD case for
+PEOPLE/ORGANIZATIONS: the allowlist has more than one Current Assignee
+variant (a patent may only be populated under one of them), AND Current
+Assignee data of any variant is frequently empty for a patent that never
+changed hands - so list EVERY Current Assignee variant the allowlist
+provides, plus the combined Assignee/Applicant field, rather than relying
+on any one of them alone:
 {{"semantic_query": "bottle designs", "filters": [
-  {{"field": "CAN_EN", "operator": "contains", "value": "Coca Cola"}},
+  {{"field": "CAN_EN", "operator": "contains", "value": "Coca Cola", "uncertain": true}},
+  {{"field": "CAS_EN", "operator": "contains", "value": "Coca Cola", "uncertain": true}},
+  {{"field": "AAPS", "operator": "contains", "value": "Coca Cola", "uncertain": true}},
   {{"field": "IN_EN", "operator": "contains", "value": "RUSCH CHRISTOPH"}}]}}
+
+"Patents assigned to ALIOS BIOPHARMA" -> same UNCERTAIN FIELD ownership
+pattern as above, but here "patents assigned to X" is the ENTIRE query -
+there is no separate invention/technology topic beyond the company name
+already captured as a filter, so semantic_query is null, NOT "patents
+assigned to ALIOS BIOPHARMA" or any part of that sentence (RULE 4):
+{{"semantic_query": null, "filters": [
+  {{"field": "CAN_EN", "operator": "contains", "value": "ALIOS BIOPHARMA", "uncertain": true}},
+  {{"field": "CAS_EN", "operator": "contains", "value": "ALIOS BIOPHARMA", "uncertain": true}},
+  {{"field": "AAPS", "operator": "contains", "value": "ALIOS BIOPHARMA", "uncertain": true}}]}}
+
+"Find patents satisfying all of the following: application country AP,
+publication country AP, applicant ALIOS BIOPHARMA INC" -> the query EXPLICITLY
+names the field for every value - "application country AP" and "publication
+country AP" are each unambiguous on their own, they just happen to share the
+value "AP". This is NOT the UNCERTAIN FIELD case for either one: you are not
+uncertain which field either belongs to, so NEITHER gets "uncertain": true,
+and both are independently REQUIRED (AND), never alternatives to each other.
+Likewise "applicant" names the Applicant field directly (not ownership
+wording), so it is not the UNCERTAIN FIELD case either:
+{{"semantic_query": null, "filters": [
+  {{"field": "AC", "operator": "equals", "value": "AP"}},
+  {{"field": "PNC", "operator": "equals", "value": "AP"}},
+  {{"field": "AAPS", "operator": "contains", "value": "ALIOS BIOPHARMA"}}]}}
+
+"Patents published in 2014" -> "published in" names the Publication event,
+and "2014" is a bare year (no month/day), so it's the YEAR variant of that
+event, NOT the Date variant - PY, not PD:
+{{"semantic_query": null, "filters": [
+  {{"field": "PY", "operator": "equals", "value": "2014"}}]}}
+
+"Patents from 2013" -> same pattern under different wording ("from" instead
+of "published in"): "patents" is filler (RULE 4), "2013" is a bare year
+with a publication-context cue, so this is STILL pure filters with no real
+topic - semantic_query is null, NOT the filler word "Patents". Re-read the
+query for a genuine invention/topic before ever defaulting semantic_query
+to a leftover word like "Patents"/"Find"/"Search" - none of those describe
+anything to search for and must never appear as semantic_query:
+{{"semantic_query": null, "filters": [
+  {{"field": "PY", "operator": "equals", "value": "2013"}}]}}
+
+"Patents filed in AP" -> "AP" is a short jurisdiction/office code, not an
+organization; "filed in" names the Application context explicitly, so this
+is NOT the UNCERTAIN FIELD case (the context is not ambiguous) - it
+resolves to the single specific Application Country field, NOT applicant/
+assignee/inventor:
+{{"semantic_query": null, "filters": [
+  {{"field": "AC", "operator": "equals", "value": "AP"}}]}}
+
+"Patents from AP" -> "AP" is still a concrete jurisdiction/office code, but
+here there is no filed/published/priority/assignee cue to pick ONE specific
+country field - this IS the UNCERTAIN FIELD case, so list every plausible
+country-type field with the identical operator+value rather than guessing
+one or dropping the code into semantic_query (it has no descriptive text to
+search on):
+{{"semantic_query": null, "filters": [
+  {{"field": "AC", "operator": "equals", "value": "AP", "uncertain": true}},
+  {{"field": "PNC", "operator": "equals", "value": "AP", "uncertain": true}},
+  {{"field": "PRC", "operator": "equals", "value": "AP", "uncertain": true}},
+  {{"field": "ACC", "operator": "equals", "value": "AP", "uncertain": true}}]}}
+
+"patents classified under IPC A61K317068" -> the classification code is the
+ENTIRE query - there is no separate invention/technology topic beyond the
+code already captured as a filter (RULE 4 applies to classification-code
+clauses the same as to any other metadata field), so semantic_query is
+null, NOT "patents classified under IPC A61K317068" or any part of that
+sentence:
+{{"semantic_query": null, "filters": [
+  {{"field": "IPC", "operator": "contains", "value": "A61K317068"}}]}}
 
 "water patents published from 2005 to 2010 with priority country China,
 legal status Filed, legal state Alive, not from Japan" ->
@@ -502,4 +841,3 @@ no explanation, no reasoning, no extra text.
 <|im_end|>
 <|im_start|>assistant
 """
-

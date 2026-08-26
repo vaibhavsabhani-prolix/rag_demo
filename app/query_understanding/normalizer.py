@@ -188,16 +188,33 @@ def normalize_country(text: str) -> str | None:
 # Organization normalization
 # ==============================================================
 
+# Stored assignee/applicant "standardized"/"normalized" fields already
+# have the legal-entity suffix stripped (that's what "standardized" means
+# for a company name) - e.g. "Alios Biopharma Inc" is stored as just
+# "ALIOS BIOPHARMA". A query naturally keeps the suffix ("... Inc", "...
+# Corp"), and FilterEngine's "contains" is a plain substring check, so the
+# longer query value would never match the shorter stored one unless the
+# suffix is stripped here too.
+_ORG_SUFFIXES = {
+    "INC", "INCORPORATED", "CORP", "CORPORATION", "CO", "COMPANY",
+    "LTD", "LIMITED", "LLC", "LLP", "LP", "PLC",
+    "GMBH", "AG", "SA", "SAS", "SARL", "NV", "BV", "KG", "SPA",
+    "PTY", "PTE", "OY", "AB", "AS", "KK", "CIE",
+}
+
+
 def normalize_org_name(text: str) -> str:
     """
-    Uppercase + strip punctuation (hyphens, periods, commas)
-    + collapse whitespace.
+    Uppercase + strip punctuation (hyphens, periods, commas) + collapse
+    whitespace + strip trailing legal-entity suffixes (Inc/Corp/Ltd/...).
 
     Examples:
 
         Coca-Cola -> COCA COLA
         coca cola -> COCA COLA
         RANBAXY   -> RANBAXY
+        Alios Biopharma, Inc. -> ALIOS BIOPHARMA
+        Foo Bar Co Ltd -> FOO BAR
     """
 
     cleaned = _ORG_PUNCTUATION_RE.sub(" ", text)
@@ -205,6 +222,10 @@ def normalize_org_name(text: str) -> str:
     cleaned = _WHITESPACE_RE.sub(
         " ",
         cleaned
-    ).strip()
+    ).strip().upper()
 
-    return cleaned.upper()
+    tokens = cleaned.split(" ") if cleaned else []
+    while len(tokens) > 1 and tokens[-1] in _ORG_SUFFIXES:
+        tokens.pop()
+
+    return " ".join(tokens)

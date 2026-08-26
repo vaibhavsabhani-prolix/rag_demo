@@ -48,6 +48,7 @@ _COUNTRY_FIELDS = {
     "application_country",
     "publication_country_code",
     "priority_country",
+    "assignee_country",
 }
 _ORG_FIELDS = {
     "current_assignee_normalized",
@@ -120,6 +121,74 @@ def resolve_filter(field_code: Any, operator: Any, value: Any) -> MetadataFilter
         return None
 
     return MetadataFilter(field=field_name, operator=operator, value=norm_value)
+
+
+_INCLUSION_OPERATORS = {"equals", "contains"}
+_EXCLUSION_OPERATORS = {"not_equals", "not_contains"}
+
+
+def _operator_bucket(operator: str) -> str:
+    """
+    resolve_filter() coerces an operator to whatever a field's type
+    actually supports - e.g. "equals" on an array_string field (only
+    contains/not_contains) silently becomes "contains". Two candidates for
+    the SAME real-world value can therefore end up with different (but
+    equally "positive"/"negative") operators purely because of field-type
+    differences, not because the LLM meant something different. Bucket
+    equals/contains together and not_equals/not_contains together so those
+    still group; keep gt/gte/lt/lte distinct from each other and from
+    inclusion/exclusion - merging different comparison directions (or
+    inclusion with exclusion) would silently invert the constraint.
+    """
+
+    if operator in _INCLUSION_OPERATORS:
+        return "inclusion"
+    if operator in _EXCLUSION_OPERATORS:
+        return "exclusion"
+    return operator
+
+
+def group_duplicate_value_filters(filters: list[MetadataFilter]) -> list[MetadataFilter]:
+    """
+    When the LLM can't confidently tell which single field a concrete value
+    belongs to (e.g. a bare jurisdiction code with no "filed in"/"published
+    in"/"priority from" cue attached - see RULE 1 in prompt.py), it lists
+    that same value against every field it considers plausible, using their
+    real allowlist codes, instead of guessing one or dropping the value
+    into semantic_query.
+
+    This detects that pattern after the fact: any value that resolved
+    against 2+ DIFFERENT fields with the same operator polarity (see
+    _operator_bucket) is tagged with a shared `group` id, so
+    FilterEngine.matches() treats it as "matches ANY of these fields"
+    rather than requiring every one of them to hold - see
+    MetadataFilter.group. A value that only ever resolved to one field is
+    left untouched (a normal, independently-required filter). Each field
+    keeps its OWN resolved operator (e.g. "equals" vs "contains") when
+    actually evaluated - only the grouping decision uses the bucket.
+    """
+
+    indices_by_key: dict[tuple[str, str], list[int]] = {}
+    for i, f in enumerate(filters):
+        indices_by_key.setdefault((_operator_bucket(f.operator), str(f.value)), []).append(i)
+
+    grouped = list(filters)
+    group_counter = 0
+
+    for indices in indices_by_key.values():
+        distinct_fields = {filters[i].field for i in indices}
+        if len(distinct_fields) < 2:
+            continue
+
+        group_counter += 1
+        group_id = f"dup_{group_counter}"
+        for i in indices:
+            f = filters[i]
+            grouped[i] = MetadataFilter(
+                field=f.field, operator=f.operator, value=f.value, group=group_id
+            )
+
+    return grouped
 
 
 def _normalize_value(field_name: str, spec: dict, value: Any) -> Any:
@@ -550,6 +619,7 @@ class QueryUnderstanding:
 
         candidate_filters: list[CandidateFilter] = []
         metadata_filters: list[MetadataFilter] = []
+        uncertain_candidates: list[MetadataFilter] = []
 
         for item in llm_res.get("filters", []) or []:
             if not isinstance(item, dict) or "value" not in item:
@@ -565,7 +635,9 @@ class QueryUnderstanding:
             # recovered field code against CODE_TO_FIELD, so a
             # genuinely malformed item is dropped either way.
             stray_values = [
-                v for k, v in item.items() if k not in ("field", "operator", "value")
+                v
+                for k, v in item.items()
+                if k not in ("field", "operator", "value", "uncertain")
             ]
 
             field_code = item.get("field")
@@ -588,7 +660,23 @@ class QueryUnderstanding:
 
             resolved = resolve_filter(field_code, operator, value)
             if resolved is not None:
-                metadata_filters.append(resolved)
+                if _as_bool(item.get("uncertain", False)):
+                    uncertain_candidates.append(resolved)
+                else:
+                    metadata_filters.append(resolved)
+
+        # Only filters the LLM explicitly flagged "uncertain" (RULE 1
+        # UNCERTAIN FIELD in prompt.py) are eligible for OR-grouping by
+        # value collision - see group_duplicate_value_filters(). A filter
+        # the LLM was confident about is NEVER grouped just because its
+        # value happens to match another confident filter's value (e.g.
+        # "application country AP" and "publication country AP" stated
+        # explicitly and separately in the same query) - both stay
+        # independently required (AND), which is what the query actually
+        # asked for.
+        metadata_filters = metadata_filters + group_duplicate_value_filters(
+            uncertain_candidates
+        )
 
         # An empty semantic_query is the LLM's deliberate "this query is
         # pure metadata filters, no real topic" signal (see prompt Rule
