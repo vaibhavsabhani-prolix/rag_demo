@@ -227,11 +227,8 @@ All system thresholds are centrally managed in `app/config.py`:
 | | `BATCH_SIZE` | `100` | Points per Qdrant upload batch |
 | **Validator** | `VALIDATOR_LOW_INFO_THRESHOLD` | `0.30` | Minimum ratio of alpha characters required |
 | | `VALIDATOR_DEGENERATE_OVERLAP_THRESHOLD` | `0.9` | Minimum unique-content ratio vs. previous chunk |
-| **Query Understanding** | `USE_REMOTE_LLM` | `True` | Use remote query LLM vs. local fallback |
-| | `QUERY_LLM_REMOTE_BASE_URL` / `_MODEL` | — | Remote OpenAI-compatible endpoint & model |
-| | `QUERY_LLM_MODEL` | `"Qwen/Qwen2.5-1.5B-Instruct"` | Local fallback model |
-| **Reranker** | `USE_REMOTE_RERANKER` | `True` | Use remote reranker server vs. local CrossEncoder |
-| | `RERANKER_REMOTE_BASE_URL` / `_MODEL` | — | Remote reranking server URL & model |
+| **Query Understanding** | `QUERY_LLM_REMOTE_BASE_URL` / `_MODEL` | — | Remote OpenAI-compatible endpoint & model |
+| **Reranker** | `RERANKER_REMOTE_BASE_URL` / `_MODEL` | — | Remote reranking server URL & model |
 | | `PATENT_CANDIDATE_TOP_K` | `50` | Distinct candidate patents from vector search - each gets EVERY one of its own chunks checked by reranking, so this is the main lever on reranking latency vs. candidate breadth |
 | | `CANDIDATE_CHUNKS_PER_PATENT` | `3` | Chunks per candidate patent from the INITIAL vector-search step only (identifying candidates + the display view) - reranking itself checks a patent's complete chunk set, not this |
 | | `PATENT_RELEVANCE_THRESHOLD` | `7.0` | 0-10 relevance score (the MAX across a patent's own chunks) a patent must meet to be kept as a match - the only reranking threshold |

@@ -23,7 +23,6 @@ from app.config import (
     QUERY_LLM_REMOTE_API_KEY,
     QUERY_LLM_REMOTE_BASE_URL,
     QUERY_LLM_REMOTE_MODEL,
-    USE_REMOTE_LLM,
 )
 from app.models.patent_search_result import AnswerEvidence
 from app.query_understanding.models import ParsedQuery
@@ -281,7 +280,7 @@ class EvidenceSelector:
         self._remote_client = None
         self._remote_available = False
 
-        if self.use_llm and USE_REMOTE_LLM:
+        if self.use_llm:
             self._check_remote_llm()
 
     def _check_remote_llm(self):

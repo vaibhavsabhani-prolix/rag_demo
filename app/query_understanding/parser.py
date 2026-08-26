@@ -12,8 +12,8 @@ should come back as {"field": "PY", "operator": "equals", "value": "2008"}.
 Application code then just looks the code up in CODE_TO_FIELD and normalizes
 the value; it never has to guess which field a piece of text refers to.
 
-Falls back to a pure-semantic query (no metadata filters) if the local LLM
-is unavailable or fails to produce valid JSON.
+Falls back to a pure-semantic query (no metadata filters) if the remote
+LLM is unavailable or fails to produce valid JSON.
 """
 
 from __future__ import annotations
@@ -23,11 +23,9 @@ import re
 from typing import Any
 
 from app.config import (
-    QUERY_LLM_MODEL,
     QUERY_LLM_REMOTE_API_KEY,
     QUERY_LLM_REMOTE_BASE_URL,
     QUERY_LLM_REMOTE_MODEL,
-    USE_REMOTE_LLM,
 )
 from app.query_understanding.field_mapping import CODE_TO_FIELD, FIELD_MAPPING
 from app.query_understanding.models import (
@@ -363,61 +361,21 @@ class QueryUnderstanding:
     """
     LLM-based Query Understanding: the LLM is given the field-code
     allowlist and answers directly in those terms. Falls back to a
-    pure-semantic query (no filters) if the local LLM is unavailable
+    pure-semantic query (no filters) if the remote LLM is unavailable
     or its output can't be parsed as valid JSON.
     """
 
-    def __init__(self, model_name: str | None = None, use_llm: bool = True):
-        self.model_name = model_name or QUERY_LLM_MODEL
+    def __init__(self, use_llm: bool = True):
         self.use_llm = use_llm
 
-        # Local model
-        self._llm_model = None
-        self._llm_tokenizer = None
-        self._llm_initialized = False
-
-        # Remote model
         self._remote_client = None
         self._remote_available = False
 
-        if self.use_llm and USE_REMOTE_LLM:
+        if self.use_llm:
             self._check_remote_llm()
 
-    def _init_llm(self):
-        if self._llm_initialized:
-            return
-        self._llm_initialized = True
-        if not self.use_llm:
-            return
-        try:
-            import torch
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-
-            print(f"Loading local LLM for Query Understanding: {self.model_name}")
-            self._llm_tokenizer = AutoTokenizer.from_pretrained(
-                self.model_name, trust_remote_code=True
-            )
-            self._llm_model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                trust_remote_code=True,
-                torch_dtype="auto",
-                low_cpu_mem_usage=True,
-            )
-            print("Local LLM loaded successfully.\n")
-        except Exception as e:
-            print(
-                f"[QueryUnderstanding] Warning: Local LLM ({self.model_name}) not loaded: {e}. Falling back to pure-semantic parsing."
-            )
-            self._llm_model = None
-            self._llm_tokenizer = None
-
     def _check_remote_llm(self):
-        """
-        Check whether the remote Qwen server is available.
-
-        If available, remote Qwen becomes the primary model.
-        If unavailable, the local Qwen model will be used as fallback.
-        """
+        """Check whether the remote Qwen server is available."""
         try:
             from openai import OpenAI
 
@@ -439,38 +397,7 @@ class QueryUnderstanding:
             self._remote_client = None
             self._remote_available = False
 
-            print(
-                "[QueryUnderstanding] Remote Qwen unavailable. "
-                "Local model will be used as fallback."
-            )
-
-    def _call_local_llm(self, query: str) -> dict | None:
-        self._init_llm()
-        if self._llm_model is None or self._llm_tokenizer is None:
-            return None
-
-        prompt = build_prompt(query)
-
-        try:
-            inputs = self._llm_tokenizer(prompt, return_tensors="pt")
-            outputs = self._llm_model.generate(
-                **inputs, max_new_tokens=300, temperature=0.01, do_sample=False
-            )
-            response = self._llm_tokenizer.decode(
-                outputs[0][inputs.input_ids.shape[1] :], skip_special_tokens=True
-            )
-
-            # Strip Markdown code fences (```json ... ```) if the LLM wraps output
-            cleaned = re.sub(r"```(?:json)?\s*", "", response)
-            cleaned = cleaned.strip()
-
-            match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-            if match:
-                return json.loads(match.group(0))
-        except Exception as e:
-            print(f"[QueryUnderstanding] LLM execution/parsing failed: {e}")
-
-        return None
+            print(f"[QueryUnderstanding] Remote Qwen unavailable: {e}")
 
     def _call_remote_llm(self, query: str) -> dict | None:
         """
@@ -546,22 +473,12 @@ class QueryUnderstanding:
 
     def _call_llm(self, query: str) -> dict | None:
         """
-        Query Understanding LLM routing, controlled by USE_REMOTE_LLM:
-
-        - True: use the remote Qwen server (retried once on failure).
-        - False: use the local Qwen model.
+        Query Understanding LLM call: uses the remote Qwen server,
+        retried once on failure.
         """
 
         if not self.use_llm:
             return None
-
-        if not USE_REMOTE_LLM:
-            print(f"Using local LLM: {self.model_name}")
-            return self._call_local_llm(query)
-
-        # ----------------------------------------------------------
-        # Remote Qwen
-        # ----------------------------------------------------------
 
         if not self._remote_available:
             print("[QueryUnderstanding] Remote LLM is not available.")

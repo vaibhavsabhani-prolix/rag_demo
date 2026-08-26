@@ -100,25 +100,6 @@ from app.reranker import Reranker
 
 
 def _dedupe_top_chunk_per_patent(chunks: list) -> list:
-    """
-    Collapse *chunks* to at most one entry per patent_id - that
-    patent's single highest-scoring chunk, with its original Qdrant
-    score and payload preserved unchanged.
-
-    Duplicate patent_ids exist in *chunks* because QdrantDB.search()'s
-    group-by search returns each candidate patent's top
-    CANDIDATE_CHUNKS_PER_PATENT chunks and then flattens every patent's
-    group of hits into one flat list (see QdrantDB.search) - a patent
-    with several similar-scoring chunks can appear more than once in
-    that flat list. This only re-collapses that flattening for the
-    patent-level candidate view (qdrant_results); it must NOT be
-    applied to the chunk-level pool used for metadata filtering/
-    reranking, which intentionally keeps multiple chunks per patent.
-
-    *chunks* is expected to already be filtered to points that carry a
-    patent_id payload (see search_detailed's candidate_chunks).
-    """
-
     best_by_patent: dict[str, object] = {}
     for chunk in chunks:
         patent_id = chunk.payload["patent_id"]
@@ -150,29 +131,6 @@ class SemanticSearch:
         list[tuple[float, object]],
         list[PatentSearchResult],
     ]:
-        """
-        Search for patents and return results at each pipeline stage:
-        1. Parsed query (semantic_query + metadata_filters)
-        2. Initial Qdrant vector search candidates, one entry per
-           unique candidate patent_id - that patent's single
-           highest-scoring chunk (list of ScoredPoint; see
-           _dedupe_top_chunk_per_patent). This is ONLY used to decide
-           which patents are candidates and for display - it is NOT
-           the chunk set reranking sees (see step 3).
-        3. Every indexed chunk belonging to each surviving (post
-           metadata-filter) candidate patent - unbounded, not just the
-           handful vector search happened to surface.
-        4. Reranked chunks that cleared PATENT_RELEVANCE_THRESHOLD
-           (list of (patent_score, ScoredPoint) - patent_score is the
-           MAX across that patent's own chunks)
-        5. Aggregated PatentSearchResult list
-
-        If *on_stage* is given, it's called after each pipeline stage
-        completes with (stage_name, elapsed_seconds) - lets a caller
-        (e.g. the UI) report per-stage progress and timing as the
-        search runs, rather than only after everything finishes.
-        """
-
         def _run(stage_name, fn, *args, **kwargs):
             start = time.perf_counter()
             result = fn(*args, **kwargs)
@@ -180,58 +138,36 @@ class SemanticSearch:
                 on_stage(stage_name, time.perf_counter() - start)
             return result
 
-        # Step 0: Query Understanding
+        #  Query Understanding
         parsed = _run("Query Understanding", self.query_understanding.parse, query)
-
-        # filter query  only, no semantic query to embed or rerank
+        
+        # filter query only, no semantic query to embed or rerank
         if parsed.is_metadata_only:
             return self._search_by_metadata_only(parsed, on_stage=on_stage)
 
-        # Step 1: Embed the semantic portion only - metadata-filter
-        # phrases were already split off by Query Understanding, so
-        # neither embedding nor reranking ever sees e.g. "US" or
-        # "Coca Cola" as if they were part of the topic being searched.
+        # convert query into embedding vector
         query_vector = _run(
             "Embedding", self.embedder.embed_query, parsed.semantic_query
         )
 
-        # Step 2: Pure semantic vector search - no metadata filter here.
-        # Identifies the top candidate PATENTS by embedding similarity.
-        # Each patent's top CANDIDATE_CHUNKS_PER_PATENT chunks come back
-        # (Qdrant group-by search group_size, see QdrantDB.search) but
-        # are used ONLY to know which patents are candidates and for the
-        # qdrant_results display view below - NOT as the chunk set
-        # reranking sees (see Step 3b). QdrantDB.search flattens every
-        # patent's chunk group into one flat list, so the SAME patent_id
-        # can appear multiple times here.
+        # search from qdrantDB return the chunks
         vector_search_chunks = _run(
             "Vector Search", self.db.search, query_vector=query_vector
         )
-
+         
         candidate_chunks = [
             point
             for point in vector_search_chunks
             if point.payload and point.payload.get("patent_id")
         ]
 
-        # qdrant_results is the patent-level candidate view returned
-        # below and shown in the UI as "Qdrant Vector Search Candidates"
-        # - at most one entry per patent_id, that patent's single
-        # highest-scoring chunk from the initial embedding pass (see
-        # _dedupe_top_chunk_per_patent). Purely a display/diagnostic
-        # view of the vector-search step - reranking below sees a much
-        # fuller chunk set than this.
         qdrant_results = _dedupe_top_chunk_per_patent(candidate_chunks)
-
+        
+        # make the array of candidate patent ids, remove duplicates
         candidate_patent_ids = list(
             dict.fromkeys(point.payload["patent_id"] for point in candidate_chunks)
         )
 
-        # Step 3a: Metadata filtering, on the candidate PATENT IDS just
-        # identified - only patents that are already semantic candidates
-        # ever get their metadata looked up, never the whole "patents"
-        # collection. This decides which patents proceed to reranking
-        # before any of their chunk text is fetched.
         if parsed.metadata_filters:
             surviving_patent_ids = _run(
                 "Metadata Filtering",
@@ -242,23 +178,14 @@ class SemanticSearch:
         else:
             surviving_patent_ids = candidate_patent_ids
 
-        # Step 3b: Fetch EVERY indexed chunk of each surviving candidate
-        # patent - not just the handful the initial vector search
-        # happened to surface. This is what lets reranking judge a
-        # patent by its strongest evidence out of everything it has,
-        # rather than a similarity-biased subset.
+        # Fetch EVERY indexed chunk of each surviving candidate patent (unbounded, not just the handful the initial vector search happened to surface)
         filtered_results = _run(
             "Full Chunk Retrieval",
             self.db.get_chunks_for_patent_ids,
             surviving_patent_ids,
         )
 
-        # Step 4: Rerank every one of those chunks individually - a
-        # patent's score is the MAX across its own chunks (see
-        # app/reranker.py), on a 0-10 scale. `parsed` is passed through
-        # only so the reranker can apply the exclusion hard-filter
-        # (requirements.exclusions); it no longer drives any weighted
-        # blending.
+        # Rerank EVERY one of those chunks individually; a patent's score is the MAX across its own chunks (see app/reranker.py) - checking the patent's complete text, not a similarity-biased subset.
         reranked_results = _run(
             "Reranking",
             self.reranker.rerank,
@@ -267,8 +194,7 @@ class SemanticSearch:
             requirements=parsed,
         )
 
-        # Step 4a: Keep only patents that clear the relevance bar - a
-        # single hard cutoff, not a tunable blend.
+        # keep only patents scoring >= PATENT_RELEVANCE_THRESHOLD
         reranked_results = [
             item for item in reranked_results if item[0] >= PATENT_RELEVANCE_THRESHOLD
         ]
@@ -282,11 +208,7 @@ class SemanticSearch:
                 parsed,
             )
 
-        # Step 5: Aggregate chunks into patent-level results, then keep
-        # only the top FINAL_TOP_K patents. Truncating here
-        # (post-aggregation) rather than on the chunk list means a
-        # patent survives on its own relevance score regardless of how
-        # many chunks other patents contributed.
+        # aggregate by patent_id and produce one PatentSearchResult per patent
         patent_results = _run(
             "Aggregation",
             lambda: self._aggregate_by_patent(
@@ -303,13 +225,6 @@ class SemanticSearch:
         )
 
     def search(self, query: str) -> list[PatentSearchResult]:
-        """
-        Search for patents matching *query*.
-
-        Returns one PatentSearchResult per patent, sorted by
-        patent-level relevance score (question queries: a patent with
-        a genuine extracted answer leads).
-        """
         _, _, _, _, patent_results = self.search_detailed(query)
         return patent_results
 
@@ -328,18 +243,6 @@ class SemanticSearch:
         list[tuple[float, object]],
         list[PatentSearchResult],
     ]:
-        """
-        Handle a query whose semantic_query came back empty (see
-        parser.py Rule 9B) - it's purely metadata filters, e.g.
-        "applications filed in 2008 by Wyeth".
-
-        Filters the whole "patents" collection directly instead of the
-        PATENT_CANDIDATE_TOP_K vector-search candidate pool, fetches every chunk
-        belonging to the matching patents, and aggregates them straight
-        into PatentSearchResult - no embedding, no vector search, no
-        reranker, since there's no query text to score chunks against.
-        """
-
         def _run(stage_name, fn, *args, **kwargs):
             start = time.perf_counter()
             result = fn(*args, **kwargs)

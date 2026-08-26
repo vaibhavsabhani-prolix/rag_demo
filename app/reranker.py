@@ -2,9 +2,8 @@
 Reranker
 
 Scores every candidate CHUNK individually against the user's query,
-using a cross-encoder relevance model - either a remote reranking
-server or a local sentence-transformers CrossEncoder, chosen via
-USE_REMOTE_RERANKER.
+using a cross-encoder relevance model served by a remote reranking
+server.
 
 A candidate PATENT's score is the MAX of its own chunks' individual
 scores. `results` is expected to already be a patent's COMPLETE indexed
@@ -40,16 +39,12 @@ in the first place - a much narrower, more defensible check.
 from __future__ import annotations
 
 import requests
-import torch
-from sentence_transformers import CrossEncoder
 
 from app.config import (
-    LOCAL_RERANKER_MODEL,
     RERANKER_REMOTE_API_KEY,
     RERANKER_REMOTE_BASE_URL,
     RERANKER_REMOTE_MODEL,
     RERANKER_REQUEST_TIMEOUT,
-    USE_REMOTE_RERANKER,
 )
 from app.query_understanding.models import ParsedQuery
 
@@ -91,19 +86,10 @@ class Reranker:
     Rerank Qdrant search results using either the remote server or a local model.
     """
 
-    def __init__(self, use_remote: bool | None = None):
-        self.use_remote = USE_REMOTE_RERANKER if use_remote is None else use_remote
-
-        if self.use_remote:
-            self.base_url = RERANKER_REMOTE_BASE_URL.rstrip("/")
-            self.model = RERANKER_REMOTE_MODEL
-            self.headers = {"Authorization": f"Bearer {RERANKER_REMOTE_API_KEY}"}
-            self.cross_encoder = None
-        else:
-            self.cross_encoder = CrossEncoder(LOCAL_RERANKER_MODEL)
-            self.base_url = None
-            self.model = LOCAL_RERANKER_MODEL
-            self.headers = {}
+    def __init__(self):
+        self.base_url = RERANKER_REMOTE_BASE_URL.rstrip("/")
+        self.model = RERANKER_REMOTE_MODEL
+        self.headers = {"Authorization": f"Bearer {RERANKER_REMOTE_API_KEY}"}
 
     def rerank(
         self,
@@ -175,40 +161,28 @@ class Reranker:
         if not texts:
             return []
 
-        if self.use_remote:
-            response = requests.post(
-                f"{self.base_url}/rerank",
-                headers=self.headers,
-                json={
-                    "model": self.model,
-                    "query": query,
-                    "documents": texts,
-                },
-                timeout=RERANKER_REQUEST_TIMEOUT,
-            )
-            print(f"Reranker response status code: {response.status_code}")
-            response.raise_for_status()
-
-            # The server's relevance_score is used as-is, under the
-            # documented assumption (this endpoint's own example
-            # response shape, [0, 1]-scaled) that it's already a
-            # server-provided relevance score comparable to the local
-            # path's sigmoid-bounded one - not rescaled, not
-            # batch-normalized. _validate_remote_score only guards
-            # against a value that violates that assumption outright;
-            # it never transforms an in-range score.
-            scores = [0.0] * len(texts)
-            for item in response.json()["results"]:
-                scores[item["index"]] = _validate_remote_score(
-                    float(item["relevance_score"])
-                )
-            return scores
-
-        # Local CrossEncoder returns unbounded logits by default -
-        # activation_fn sigmoid-bounds them into a 0-1 relevance score
-        # (bounding alone, not statistical calibration).
-        pairs = [(query, text) for text in texts]
-        scores = self.cross_encoder.predict(
-            pairs, show_progress_bar=False, activation_fn=torch.nn.Sigmoid()
+        response = requests.post(
+            f"{self.base_url}/rerank",
+            headers=self.headers,
+            json={
+                "model": self.model,
+                "query": query,
+                "documents": texts,
+            },
+            timeout=RERANKER_REQUEST_TIMEOUT,
         )
-        return [float(s) for s in scores]
+        print(f"Reranker response status code: {response.status_code}")
+        response.raise_for_status()
+
+        # The server's relevance_score is used as-is, under the
+        # documented assumption (this endpoint's own example response
+        # shape, [0, 1]-scaled) that it's already a comparable
+        # relevance score. _validate_remote_score only guards against
+        # a value that violates that assumption outright; it never
+        # transforms an in-range score.
+        scores = [0.0] * len(texts)
+        for item in response.json()["results"]:
+            scores[item["index"]] = _validate_remote_score(
+                float(item["relevance_score"])
+            )
+        return scores

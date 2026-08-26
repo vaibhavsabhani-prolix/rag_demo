@@ -28,11 +28,8 @@ Convert the user's natural-language patent query into STRICT JSON with:
    search.
 2. filters - metadata constraints from the query, using ONLY the field-code
    allowlist below. NEVER invent a field code, field name, or metadata field.
-3. A dynamic requirements structure (concepts, goals, constraints,
-   optimization, exclusions, relationships, requirements, ranking_weights)
-   describing what a downstream reranker should evaluate candidate patent
-   chunks against - see RULE 6. Works for ANY technology, industry, or
-   field - never hardcode it to a particular domain.
+3. exclusions - literal terms/phrases the result must NOT involve, only when
+   the query actually says so - see RULE 6.
 
 ============================================================
 ALLOWED METADATA FIELD CODES
@@ -55,41 +52,14 @@ comments, or keys other than the ones below.
   ],
   "intent": "one sentence describing what the user is actually looking for",
   "query_type": ["simple_topic|object_search|technology_search|problem_solution|goal_oriented|multi_concept|constrained_search|optimization|tradeoff|comparative|method_search|component_search|material_search|process_search|prior_art|cross_domain|other"],
-  "concepts": [
-    {{"id": "C1", "text": "...", "role": "object|technology|component|material|process|method|action|problem|goal|optimization_goal|constraint|attribute|condition|performance_requirement|quantity|exclusion|context", "importance": 0.0, "required": true, "semantic_variants": ["..."]}}
-  ],
-  "goals": [
-    {{"id": "G1", "text": "what the invention should accomplish", "importance": 0.0, "required": true, "keywords": ["2-4 short literal phrases likely to appear in patent text expressing this goal"]}}
-  ],
-  "constraints": [
-    {{"id": "K1", "text": "a condition that must stay satisfied while achieving a goal", "type": "...", "importance": 0.0, "required": true, "keywords": ["short literal phrases for this constraint"]}}
-  ],
-  "optimization": [
-    {{"id": "O1", "property": "the property being optimized", "direction": "maximize|minimize", "importance": 0.0}}
-  ],
   "exclusions": ["literal terms/phrases the result must NOT involve"],
-  "relationships": [
-    {{"source": "...", "relation": "used_for|improves|controls|requires|produces|...", "target": "...", "importance": 0.0}}
-  ],
-  "requirements": [
-    {{"id": "R1", "description": "a single checkable requirement for reranking", "type": "semantic_match|concept_coverage|goal_satisfaction|constraint_satisfaction|relationship_satisfaction|technical_match|object_match|problem_match|performance_match|optimization_match|exclusion_check|evidence_strength", "importance": 0.0, "required": true, "evaluation_hint": "what evidence in a patent would satisfy this", "keywords": ["short literal phrases for this requirement"]}}
-  ],
-  "ranking_weights": {{
-    "semantic_relevance": 0.0,
-    "requirement_satisfaction": 0.0,
-    "relationship_satisfaction": 0.0,
-    "constraint_satisfaction": 0.0,
-    "evidence_strength": 0.0,
-    "exact_match": 0.0
-  }}
-  }},
   "is_question": false,
   "question_intent": null
 }}
 
-If there are no metadata filters, "filters" is []. The requirements-structure
-keys are still always present (empty array/neutral default when a section
-doesn't apply). When "is_question" is true, "question_intent" is populated with
+If there are no metadata filters, "filters" is []. "exclusions" is always
+present (empty array when nothing applies - see RULE 6). When "is_question"
+is true, "question_intent" is populated with
 {{"target": "...", "expected_answer_type": "...", "answer_criteria": "..."}}.
 "not_equals"/"not_contains" are EXCLUSIONS - the user wants
 patents that do NOT match the value (e.g. "not from China" -> not_contains).
@@ -293,10 +263,10 @@ RULE 5 — SELF-CHECK BEFORE ANSWERING
   (RULE 4B). It must NEVER be reduced to a bare topic or entity.
 - For normal/topic queries (is_question = false), semantic_query preserves
   the invention/technology/topic without question transformation (RULE 4A).
-- intent/query_type/concepts/goals/constraints/optimization/exclusions/
-  relationships/requirements/ranking_weights are all present, nothing was
-  fabricated beyond what the query supports, and ranking_weights sum to
-  ~1.0.
+- intent/query_type/exclusions are all present, nothing was fabricated
+  beyond what the query supports.
+- No exclusion was invented from an implicit contrast the user didn't
+  state (RULE 6) - when in doubt, "exclusions" stays empty.
 
 ============================================================
 EXAMPLES
@@ -429,61 +399,19 @@ Topic search (normal query — discovery of patents about these methods, not ask
   "question_intent": null}}
 
 ============================================================
-RULE 6 — DYNAMIC REQUIREMENTS STRUCTURE
+RULE 6 — EXCLUSIONS
 ============================================================
 
-Additive to everything above - never changes how semantic_query/filters are
-produced. Works for ANY technology, industry, product, material, process,
-or field - never hardcode to one domain, never invent content beyond what
-the query supports. First infer the user's actual INTENT, not just the
-literal words (e.g. "make plant meat taste better" is a goal-oriented
-search for technologies that improve the sensory qualities of plant-based
-meat).
-
-- CONCEPTS: one entry per object/technology/component/material/process/
-  method/goal/constraint/attribute/etc. actually in the query (role field
-  picks which). semantic_variants only for genuinely equivalent terms
-  ("camera" ~ "imaging device") - not a broad synonym dump. required=true
-  only if removing the concept changes what's being searched.
-- GOALS vs CONSTRAINTS: a goal is what the invention should accomplish; a
-  constraint is a condition that must stay satisfied while achieving it -
-  never merge them ("improve sweetness while keeping sugar low" = goal
-  "improve sweetness" + constraint "keep sugar low").
-- KEYWORDS (goals/constraints/requirements): a downstream reranker matches
-  these against raw patent text via plain substring matching, so a full
-  sentence almost never matches verbatim - give a few short literal phrases
-  someone would plausibly write in a patent, the same idea as
-  semantic_variants but for these fields.
-- OPTIMIZATION: {{property, direction}} pairs for reduce/minimize/lower vs.
-  increase/maximize/improve wording. Never invent a numeric threshold the
-  user didn't give.
-- EXCLUSIONS: literal terms/phrases the result must NOT involve ("without
-  X", "non-invasive") - never treat a concept the user simply didn't
-  mention as an exclusion.
-- RELATIONSHIPS: a (source, relation, target) triple when concepts must
-  co-occur meaningfully, not just both be present independently ("detect
-  defects using cameras and AI" -> camera -used_for-> defect detection, AI
-  -used_for-> defect detection). `relation` is templated downstream as
-  "{{source}} {{relation}} {{target}}", so keep it a short snake_case verb
-  phrase ("used_for", "reduces", "controls", "produces"), not a full clause.
-- REQUIREMENTS: restate the concepts/goals/constraints/relationships above
-  as a checklist a reranker can check a candidate patent chunk against.
-  evaluation_hint names what evidence would satisfy it - prefer direct
-  technical evidence ("a neural network identifies defects from camera
-  images" is strong evidence; "the system may include a camera" is weak) -
-  a technical synonym satisfies it too, literal query wording isn't
-  required.
-- RANKING_WEIGHTS: six floats summing to ~1.0. Simple, single-topic query ->
-  semantic_relevance dominates (0.8+), other weights near 0. Real goals/
-  constraints/relationships -> raise requirement_satisfaction/
-  constraint_satisfaction/relationship_satisfaction accordingly, but
-  semantic_relevance should usually stay one of the strongest signals.
-  exact_match should never dominate semantic_relevance - patent language
-  rarely matches the user's exact wording.
-
-Any section not applicable to the query (concepts/goals/constraints/
-optimization/exclusions/relationships/requirements) is an empty array -
-never fabricate content to fill it.
+"exclusions" is a flat array of literal terms/phrases the result must NOT
+involve ("without X", "non-invasive", "excluding Y") - only when the query
+actually says so. Never treat a concept the user simply didn't mention as
+an exclusion, and never invent one from an implicit contrast - e.g. a query
+about "still images" or "a traditional photo album experience" does NOT
+imply excluding "video", "motion pictures", "3D scanning", or "holographic"
+unless the user actually said so. A real patent will often mention an
+ordinary, unrelated term like that somewhere irrelevant to the query, so a
+wrongly-invented exclusion can drop the correct patent from the results
+entirely - when in doubt, leave "exclusions" empty.
 
 ============================================================
 RULE 7 — QUESTION vs TOPIC CLASSIFICATION (INTENT-BASED)

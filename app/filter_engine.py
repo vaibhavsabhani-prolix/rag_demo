@@ -74,12 +74,7 @@ class FilterEngine:
     def split_native_and_python(
         filters: list[MetadataFilter],
     ) -> tuple[list[MetadataFilter], list[MetadataFilter]]:
-        """
-        Partition *filters* into (native_ok, python_only). Every filter
-        is validated (field + operator) here regardless of which bucket
-        it ends up in.
-        """
-
+        
         native, python_only = [], []
 
         for f in filters:

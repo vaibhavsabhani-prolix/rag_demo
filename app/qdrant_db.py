@@ -268,10 +268,6 @@ class QdrantDB:
         self,
         filters: list[MetadataFilter],
     ) -> list[str]:
-        """
-        Scroll the entire 'patents' collection to find every patent_id
-        satisfying *filters* - not limited to any prior candidate pool.
-        """
 
         if not filters:
             return []
