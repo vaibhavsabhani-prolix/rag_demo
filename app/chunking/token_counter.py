@@ -20,7 +20,20 @@ def _make_cached_counter(tokenizer, maxsize: int):
         if not text:
             return 0
 
-        return len(tokenizer.encode(text, add_special_tokens=False))
+        # verbose=False suppresses the tokenizer's "sequence longer than
+        # the maximum for this model" warning. That warning exists to
+        # flag input that would index out of bounds when run through the
+        # model - but this call only ever counts tokens, and the counts
+        # are what the chunker uses to keep every chunk under
+        # MAX_CHUNK_TOKENS in the first place. A long patent would
+        # otherwise emit it once per oversized unit.
+        return len(
+            tokenizer.encode(
+                text,
+                add_special_tokens=False,
+                verbose=False,
+            )
+        )
 
     return _count
 

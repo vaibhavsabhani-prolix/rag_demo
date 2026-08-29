@@ -2,7 +2,7 @@ QDRANT_HOST = "localhost"
 QDRANT_PORT = 6333
 QDRANT_TIMEOUT = 120.0
 
-PATENT_DIRECTORY = "patents-processed"
+PATENT_DIRECTORY = "JP2025106030A"
 
 CHUNKS_COLLECTION_NAME = "patent_chunks"
 PATENTS_COLLECTION_NAME = "patents"
@@ -25,6 +25,23 @@ MIN_CHUNK_WORDS = 8
 
 # Number of chunks to upload to Qdrant in one request
 BATCH_SIZE = 100
+
+# Chunks fed to the embedding model in a single forward pass. Embedding
+# dominates ingest time, so this is the main throughput lever. Larger
+# batches amortise per-call overhead and use wider matrix multiplies,
+# but hold more activations in memory at once - on a CPU-only box the
+# useful range is small. Raise it if the machine has RAM to spare.
+EMBED_BATCH_SIZE = 8
+
+# Patent metadata points written to Qdrant in one request during
+# ingestion. Without this each patent costs its own HTTP round trip.
+METADATA_BATCH_SIZE = 256
+
+# How many patents the ingest prefetcher parses and chunks ahead of the
+# embedder. Parsing and chunking are CPU work that would otherwise sit
+# idle while the model runs; a small look-ahead keeps the embedder fed
+# without holding many documents in memory.
+INGEST_PREFETCH = 2
 
 MAX_HEADING_LENGTH = 100
 MAX_HEADING_WORDS = 12

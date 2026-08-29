@@ -117,7 +117,29 @@ To prevent indexing low-quality vector noise into Qdrant, every chunk passes thr
   * `app/ingest.py` calls `QdrantDB.create_collections()` on startup (idempotent — no-ops if they already exist), so a fresh Qdrant instance gets both collections created automatically on first run; no manual setup step is required.
   * It then orchestrates ingestion of patent files from `PATENT_DIRECTORY` (`app/config.py`, currently `"television"`).
   * Accumulates embedded chunks in batches of `BATCH_SIZE = 100` and upserts via `QdrantDB.insert_batch()`.
-  * Upserts each patent's metadata once via `QdrantDB.upsert_patent_metadata()`.
+  * Upserts patent metadata once per patent, buffered `METADATA_BATCH_SIZE` at a time via `QdrantDB.upsert_patent_metadata_batch()`.
+* **Ingestion Throughput**: the stage order is parse → metadata → chunk → embed → insert, but the work is scheduled to keep the embedding model busy, since embedding dominates total ingest time:
+  * Each patent's chunks are embedded in **one batched forward pass** (`Embedder.embed_batch`, `EMBED_BATCH_SIZE` chunks per pass) rather than one `model.encode()` call per chunk.
+  * A prefetch thread parses and chunks up to `INGEST_PREFETCH` patents ahead, so file I/O and tokenization overlap with embedding instead of alternating with it.
+  * Mid-run chunk/metadata upserts are sent with `wait=False` so Qdrant indexes one batch while the next is being embedded; the final flush uses `wait=True`, so the completion totals reflect committed data.
+* **Per-Patent Progress**: two lines per patent bracket the expensive stage.
+  * `<patent_id> | split into N chunks - embedding` prints as soon as chunking finishes, so a patent about to occupy the embedder for hours announces its size up front.
+  * `<patent_id> | embedded N chunks | inserted N chunks` prints *after* the Qdrant write, so a patent is only announced as inserted once its chunks are actually stored.
+  * A running summary (patents, chunks, failures, elapsed, patents/sec) prints every 500 patents.
+* **Progress Display** (`rich.progress`, built in `_build_progress()`): two bars — `Indexing Patents` and `Embedding Chunks` — each with spinner, percentage, count, throughput, elapsed and ETA.
+  * The patent bar advances only when a patent is **fully finished** (in a `finally`, so failures still count). Advancing on dequeue would show a patent as done before any of its chunks were embedded — badly misleading with a prefetch queue, and outright useless for a single-file run.
+  * The chunk bar's total is not knowable up front, so it starts indeterminate and grows as each patent reports what it split into. `Embedder.embed_batch(..., on_progress=...)` advances it after every batch, which is the only movement visible while one very large patent is embedding.
+  * Per-patent lines are printed with `progress.console.print(...)`, which Rich renders *above* the live bar without corrupting it. `markup=False, highlight=False` keeps a patent ID or an exception message containing square brackets from being parsed as Rich markup.
+  * Rich detects a redirected stdout on its own and skips the live redraw, so an ingest piped to a log file stays readable instead of collecting thousands of control characters.
+  * `RateColumn` is a small custom column — Rich ships speed columns for byte transfers, not items. It shows `N/s` at or above 1/s and inverts to `Ns each` below it, which is the range this pipeline actually runs in.
+* **Multilingual Chunking** (`app/chunking/semantic_unit_splitter.py`): the corpus spans English, French, Spanish, German, Chinese, Japanese and Korean, which a Latin-only splitter cannot handle.
+  * **CJK terminators**: Chinese and Japanese end sentences with `。！？｡` and write *no space* afterwards, so a rule of "`[.!?]` followed by whitespace" finds **zero** boundaries in them. The boundary regex has a separate CJK branch that splits immediately after the terminator. French, Spanish, German and Korean all use `[.!?]` plus spaces and take the Latin path unchanged.
+  * **Character-level fallback**: Chinese and Japanese do not delimit words with spaces, so `str.split()` can return a single "word" of unbounded length — previously emitted as one oversized chunk. Every fallback now bottoms out in `_split_by_characters()`, the only split guaranteed to make progress on a script with no whitespace. It sizes each slice from the text's own observed characters-per-token ratio, so it adapts per script instead of assuming one.
+  * **Boundaries are matched, not consumed**: sentences are cut with `finditer` on `match.end()` rather than `re.split()`, so a terminator and any closing quote or bracket (`."` / `。」`) stay attached to the sentence they end instead of being dropped from the text.
+  * **Abbreviation screening now actually fires**: the negative lookbehinds sit immediately before the terminator, where they see `Dr` and `Fig`. Anchored *after* the dot — as they were — they inspected `r.` and `g.` and never matched, so `Dr. Smith`, `Sr. García` and `Nr. 5` were all being split mid-abbreviation.
+  * **Guarantee**: every unit returned is at most `MAX_CHUNK_TOKENS`. Word packing budgets with per-word estimates, so each fragment is re-measured on its joined text and re-split if the estimate came up short.
+  * **Oversized-paragraph screen**: a paragraph longer than `max_tokens * CERTAINLY_OVERSIZED_CHARS_PER_TOKEN` is treated as oversized without being tokenized. Tokenizing a multi-megabyte paragraph only to learn it is too big cost far more than the split it triggers.
+
 * **Chunk Payload Attributes**:
   * `patent_id`, `section`, `text`, `chunk_id`, `section_chunk_index`, `document_chunk_index`, `total_chunks`, `token_count`, `word_count`.
 
@@ -225,6 +247,9 @@ All system thresholds are centrally managed in `app/config.py`:
 | **Chunking** | `MAX_CHUNK_TOKENS` | `512` | Token capacity limit per chunk |
 | | `MIN_CHUNK_TOKENS` / `MIN_CHUNK_WORDS` | `20` / `8` | Minimum size for a valid chunk |
 | | `BATCH_SIZE` | `100` | Points per Qdrant upload batch |
+| **Ingestion** | `EMBED_BATCH_SIZE` | `8` | Chunks per batched embedding forward pass — the main ingest throughput lever |
+| | `METADATA_BATCH_SIZE` | `256` | Patent metadata points per Qdrant upload batch |
+| | `INGEST_PREFETCH` | `2` | Patents parsed/chunked ahead of the embedder by the prefetch thread |
 | **Validator** | `VALIDATOR_LOW_INFO_THRESHOLD` | `0.30` | Minimum ratio of alpha characters required |
 | | `VALIDATOR_DEGENERATE_OVERLAP_THRESHOLD` | `0.9` | Minimum unique-content ratio vs. previous chunk |
 | **Query Understanding** | `QUERY_LLM_REMOTE_BASE_URL` / `_MODEL` | — | Remote OpenAI-compatible endpoint & model |

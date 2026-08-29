@@ -180,10 +180,20 @@ class QdrantDB:
     # Chunk insert
     # ==============================================================
 
-    def insert_batch(self, chunks: list[PatentChunk]):
+    def insert_batch(self, chunks: list[PatentChunk], wait: bool = True):
         """
         Insert multiple chunks in one request.
+
+        *wait* controls whether Qdrant acknowledges only after the points
+        are committed to the index. Bulk ingestion passes wait=False so
+        the next batch can be embedded while Qdrant indexes this one -
+        the points are still accepted and durably queued, they just are
+        not guaranteed searchable the instant this returns. Callers that
+        read straight back (tests, single-shot inserts) keep the default.
         """
+
+        if not chunks:
+            return 0
 
         points = [
             PointStruct(
@@ -197,9 +207,10 @@ class QdrantDB:
         self.client.upsert(
             collection_name=CHUNKS_COLLECTION_NAME,
             points=points,
+            wait=wait,
         )
 
-        print(f"Inserted {len(points)} chunks.")
+        return len(points)
 
     # ==============================================================
     # Patent metadata
@@ -227,6 +238,43 @@ class QdrantDB:
             collection_name=PATENTS_COLLECTION_NAME,
             points=[point],
         )
+
+    def upsert_patent_metadata_batch(
+        self,
+        entries: list[tuple[str, dict]],
+        wait: bool = True,
+    ):
+        """
+        Store metadata for many patents in one request.
+
+        Same semantics as upsert_patent_metadata() - deterministic point
+        IDs, so re-ingesting overwrites rather than duplicates - but one
+        HTTP round trip for the whole group instead of one per patent,
+        which is what ingestion needs at directory scale.
+        """
+
+        if not entries:
+            return 0
+
+        points = [
+            PointStruct(
+                id=_patent_point_id(patent_id),
+                vector={},
+                payload={
+                    "patent_id": patent_id,
+                    "metadata": metadata,
+                },
+            )
+            for patent_id, metadata in entries
+        ]
+
+        self.client.upsert(
+            collection_name=PATENTS_COLLECTION_NAME,
+            points=points,
+            wait=wait,
+        )
+
+        return len(points)
 
     def get_patents_metadata(self, patent_ids: list[str]) -> dict[str, dict]:
         """
