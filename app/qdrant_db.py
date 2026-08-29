@@ -28,6 +28,7 @@ from qdrant_client.models import (
 )
 
 from app.config import (
+    BATCH_SIZE,
     CANDIDATE_CHUNKS_PER_PATENT,
     CHUNKS_COLLECTION_NAME,
     PATENT_CANDIDATE_TOP_K,
@@ -180,9 +181,30 @@ class QdrantDB:
     # Chunk insert
     # ==============================================================
 
-    def insert_batch(self, chunks: list[PatentChunk], wait: bool = True):
+    def insert_batch(
+        self,
+        chunks: list[PatentChunk],
+        wait: bool = True,
+        batch_size: int = BATCH_SIZE,
+        on_progress=None,
+    ) -> int:
         """
-        Insert multiple chunks in one request.
+        Insert multiple chunks, split across as many requests as needed.
+
+        Qdrant refuses any REST body larger than its
+        service.max_request_size_mb (32 MB by default) with a plain
+        HTTP 400. That is a limit on the request itself, so no timeout
+        or wait setting gets a too-large batch through. A 1024-dim
+        vector serialises to roughly 22 KB of JSON, which puts the
+        ceiling at a low four-figure point count - and a single patent
+        can chunk into far more than that.
+
+        Windowing here rather than at the call site means no caller can
+        build a body Qdrant will reject, whatever the chunk count it
+        passes in. Callers are free to buffer by whatever boundary
+        suits them (ingestion buffers whole patents, so that a patent
+        is never half-written) without also having to think about
+        request size.
 
         *wait* controls whether Qdrant acknowledges only after the points
         are committed to the index. Bulk ingestion passes wait=False so
@@ -190,27 +212,48 @@ class QdrantDB:
         the points are still accepted and durably queued, they just are
         not guaranteed searchable the instant this returns. Callers that
         read straight back (tests, single-shot inserts) keep the default.
+
+        *on_progress*, if given, is called with the number of points
+        written after each request. A patent-sized insert is hundreds
+        of requests and takes tens of seconds; without this the caller
+        has no way to show movement between the start of a write and
+        its end, and a long insert is indistinguishable from a hang.
+
+        Returns the number of points written.
         """
 
         if not chunks:
             return 0
 
-        points = [
-            PointStruct(
-                id=chunk.point_id,
-                vector=chunk.vector,
-                payload=self._build_chunk_payload(chunk),
+        inserted = 0
+
+        # Points are built per window rather than all at once: the
+        # vectors already exist on the chunks, but a patent-sized run
+        # of payload dicts is worth not materialising in one go.
+        for start in range(0, len(chunks), batch_size):
+            window = chunks[start:start + batch_size]
+
+            points = [
+                PointStruct(
+                    id=chunk.point_id,
+                    vector=chunk.vector,
+                    payload=self._build_chunk_payload(chunk),
+                )
+                for chunk in window
+            ]
+
+            self.client.upsert(
+                collection_name=CHUNKS_COLLECTION_NAME,
+                points=points,
+                wait=wait,
             )
-            for chunk in chunks
-        ]
 
-        self.client.upsert(
-            collection_name=CHUNKS_COLLECTION_NAME,
-            points=points,
-            wait=wait,
-        )
+            inserted += len(points)
 
-        return len(points)
+            if on_progress is not None:
+                on_progress(len(points))
+
+        return inserted
 
     # ==============================================================
     # Patent metadata
@@ -243,38 +286,51 @@ class QdrantDB:
         self,
         entries: list[tuple[str, dict]],
         wait: bool = True,
-    ):
+        batch_size: int = BATCH_SIZE,
+    ) -> int:
         """
-        Store metadata for many patents in one request.
+        Store metadata for many patents in as few requests as needed.
 
         Same semantics as upsert_patent_metadata() - deterministic point
-        IDs, so re-ingesting overwrites rather than duplicates - but one
-        HTTP round trip for the whole group instead of one per patent,
-        which is what ingestion needs at directory scale.
+        IDs, so re-ingesting overwrites rather than duplicates - but
+        grouped round trips instead of one per patent, which is what
+        ingestion needs at directory scale.
+
+        Windowed for the same reason as insert_batch: these points
+        carry no vector, but a patent's metadata dict has no fixed
+        size, so a large enough group can still exceed Qdrant's request
+        limit.
         """
 
         if not entries:
             return 0
 
-        points = [
-            PointStruct(
-                id=_patent_point_id(patent_id),
-                vector={},
-                payload={
-                    "patent_id": patent_id,
-                    "metadata": metadata,
-                },
+        inserted = 0
+
+        for start in range(0, len(entries), batch_size):
+            window = entries[start:start + batch_size]
+
+            points = [
+                PointStruct(
+                    id=_patent_point_id(patent_id),
+                    vector={},
+                    payload={
+                        "patent_id": patent_id,
+                        "metadata": metadata,
+                    },
+                )
+                for patent_id, metadata in window
+            ]
+
+            self.client.upsert(
+                collection_name=PATENTS_COLLECTION_NAME,
+                points=points,
+                wait=wait,
             )
-            for patent_id, metadata in entries
-        ]
 
-        self.client.upsert(
-            collection_name=PATENTS_COLLECTION_NAME,
-            points=points,
-            wait=wait,
-        )
+            inserted += len(points)
 
-        return len(points)
+        return inserted
 
     def get_patents_metadata(self, patent_ids: list[str]) -> dict[str, dict]:
         """

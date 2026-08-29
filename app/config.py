@@ -33,6 +33,15 @@ BATCH_SIZE = 100
 # useful range is small. Raise it if the machine has RAM to spare.
 EMBED_BATCH_SIZE = 8
 
+# How many chunks to write between insert progress lines, counted
+# across the whole run rather than per batch. The progress bar covers
+# an interactive run; these lines cover a run piped to a log, where
+# Rich skips the live redraw and the bar never renders. Points go to
+# Qdrant BATCH_SIZE at a time, so any value at or below BATCH_SIZE
+# reports every request - raise it if the insert lines crowd out the
+# per-patent ones.
+INSERT_REPORT_EVERY = 100
+
 # Patent metadata points written to Qdrant in one request during
 # ingestion. Without this each patent costs its own HTTP round trip.
 METADATA_BATCH_SIZE = 256

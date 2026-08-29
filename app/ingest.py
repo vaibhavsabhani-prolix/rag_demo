@@ -44,6 +44,7 @@ from app.chunker import PatentChunker
 from app.config import (
     BATCH_SIZE,
     INGEST_PREFETCH,
+    INSERT_REPORT_EVERY,
     METADATA_BATCH_SIZE,
     PATENT_DIRECTORY,
 )
@@ -157,6 +158,11 @@ def ingest_directory(directory: str):
     failed_patents = 0
     failed_files = []
 
+    # Patents that embedded fine but whose batch write was rejected.
+    # Kept apart from failed_files: those failed before producing
+    # anything, these produced chunks that simply never landed.
+    write_failures = []
+
     start_time = time.time()
 
     # Bounded hand-off queue: parse/chunk runs ahead of embedding by at
@@ -172,6 +178,10 @@ def ingest_directory(directory: str):
 
     progress = _build_progress()
 
+    # Assigned once the progress block below is open. flush() reads it
+    # as a closure, and is never called before it is set.
+    insert_task = None
+
     def report(message: str):
         """
         Print above the live bar.
@@ -184,26 +194,113 @@ def ingest_directory(directory: str):
         progress.console.print(message, markup=False, highlight=False)
 
     def flush(wait: bool = False):
-        """Write buffered metadata + chunks, then report per patent."""
+        """
+        Write buffered metadata + chunks, then report per patent.
+
+        The buffers are emptied in a finally, so a write that raises
+        still clears them. Leaving a rejected batch buffered would mean
+        every later flush re-sends the same failing points and fails
+        the same way, turning one bad write into a dead run - and the
+        buffer would keep growing behind it.
+
+        The error is reported and swallowed for the same reason: the
+        patents in this batch are lost either way, and the run has no
+        reason to stop writing the ones that follow. It also matters
+        for the closing flush, which has no caller left to catch it.
+        """
 
         nonlocal total_inserted
 
-        if metadata_batch:
-            db.upsert_patent_metadata_batch(metadata_batch, wait=wait)
-            metadata_batch.clear()
+        write_error = None
 
-        if batch:
-            total_inserted += db.insert_batch(batch, wait=wait)
+        # Read before the write empties the buffers.
+        pending_chunks = len(batch)
+        pending_metadata = len(metadata_batch)
+
+        if pending_chunks or pending_metadata:
+            report(
+                f"{'writing to qdrant':<20} | {pending_chunks:>5} chunks"
+                f" | {pending_metadata:>4} patent metadata"
+            )
+
+        # Chunks written so far in THIS flush, and the run-wide count
+        # at which the next live line is due. The threshold is carried
+        # across flushes rather than reset per flush: a flush is
+        # usually only one or two Qdrant requests, so a per-flush
+        # counter never reached the reporting interval and the lines
+        # only ever showed up on the rare patent big enough to need
+        # thousands of writes on its own.
+        written = 0
+        next_report = total_inserted + INSERT_REPORT_EVERY
+
+        def on_written(done: int):
+            nonlocal written, next_report, total_inserted
+
+            written += done
+
+            # Counted here rather than from insert_batch's return
+            # value, so the running total moves while the write is
+            # still going - and so a batch that fails halfway still
+            # counts the requests that did land, instead of discarding
+            # them along with the ones that did not.
+            total_inserted += done
+
+            progress.advance(insert_task, done)
+
+            if total_inserted >= next_report:
+                report(
+                    f"{'inserting':<20} | {written:>6} /"
+                    f" {pending_chunks} chunks written"
+                    f" | running total {total_inserted}"
+                )
+
+                next_report = total_inserted + INSERT_REPORT_EVERY
+
+        try:
+            if metadata_batch:
+                db.upsert_patent_metadata_batch(metadata_batch, wait=wait)
+
+            if batch:
+                # Return value ignored: on_written already counted
+                # every point as its request landed.
+                db.insert_batch(
+                    batch,
+                    wait=wait,
+                    on_progress=on_written,
+                )
+
+        except Exception as exc:
+            write_error = exc
+
+        finally:
+            metadata_batch.clear()
             batch.clear()
 
         # Reported after the write, so a patent is only ever announced
         # as inserted once its chunks have actually gone to Qdrant. A
         # patent that produced no chunks still reports, as 0 / 0.
-        for name, embedded_count in pending_patents:
-            report(
-                f"{name:<20} | embedded {embedded_count:>4} chunks"
-                f" | inserted {embedded_count:>4} chunks"
-            )
+        if write_error is None:
+            if pending_chunks:
+                report(
+                    f"{'inserted':<20} | {pending_chunks:>6} chunks committed"
+                    f" to qdrant | running total {total_inserted}"
+                )
+
+            for name, embedded_count in pending_patents:
+                report(
+                    f"{name:<20} | embedded {embedded_count:>4} chunks"
+                    f" | inserted {embedded_count:>4} chunks"
+                )
+        else:
+            report(f"\nFailed to write batch: {write_error}")
+
+            for name, embedded_count in pending_patents:
+                report(
+                    f"{name:<20} | embedded {embedded_count:>4} chunks"
+                    " | NOT inserted"
+                )
+
+                write_failures.append(name)
 
         pending_patents.clear()
 
@@ -215,6 +312,11 @@ def ingest_directory(directory: str):
         # total grows as the prefetcher reports what each patent split
         # into.
         chunk_task = progress.add_task("Embedding Chunks", total=None)
+
+        # Insertion lags embedding: chunks are buffered and written a
+        # batch at a time, so this bar trails the one above and catches
+        # up at each flush. Same growing total, for the same reason.
+        insert_task = progress.add_task("Inserting Chunks", total=None)
 
         discovered_chunks = 0
 
@@ -244,6 +346,7 @@ def ingest_directory(directory: str):
                 try:
                     discovered_chunks += len(chunks)
                     progress.update(chunk_task, total=discovered_chunks)
+                    progress.update(insert_task, total=discovered_chunks)
 
                     report(
                         f"{document.patent_id:<20} | split into"
@@ -317,6 +420,7 @@ def ingest_directory(directory: str):
     print(f"Chunks Indexed  : {total_chunks}")
     print(f"Chunks Inserted : {total_inserted}")
     print(f"Failed Patents  : {failed_patents}")
+    print(f"Write Failures  : {len(write_failures)}")
     print(f"Elapsed Time    : {elapsed:.2f} seconds")
     print("=" * 60)
 
@@ -325,6 +429,15 @@ def ingest_directory(directory: str):
 
         for file in failed_files:
             print(f"- {file}")
+
+    # Distinct from the list above: these parsed, chunked and embedded
+    # successfully, and were lost at the write. Re-running them costs
+    # only the write, not the embedding, if the cause is fixed first.
+    if write_failures:
+        print("\nEmbedded But Not Inserted:")
+
+        for name in write_failures:
+            print(f"- {name}")
 
 
 if __name__ == "__main__":
