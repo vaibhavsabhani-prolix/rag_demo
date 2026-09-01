@@ -371,9 +371,9 @@ def ingest_directory(directory: str):
         ever touches them.
         """
 
-        while True:job = write_queue.get()
+        while True:
+            job = write_queue.get()
 
-            
             if job is _WRITE_DONE:
                 break
 
