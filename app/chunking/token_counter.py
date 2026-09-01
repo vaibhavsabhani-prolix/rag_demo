@@ -9,7 +9,7 @@ from functools import lru_cache
 
 from transformers import AutoTokenizer
 
-from app.config import EMBEDDING_MODEL, TOKEN_COUNT_CACHE_SIZE
+from app.config import EMBEDDING_REMOTE_MODEL, TOKEN_COUNT_CACHE_SIZE
 
 
 def _make_cached_counter(tokenizer, maxsize: int):
@@ -41,7 +41,7 @@ def _make_cached_counter(tokenizer, maxsize: int):
 class TokenCounter:
     """Token-aware text measurement using the embedding model tokenizer."""
 
-    def __init__(self, model_name: str = EMBEDDING_MODEL) -> None:
+    def __init__(self, model_name: str = EMBEDDING_REMOTE_MODEL) -> None:
         self._tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             trust_remote_code=True,

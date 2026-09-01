@@ -23,6 +23,7 @@ content from another section.
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 from app.chunking.token_counter import TokenCounter
@@ -33,6 +34,17 @@ from app.chunking.chunk_validator import ChunkValidator
 from app.config import MAX_CHUNK_TOKENS, DEBUG_CHUNKS, DEBUG_CHUNKS_DIR
 from app.models.patent_document import PatentDocument
 from app.models.patent_chunk import PatentChunk
+
+# Chunk point IDs are derived from (patent_id, chunk_id) through this
+# fixed namespace, rather than left to PatentChunk's random default.
+# Re-chunking the same patent - e.g. on a resumed ingest run - then
+# reproduces the same point IDs, so Qdrant upserts overwrite the
+# existing points instead of inserting duplicates alongside them.
+_CHUNK_POINT_NAMESPACE = uuid.UUID("8fb220c3-2180-407e-9d68-943086501c15")
+
+
+def _chunk_point_id(patent_id: str, chunk_id: int) -> str:
+    return str(uuid.uuid5(_CHUNK_POINT_NAMESPACE, f"{patent_id}:{chunk_id}"))
 
 
 class PatentChunker:
@@ -145,6 +157,7 @@ class PatentChunker:
 
                 patent_chunks.append(
                     PatentChunk(
+                        point_id=_chunk_point_id(document.patent_id, chunk_index),
                         patent_id=document.patent_id,
                         chunk_id=chunk_index,
                         section=built.section,

@@ -42,11 +42,16 @@ flowchart TD
         N -->|"yes"| N1["FilterEngine.matches() per candidate patent_id\n(metadata lookup only, before any chunk text is fetched)"]
         N -->|"no"| F1
         N1 --> F1["Fetch EVERY indexed chunk of each surviving\ncandidate patent (QdrantDB.get_chunks_for_patent_ids -\nunbounded, not just the handful vector search surfaced)"]
-        F1 --> O["Cross-Encoder Reranker (remote or local, app/reranker.py)\nScores EVERY one of those chunks individually;\na patent's score = MAX across its own chunks -\nno hand-tuned weights, no combined-text blob"]
+        F1 --> RV["Relevance Verification (app/relevance_verifier.py)\nA candidate must literally name the query's concept\n(ParsedQuery.required_phrases) in its title, abstract,\nor the chunks vector search matched - no model call.\nRejected patents never reach the reranker below"]
+        RV --> O["Cross-Encoder Reranker (remote or local, app/reranker.py)\nScores EVERY chunk of every surviving patent individually;\na patent's score = MAX across its own chunks -\nno hand-tuned weights, no combined-text blob"]
         O --> O1["Exclusion hard-filter: drop a patent only if its OWN\nwinning (highest-scoring) chunk names an excluded term"]
-        O1 --> O2["Keep only patents scoring >= PATENT_RELEVANCE_THRESHOLD\n(0-10 scale; a single hard cutoff)"]
+        O1 --> O2["Rank by score (VERIFIED_RELEVANCE_THRESHOLD = 0.0:\nthe gate decides membership, the score only orders;\nPATENT_RELEVANCE_THRESHOLD applies only when\nverification could not run)"]
+        O2 --> FB{"nothing matched?"}
+        FB -->|"yes, and broadening is honest"| FB1["Broader Search (app/relevance_verifier.py verify_broader)\nSame chunks, relaxed wording (fallback_phrases),\naccepted in the patent's TITLE only - labelled BROADER,\nnever mixed into exact matches"]
+        FB -->|"no"| ES
+        FB1 --> ES
 
-        O2 --> ES{"is_question?"}
+        ES{"is_question?"}
 
         ES -->|"yes"| ES1["Evidence Selector & Answer Extractor (app/evidence_selector.py)\nExtracts answer, verbatim evidence, confidence, and character spans"]
         ES -->|"no"| P["Patent Aggregation (app/semantic_search.py)"]
@@ -200,12 +205,45 @@ For each surviving candidate patent_id, fetches **every** chunk it has in `paten
 
 ---
 
+### Stage 8c: Relevance Verification (`app/relevance_verifier.py`)
+The precision gate, and the answer to *"why did searching for an **LED TV** return an **LCD** TV?"* — placed here, before reranking, so the expensive stage never scores a patent that is going to be thrown out.
+
+A cross-encoder scores how **similar** two texts are. That is not the same question as *"is this the thing I asked for"*, and on patent text the two come apart:
+
+* `CN206212157U`, title *"Multi -functional LCD TV"*, scored **9.3/10** for **"LED TV"** — a liquid crystal television that carries an LED lamp on its case for night lighting. It contains "LED", it contains "TV", **in the same sentences**, so no word-level or proximity rule rejects it. What it never says is *"LED television"*.
+* **"car"** returned patents about *vehicles* in general, and a motorcycle.
+
+So the check is on the **compound phrase**, not the query's words:
+
+1. **Where the phrases come from** — `ParsedQuery.required_phrases`, produced by the Query Understanding call that **already runs once per query** (prompt.py RULE 6). This stage makes **no LLM call of its own**. Groups of interchangeable surface forms, one group per essential concept, **all** required:
+   * `"LED TV"` → `[["LED TV", "LED television", "light emitting diode television", ...]]`
+   * `"car"` → `[["car", "automobile", "passenger car", "sedan", ...]]`
+   * A qualifier always stays welded to the thing it qualifies — `["LED"], ["TV"]` as separate groups is exactly the bug.
+2. **A deterministic backstop for the group** — the prompt forbids a broader category inside a group, and a sampled run put `"vehicle"` in the group for `"car"` anyway, which silently passes every vehicle patent. So Query Understanding is also asked the question from the other side (`broader_terms`: *what categories does this concept belong to?*) and anything in both answers is struck out before matching. Two guards keep that from backfiring: a phrase the **user typed** is never struck (one run named "car" itself as broader than "car"), and a group emptied by the backstop keeps its original phrases.
+3. **Where a phrase has to appear** — a 200-page description mentions everything in passing, so a mention there proves nothing. The primary scope is what the patent says it **is** (title, abstract) plus what made it a candidate (the chunks vector search matched):
+   * **MATCH** — every group named in that scope. Kept.
+   * **RELATED** — every group named somewhere in the patent, but not in that scope. Dropped unless `VERIFICATION_KEEP_RELATED`.
+   * **NO_MATCH** — some group never named at all. Dropped.
+4. **Matching is exact but forgiving of spelling** — case, hyphens and whitespace are folded (`"LED-TV"`, `"LED  TV"`, `"led tv"`), a trailing plural is tolerated, and boundaries use `[0-9a-z]` lookarounds rather than `\b` so `"car"` never matches inside *"carriage"* while a CJK phrase still matches between CJK characters.
+5. **What it costs, and what it saves** — string matching over the candidate set, a few hundred milliseconds; against that, the reranker only ever sees the survivors. For **"LED TV"** that is **0 chunks scored instead of 2342**, and the whole query drops from ~18.6 s to ~3.8 s.
+6. **It degrades, never swallows.** If the stage cannot run — disabled, or no phrases from Query Understanding (an LLM outage leaves them empty) — it reports `ran=False`, returns its input untouched, and the stricter `PATENT_RELEVANCE_THRESHOLD` decides exactly as before.
+
+7. **When nothing matches at all** — a strict compound phrase is right for `"LED TV"` but wrong for `"water container"`: nothing in this corpus is *described* as a water container, though it is full of bottles. So Query Understanding also supplies `fallback_phrases` (the concept with its qualifier dropped), used **only** when the exact wording matched nothing, and accepted **only in the patent's title** — what it says it *is*. Those results are labelled `BROADER` and never mixed into exact matches. Crucially, the LLM leaves `fallback_phrases` **empty** when broadening would name a different product: `"LED TV"` relaxed to `"television"` returns the LCD sets this stage exists to reject, so that query still honestly returns nothing.
+
+Every verdict, kept or dropped, is shown with its reason in the UI's **Relevance Verification** panel and in the CLI diagnostics — a rejected patent leaves no other trace, so without that panel a query whose top hit was thrown out would look identical to a query that found nothing. A patent the gate kept that a later stage dropped records its score and says so.
+
+---
+
 ### Stage 9: Cross-Encoder Reranking (`app/reranker.py`)
-Scores every candidate **chunk individually**, then assigns each patent the MAX of its own chunks' scores:
+Scores every candidate **chunk individually**, then assigns each patent the MAX of its own chunks' scores.
+
+> **The chunk text is sent bare.** It used to be prefixed with `Section: <name>\n` for structural context. Measured against the live model that prefix was catastrophic for short chunks — a title is often four words, so the boilerplate was most of what the cross-encoder saw: `"car"` vs the title **"Automobile"** scored **3.0/10 with the prefix, 10.0/10 without**; `"bottle"` vs **"Bottle"** went **4.3 → 10.0**. On long chunks it changed almost nothing. Removing it made the patent titled *Automobile* the top result for *car*, where it belongs.
+
 1. Every chunk fetched in Stage 8b is scored against `semantic_query` in **one batched cross-encoder call** (remote reranking server with local `CrossEncoder` fallback), producing a **0-10 relevance score** per chunk.
 2. A patent's score is the **MAX** across all of its own chunks' scores - it's judged by its single strongest disclosed passage, not an average, not a top-K cut, and not a combined-text blob (a patent can have thousands of chunks, so combining them would exceed any usable model input length). The chunk that earned that max is the patent's best-evidence chunk, stashed on `chunk.payload["_chunk_relevance"]`.
 3. **Exclusion hard-filter**: if the query carries exclusion terms (e.g. *"without indium tin oxide"*), a patent is dropped only if its **own winning chunk** - the specific evidence that earned it its score - literally names an excluded term. Only that one chunk is checked, not the patent's whole chunk set: Query Understanding's exclusion extraction is itself an LLM call and can occasionally infer a term the user never asked to exclude, and a long patent will often mention an ordinary, unrelated term like that somewhere irrelevant - checking every chunk would let a hallucinated exclusion wrongly sink an otherwise correct match.
-4. `SemanticSearch.search_detailed()` then keeps only patents scoring at or above `PATENT_RELEVANCE_THRESHOLD` (default `7.0`) — the only threshold in the whole scoring path; there is no hand-tuned weighted blend.
+4. **The score ranks; it does not filter.** `VERIFIED_RELEVANCE_THRESHOLD` is `0.0`: once Stage 8c has confirmed a patent literally names what was asked for, the cross-encoder only orders the survivors. That is measured, not a preference — this model rewards literal overlap and punishes synonyms, exactly what the gate accepts: it scores the title *"350ml Water bottle."* **0.0/10** against *"drinking water jerrycan"*. A signal that returns 0.0 for a right answer cannot be a filter at any threshold; every value tried (7.0, 5.0, 3.0) deleted correct answers. `PATENT_RELEVANCE_THRESHOLD` (`7.0`) still applies when Stage 8c could not run, since then nothing else vets topicality.
+5. **Exclusions** match on word boundaries, not substrings — excluding `"cap"` used to strike out any chunk containing *"escaping"* or *"capacitor"*.
 
 ---
 
@@ -258,6 +296,11 @@ All system thresholds are centrally managed in `app/config.py`:
 | | `CANDIDATE_CHUNKS_PER_PATENT` | `3` | Chunks per candidate patent from the INITIAL vector-search step only (identifying candidates + the display view) - reranking itself checks a patent's complete chunk set, not this |
 | | `PATENT_RELEVANCE_THRESHOLD` | `7.0` | 0-10 relevance score (the MAX across a patent's own chunks) a patent must meet to be kept as a match - the only reranking threshold |
 | | `FINAL_TOP_K` | `10` | Final reranked patents returned |
+| **Relevance Verification** | `VERIFICATION_ENABLED` | `True` | Master switch — `False` restores the plain `PATENT_RELEVANCE_THRESHOLD` cut with no phrase check |
+| | `VERIFIED_RELEVANCE_THRESHOLD` | `0.0` | Relevance cut for patents that PASSED verification. Zero because the gate decides membership and the score only ranks — raise it only if genuinely off-topic patents appear, and fix the gate first if they do |
+| | `BROADER_RELEVANCE_THRESHOLD` | `0.0` | The same for the broader fallback tier, which is kept honest by its title-only rule rather than by a score |
+| | `VERIFICATION_FALLBACK_ENABLED` | `True` | Search again with relaxed wording when the exact wording matched nothing, labelled as broader matches. `False` returns an honest empty page instead |
+| | `VERIFICATION_KEEP_RELATED` | `False` | Keep patents that name the concept only in passing, ranked below confirmed matches |
 | **UI** | `PATENT_VIEW_URL_TEMPLATE` | — | External patent detail page URL template |
 
 ---
