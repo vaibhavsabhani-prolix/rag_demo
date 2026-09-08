@@ -52,9 +52,31 @@ class TokenCounter:
             maxsize=TOKEN_COUNT_CACHE_SIZE,
         )
 
+    @property
+    def tokenizer(self):
+        """Return the underlying HuggingFace tokenizer."""
+        return self._tokenizer
+
     def count(self, text: str) -> int:
         """Return the number of tokens in text."""
         return self._cached_count(text)
+
+    def tokenize_with_offsets(
+        self, text: str
+    ) -> tuple[list[int], list[tuple[int, int]]]:
+        """
+        Tokenize *text* once and return (input_ids, offset_mapping).
+        """
+        if not text:
+            return [], []
+
+        encoding = self._tokenizer(
+            text,
+            return_offsets_mapping=True,
+            add_special_tokens=False,
+            verbose=False,
+        )
+        return encoding["input_ids"], encoding["offset_mapping"]
 
     def clear_cache(self) -> None:
         """Clear the token count cache."""

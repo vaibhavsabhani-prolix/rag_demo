@@ -9,9 +9,7 @@ Pipeline:
         ↓
     Section Detection       (dynamic heading detection)
         ↓
-    Semantic Unit Detection (paragraphs → sentences → word fragments)
-        ↓
-    Token-aware Chunk Builder (greedy merge, no overlap)
+    Token Window Chunking   (token-bounded windows with boundary adjustment)
         ↓
     Chunk Validation        (reject empty / duplicate only)
         ↓
@@ -26,14 +24,13 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from app.chunking.token_counter import TokenCounter
-from app.chunking.section_detector import SectionDetector
-from app.chunking.semantic_unit_splitter import SemanticUnitSplitter
-from app.chunking.chunk_builder import ChunkBuilder
 from app.chunking.chunk_validator import ChunkValidator
-from app.config import MAX_CHUNK_TOKENS, DEBUG_CHUNKS, DEBUG_CHUNKS_DIR
-from app.models.patent_document import PatentDocument
+from app.chunking.section_detector import SectionDetector
+from app.chunking.token_counter import TokenCounter
+from app.chunking.token_window_chunker import TokenWindowChunker
+from app.config import DEBUG_CHUNKS, DEBUG_CHUNKS_DIR, MAX_CHUNK_TOKENS
 from app.models.patent_chunk import PatentChunk
+from app.models.patent_document import PatentDocument
 
 # Chunk point IDs are derived from (patent_id, chunk_id) through this
 # fixed namespace, rather than left to PatentChunk's random default.
@@ -53,10 +50,9 @@ class PatentChunker:
 
     Orchestrates the full chunking pipeline:
 
-    1. SectionDetector      — splits document into headed sections
-    2. SemanticUnitSplitter  — breaks sections into semantic units
-    3. ChunkBuilder          — merges units into token-bounded chunks
-    4. ChunkValidator        — rejects empty / duplicate chunks
+    1. SectionDetector     — splits document into headed sections
+    2. TokenWindowChunker  — tokenizes section once, slices token windows with boundary adjustment
+    3. ChunkValidator      — rejects empty / duplicate chunks
 
     Each section is processed as an independent stream.
     No chunk ever contains content from another section.
@@ -83,12 +79,9 @@ class PatentChunker:
         # Pipeline components
         self.section_detector = SectionDetector()
 
-        self.unit_splitter = SemanticUnitSplitter(
+        # Main chunking engine: token-window chunker with boundary adjustment
+        self.token_window_chunker = TokenWindowChunker(
             token_counter=self.token_counter,
-            max_tokens=max_tokens,
-        )
-
-        self.chunk_builder = ChunkBuilder(
             max_tokens=max_tokens,
         )
 
@@ -106,7 +99,7 @@ class PatentChunker:
         Split a PatentDocument into validated, token-bounded chunks.
 
         This is the only method downstream code needs to call.
-        The signature is fully backward-compatible with V2.
+        The signature is fully backward-compatible with V2/V3.
         """
 
         # Reset duplicate tracker for each new document
@@ -130,26 +123,20 @@ class PatentChunker:
 
         # ---- Process each section independently ----
         for section in sections:
-
-            # ---- Step 2: Semantic Unit Detection ----
-            units = self.unit_splitter.split(section.content)
-
-            if not units:
-                continue
-
-            # ---- Step 3: Token-aware Chunk Building ----
-            built_chunks = self.chunk_builder.build(
+            # ---- Step 2: Token-window Chunking with Boundary Adjustment ----
+            built_chunks = self.token_window_chunker.chunk(
                 section_heading=section.heading,
-                units=units,
+                content=section.content,
             )
+
+            if not built_chunks:
+                continue
 
             # Track how many valid chunks this section produces
             section_valid_count = 0
 
-            # ---- Step 4: Validate and produce PatentChunks ----
-
+            # ---- Step 3: Validate and produce PatentChunks ----
             for built in built_chunks:
-
                 if not self.chunk_validator.is_valid(built.text):
                     continue
 
@@ -185,7 +172,8 @@ class PatentChunker:
         for chunk in patent_chunks:
             chunk.total_chunks = total_chunks
             chunk.section_total_chunks = section_chunk_counts.get(
-                chunk.section, 0,
+                chunk.section,
+                0,
             )
             # Set chunk_uuid to match point_id for clarity
             chunk.chunk_uuid = chunk.point_id
@@ -223,10 +211,14 @@ class PatentChunker:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(f"Patent ID          : {chunk.patent_id}\n")
                 f.write(f"Section            : {chunk.section}\n")
-                f.write(f"Chunk              : {chunk.section_chunk_index}"
-                        f" of {chunk.section_total_chunks}\n")
-                f.write(f"Document Chunk     : {chunk.document_chunk_index}"
-                        f" of {chunk.total_chunks}\n")
+                f.write(
+                    f"Chunk              : {chunk.section_chunk_index}"
+                    f" of {chunk.section_total_chunks}\n"
+                )
+                f.write(
+                    f"Document Chunk     : {chunk.document_chunk_index}"
+                    f" of {chunk.total_chunks}\n"
+                )
                 f.write(f"Token Count        : {chunk.token_count}\n")
                 f.write(f"Word Count         : {chunk.word_count}\n")
                 f.write(f"Chunk UUID         : {chunk.chunk_uuid}\n")
@@ -234,7 +226,3 @@ class PatentChunker:
                 f.write(f"\n{'=' * 60}\n\n")
                 f.write(chunk.text)
                 f.write("\n")
-
-    # ==============================================================
-    # Statistics
-    # ==============================================================
