@@ -3,20 +3,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from queue import Queue
-from threading import Lock, Thread
-
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    ProgressColumn,
-    SpinnerColumn,
-    TaskProgressColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-)
-from rich.text import Text
+from threading import Thread
 
 from app.chunker import PatentChunker
 from app.config import (
@@ -30,6 +17,7 @@ from app.config import (
 )
 from app.embedder import Embedder
 from app.parser import PatentParser
+from app.progress import IngestProgress
 from app.qdrant_db import QdrantDB
 
 # Sentinels pushed onto the prefetch/write queues to mark end-of-input.
@@ -41,54 +29,6 @@ _WRITE_DONE = object()
 # embedding from the write's HTTP round trip without letting embedded
 # chunks pile up in memory without limit if Qdrant falls behind.
 _WRITE_QUEUE_DEPTH = 2
-
-
-class RateColumn(ProgressColumn):
-    """
-    Throughput column for the ingest bar.
-
-    Rich ships speed columns for byte transfers, not for items, so this
-    fills the gap. Ingestion normally runs at well under one patent per
-    second, where "0.04/s" is harder to read than the time per patent,
-    so the unit is inverted below 1/s.
-    """
-
-    def render(self, task) -> Text:
-
-        speed = task.finished_speed or task.speed
-
-        if not speed:
-            return Text("--", style="progress.data.speed")
-
-        if speed >= 1:
-            return Text(f"{speed:.2f}/s", style="progress.data.speed")
-
-        return Text(f"{1 / speed:.1f}s each", style="progress.data.speed")
-
-
-def _build_progress(quiet: bool = False) -> Progress:
-    """
-    Build the ingest progress display.
-
-    Rich detects a redirected stdout on its own and skips the live
-    redraw, so a multi-hour ingest piped to a log file stays readable
-    instead of collecting thousands of control characters.
-    """
-
-    return Progress(
-        SpinnerColumn(),
-        TextColumn("[bold blue]{task.description:<17}"),
-        BarColumn(bar_width=None),
-        TaskProgressColumn(),
-        MofNCompleteColumn(),
-        TextColumn("-"),
-        RateColumn(),
-        TextColumn("- elapsed"),
-        TimeElapsedColumn(),
-        TextColumn("- eta"),
-        TimeRemainingColumn(),
-        disable=quiet,
-    )
 
 
 def _prefetch_documents(txt_files, queue: Queue, on_progress=None):
@@ -203,15 +143,12 @@ def ingest_directory(directory: str):
     # most INGEST_PREFETCH patents.
     queue: Queue = Queue(maxsize=INGEST_PREFETCH)
 
-    scan_task = None
-
-    def on_scan_progress(done: int = 1):
-        if scan_task is not None:
-            advance(scan_task, done)
+    # ---- Progress display (all bars managed by IngestProgress) ----
+    ip = IngestProgress(total_files=len(txt_files))
 
     producer = Thread(
         target=_prefetch_documents,
-        args=(txt_files, queue, on_scan_progress),
+        args=(txt_files, queue, lambda n: ip.advance_scanning(n)),
         daemon=True,
     )
     producer.start()
@@ -221,34 +158,6 @@ def ingest_directory(directory: str):
     # embedding the next patent while a previous batch uploads to
     # Qdrant on this separate thread instead of blocking on it.
     write_queue: Queue = Queue(maxsize=_WRITE_QUEUE_DEPTH)
-
-    progress = _build_progress()
-
-    # Guards every touch of `progress` (and its console): embedding
-    # progress advances from the main thread, insert progress advances
-    # from the writer thread, and Rich's Progress makes no promise
-    # about concurrent callers.
-    progress_lock = Lock()
-
-    # Assigned once the progress block below is open. flush() reads it
-    # as a closure, and is never called before it is set.
-    insert_task = None
-
-    def report(message: str):
-        """
-        Print above the live bar.
-
-        markup/highlight are off so a patent ID or an exception message
-        containing square brackets is shown verbatim instead of being
-        parsed as Rich markup.
-        """
-
-        with progress_lock:
-            progress.console.print(message, markup=False, highlight=False)
-
-    def advance(task, amount: int = 1):
-        with progress_lock:
-            progress.advance(task, amount)
 
     def flush(metadata_batch, batch, pending_patents, wait: bool = False):
         """
@@ -274,7 +183,7 @@ def ingest_directory(directory: str):
         pending_metadata = len(metadata_batch)
 
         if pending_chunks or pending_metadata:
-            report(
+            ip.report(
                 f"{'writing to qdrant':<20} | {pending_chunks:>5} chunks"
                 f" | {pending_metadata:>4} patent metadata"
             )
@@ -301,10 +210,10 @@ def ingest_directory(directory: str):
             # them along with the ones that did not.
             total_inserted += done
 
-            advance(insert_task, done)
+            ip.advance_inserting(done)
 
             if total_inserted >= next_report:
-                report(
+                ip.report(
                     f"{'inserting':<20} | {written:>6} /"
                     f" {pending_chunks} chunks written"
                     f" | running total {total_inserted}"
@@ -333,7 +242,7 @@ def ingest_directory(directory: str):
         # patent that produced no chunks still reports, as 0 / 0.
         if write_error is None:
             if pending_chunks:
-                report(
+                ip.report(
                     f"{'inserted':<20} | {pending_chunks:>6} chunks committed"
                     f" to qdrant | running total {total_inserted}"
                 )
@@ -343,19 +252,20 @@ def ingest_directory(directory: str):
             # so a resumed run always retries anything not fully done
             # rather than treating a partial batch as complete.
             for name, embedded_count, filename in pending_patents:
-                report(
+                ip.report(
                     f"{name:<20} | embedded {embedded_count:>4} chunks"
                     f" | inserted {embedded_count:>4} chunks"
                 )
 
                 progress_file.write(filename + "\n")
+                ip.advance_completed()
 
             progress_file.flush()
         else:
-            report(f"\nFailed to write batch: {write_error}")
+            ip.report(f"\nFailed to write batch: {write_error}")
 
             for name, embedded_count, filename in pending_patents:
-                report(
+                ip.report(
                     f"{name:<20} | embedded {embedded_count:>4} chunks | NOT inserted"
                 )
 
@@ -382,13 +292,7 @@ def ingest_directory(directory: str):
     writer = Thread(target=writer_loop, daemon=True)
     writer.start()
 
-    with progress:
-        scan_task = progress.add_task("Scanning Patents", total=len(txt_files))
-        patent_task = progress.add_task("Indexing Patents", total=len(txt_files))
-
-        chunk_task = progress.add_task("Embedding Chunks", total=None)
-        insert_task = progress.add_task("Inserting Chunks", total=None)
-
+    with ip:
         while True:
             item = queue.get()
 
@@ -405,18 +309,24 @@ def ingest_directory(directory: str):
                     failed_patents += 1
                     failed_files.append(txt_file.name)
 
-                    report(f"\nFailed : {txt_file.name}")
-                    report(f"Reason : {error}")
+                    ip.report(f"\nFailed : {txt_file.name}")
+                    ip.report(f"Reason : {error}")
                     continue
 
                 # Parsing and chunking already succeeded on the prefetch
                 # thread; this guards the embed/write half, so one bad
                 # patent still cannot abort the run.
                 try:
-                    report(
+                    chunk_count = len(chunks)
+
+                    ip.report(
                         f"{document.patent_id:<20} | split into"
-                        f" {len(chunks):>5} chunks - pooling"
+                        f" {chunk_count:>5} chunks - pooling"
                     )
+
+                    # Advance the Chunking bar (also updates Embedding
+                    # and Inserting totals).
+                    ip.advance_chunking(chunk_count)
 
                     # Metadata is buffered rather than written per
                     # patent, but still written exactly once per patent,
@@ -429,22 +339,18 @@ def ingest_directory(directory: str):
                     # instead of a mostly-empty one.
                     embed_pool.extend(chunks)
                     pool_patents.append(
-                        (document.patent_id, len(chunks), txt_file.name)
+                        (document.patent_id, chunk_count, txt_file.name)
                     )
 
                     total_patents += 1
-                    total_chunks += len(chunks)
-
-                    with progress_lock:
-                        progress.update(chunk_task, total=total_chunks)
-                        progress.update(insert_task, total=total_chunks)
+                    total_chunks += chunk_count
 
                     # Flush the pool once it has enough chunks to fill
                     # at least one full GPU batch.
                     if len(embed_pool) >= EMBED_BATCH_SIZE:
                         embedder.embed_batch(
                             embed_pool,
-                            on_progress=lambda done: advance(chunk_task, done),
+                            on_progress=lambda done: ip.advance_embedding(done),
                         )
 
                         batch.extend(embed_pool)
@@ -470,27 +376,29 @@ def ingest_directory(directory: str):
                     for pool_pid, pool_nc, pool_fn in pool_patents:
                         failed_patents += 1
                         failed_files.append(pool_fn)
-                        report(f"\nFailed : {pool_fn}")
+                        ip.report(f"\nFailed : {pool_fn}")
 
-                    report(f"Reason : {exc}")
+                    ip.report(f"Reason : {exc}")
                     embed_pool = []
                     pool_patents = []
                     continue
 
             finally:
-                advance(patent_task)
+                pass
 
             # Print progress every 500 patents
             if total_patents % 500 == 0:
                 elapsed = time.time() - start_time
 
-                report("\n" + "=" * 60)
-                report(f"Processed Patents : {total_patents}/{len(txt_files)}")
-                report(f"Chunks Indexed    : {total_chunks}")
-                report(f"Failed Patents    : {failed_patents}")
-                report(f"Elapsed Time      : {elapsed:.2f} seconds")
-                report(f"Rate              : {total_patents / elapsed:.2f} patents/s")
-                report("=" * 60)
+                ip.report("\n" + "=" * 60)
+                ip.report(f"Processed Patents : {total_patents}/{len(txt_files)}")
+                ip.report(f"Chunks Indexed    : {total_chunks}")
+                ip.report(f"Failed Patents    : {failed_patents}")
+                ip.report(f"Elapsed Time      : {elapsed:.2f} seconds")
+                ip.report(
+                    f"Rate              : {total_patents / elapsed:.2f} patents/s"
+                )
+                ip.report("=" * 60)
 
     producer.join()
 
