@@ -7,6 +7,16 @@ PATENT_DIRECTORY = "patents-processed"
 CHUNKS_COLLECTION_NAME = "patent_chunks_4096_1"
 PATENTS_COLLECTION_NAME = "patents_4096_1"
 
+# ── Embedding Mode ───────────────────────────────────────────────
+# True  → load the model locally via sentence-transformers (CPU/GPU)
+# False → call the remote vLLM embedding server over HTTP
+EMBEDDING_IS_LOCAL = True
+
+# Local embedding model (used only when EMBEDDING_IS_LOCAL is True)
+EMBEDDING_LOCAL_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+EMBEDDING_LOCAL_DEVICE = None  # None = auto-detect; "cpu", "cuda", "mps"
+
+# Remote embedding server (used only when EMBEDDING_IS_LOCAL is False)
 EMBEDDING_REMOTE_BASE_URL = "http://192.168.2.213:8002/v1"
 EMBEDDING_REMOTE_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 EMBEDDING_REMOTE_API_KEY = "EMPTY"
@@ -27,20 +37,20 @@ MIN_CHUNK_TOKENS = 20
 MIN_CHUNK_WORDS = 8
 
 # Number of chunks to upload to Qdrant in one request
-BATCH_SIZE = 512
+BATCH_SIZE = 100
 
 # Texts sent to the remote embedding server in a single HTTP request.
 # With a remote GPU (DGX), this should be large to amortise network
 # round-trip latency and keep the GPU fed. 256 × 512-token chunks ≈
 # 128 K tokens per call — well within vLLM's capacity. Raise further
 # if the server has headroom; lower if requests start timing out.
-EMBED_BATCH_SIZE = 512
+EMBED_BATCH_SIZE = 8
 
 # How many embedding HTTP requests to keep in flight at once. While
 # batch #1 computes on the GPU, batches #2-#N are already in transit
 # over the network, hiding round-trip latency. 4 is a good default;
 # raise it for a high-latency link, lower it if the server is shared.
-EMBED_CONCURRENT_REQUESTS = 6
+EMBED_CONCURRENT_REQUESTS = 2
 
 # How many chunks to write between insert progress lines, counted
 # across the whole run rather than per batch. The progress bar covers
@@ -53,12 +63,12 @@ INSERT_REPORT_EVERY = 100
 
 # Patent metadata points written to Qdrant in one request during
 # ingestion. Without this each patent costs its own HTTP round trip.
-METADATA_BATCH_SIZE = 512
+METADATA_BATCH_SIZE = 64
 
 # How many patents the ingest prefetcher parses and chunks ahead of the
 # embedder. Increasing this buffer keeps all CPU cores busy prefetching
 # documents while the remote GPU embeds.
-INGEST_PREFETCH = 256
+INGEST_PREFETCH = 64
 
 # Append-only log of patent filenames fully committed to Qdrant
 # (metadata + every chunk). ingest_directory() reads it on startup to
