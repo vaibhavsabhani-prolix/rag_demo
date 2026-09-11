@@ -1,19 +1,10 @@
 """
 Embedding Model (Remote)
-Embedding Model (Local or Remote)
 
 Calls a remote vLLM embedding server via its OpenAI-compatible
-/embeddings endpoint instead of loading the model locally.
-Supports two modes controlled by config.EMBEDDING_IS_LOCAL:
+/embeddings endpoint.
 
-Performance (remote GPU):
-  - **Local** (True): loads the model on the local machine via
-    sentence-transformers and encodes in-process (CPU, CUDA, or MPS).
-
-  - **Remote** (False): calls a remote vLLM embedding server via its
-    OpenAI-compatible /embeddings endpoint (the original behaviour).
-
-Performance notes (remote mode):
+Performance notes:
 
     - EMBED_BATCH_SIZE is the number of texts per HTTP request. With a
       remote DGX, this should be large (256+) to amortize network
@@ -34,9 +25,6 @@ import requests
 from app.config import (
     EMBED_BATCH_SIZE,
     EMBED_CONCURRENT_REQUESTS,
-    EMBEDDING_IS_LOCAL,
-    EMBEDDING_LOCAL_DEVICE,
-    EMBEDDING_LOCAL_MODEL,
     EMBEDDING_REMOTE_API_KEY,
     EMBEDDING_REMOTE_BASE_URL,
     EMBEDDING_REMOTE_MODEL,
@@ -47,31 +35,12 @@ from app.models.patent_chunk import PatentChunk
 
 class Embedder:
     def __init__(self):
-        self.is_local = EMBEDDING_IS_LOCAL
         self.max_workers = EMBED_CONCURRENT_REQUESTS
-
-        if self.is_local:
-            self._init_local()
-        else:
-            self._init_remote()
+        self._init_remote()
 
     # ==============================================================
     # Initialisation helpers
     # ==============================================================
-
-    def _init_local(self):
-        """Load the embedding model locally via sentence-transformers."""
-        from sentence_transformers import SentenceTransformer
-
-        device = EMBEDDING_LOCAL_DEVICE  # None → auto-detect
-        self.local_model = SentenceTransformer(
-            EMBEDDING_LOCAL_MODEL,
-            device=device,
-        )
-        resolved_device = str(self.local_model.device)
-        print(f"Using LOCAL embedding model: {EMBEDDING_LOCAL_MODEL}")
-        print(f"  Device: {resolved_device}")
-        print(f"  Batch size: {EMBED_BATCH_SIZE}")
 
     def _init_remote(self):
         """Set up an HTTP session for the remote vLLM server."""
@@ -108,38 +77,20 @@ class Embedder:
         except requests.RequestException as exc:
             raise RuntimeError(
                 "Remote embedding service is unavailable at "
-                f"{self.base_url}. Start the vLLM server, verify the host and "
-                "port, or set EMBEDDING_IS_LOCAL=True in app/config.py."
+                f"{self.base_url}. Start the vLLM server or verify the host "
+                "and port."
             ) from exc
 
     # ==============================================================
     # Remote API call
-    # Core encoding — local vs. remote
     # ==============================================================
 
     def _request_embeddings(self, texts: list[str]) -> list[list[float]]:
         """
         Encode a batch of texts and return one vector per text,
         index-aligned with the input.
-
-        Dispatches to the local model or the remote API depending
-        on ``self.is_local``.
         """
-        if self.is_local:
-            return self._encode_local(texts)
         return self._encode_remote(texts)
-
-    def _encode_local(self, texts: list[str]) -> list[list[float]]:
-        """Encode texts using the locally-loaded SentenceTransformer."""
-        embeddings = self.local_model.encode(
-            texts,
-            batch_size=EMBED_BATCH_SIZE,
-            show_progress_bar=False,
-            normalize_embeddings=True,
-        )
-        # sentence-transformers returns numpy arrays; convert to plain
-        # Python lists for consistency with the remote path.
-        return [vec.tolist() for vec in embeddings]
 
     def _encode_remote(self, texts: list[str]) -> list[list[float]]:
         """

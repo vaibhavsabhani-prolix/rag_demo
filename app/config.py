@@ -4,19 +4,10 @@ QDRANT_TIMEOUT = 120.0
 
 PATENT_DIRECTORY = "patents-processed"
 
-CHUNKS_COLLECTION_NAME = "patent_chunks_4096_1"
-PATENTS_COLLECTION_NAME = "patents_4096_1"
+CHUNKS_COLLECTION_NAME = "patent_chunks_4096"
+PATENTS_COLLECTION_NAME = "patents_metadata_4096"
 
-# ── Embedding Mode ───────────────────────────────────────────────
-# True  → load the model locally via sentence-transformers (CPU/GPU)
-# False → call the remote vLLM embedding server over HTTP
-EMBEDDING_IS_LOCAL = True
-
-# Local embedding model (used only when EMBEDDING_IS_LOCAL is True)
-EMBEDDING_LOCAL_MODEL = "Qwen/Qwen3-Embedding-0.6B"
-EMBEDDING_LOCAL_DEVICE = None  # None = auto-detect; "cpu", "cuda", "mps"
-
-# Remote embedding server (used only when EMBEDDING_IS_LOCAL is False)
+# Remote embedding server
 EMBEDDING_REMOTE_BASE_URL = "http://192.168.2.213:8002/v1"
 EMBEDDING_REMOTE_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 EMBEDDING_REMOTE_API_KEY = "EMPTY"
@@ -37,20 +28,20 @@ MIN_CHUNK_TOKENS = 20
 MIN_CHUNK_WORDS = 8
 
 # Number of chunks to upload to Qdrant in one request
-BATCH_SIZE = 100
+BATCH_SIZE = 512
 
 # Texts sent to the remote embedding server in a single HTTP request.
 # With a remote GPU (DGX), this should be large to amortise network
 # round-trip latency and keep the GPU fed. 256 × 512-token chunks ≈
 # 128 K tokens per call — well within vLLM's capacity. Raise further
 # if the server has headroom; lower if requests start timing out.
-EMBED_BATCH_SIZE = 8
+EMBED_BATCH_SIZE = 256
 
 # How many embedding HTTP requests to keep in flight at once. While
 # batch #1 computes on the GPU, batches #2-#N are already in transit
 # over the network, hiding round-trip latency. 4 is a good default;
 # raise it for a high-latency link, lower it if the server is shared.
-EMBED_CONCURRENT_REQUESTS = 2
+EMBED_CONCURRENT_REQUESTS = 4
 
 # How many chunks to write between insert progress lines, counted
 # across the whole run rather than per batch. The progress bar covers
@@ -68,7 +59,7 @@ METADATA_BATCH_SIZE = 64
 # How many patents the ingest prefetcher parses and chunks ahead of the
 # embedder. Increasing this buffer keeps all CPU cores busy prefetching
 # documents while the remote GPU embeds.
-INGEST_PREFETCH = 64
+INGEST_PREFETCH = 512
 
 # Append-only log of patent filenames fully committed to Qdrant
 # (metadata + every chunk). ingest_directory() reads it on startup to
@@ -110,12 +101,39 @@ HISTORY_DB_PATH = "data/search_history.db"
 PATENT_CANDIDATE_TOP_K = 300
 
 # Chunks per candidate patent returned by the INITIAL vector-search
-# step only (QdrantDB.search's group_size) - used for identifying
-# candidate patents and the "Qdrant Vector Search Candidates" display
-# view. Reranking itself does not use this; it checks every chunk a
-# candidate patent has (see PATENT_CANDIDATE_TOP_K above).
+# step (QdrantDB.search's default group_size) - used for the "Qdrant
+# Vector Search Candidates" display view and any caller that doesn't
+# need more than a handful of hits per patent. The semantic search
+# pipeline itself asks for RERANK_CHUNKS_PER_PATENT instead (see
+# app/semantic_search.py), since that is the pool the two-stage
+# selection below picks its reranker candidates from.
 CANDIDATE_CHUNKS_PER_PATENT = 3
 FINAL_TOP_K = 10
+
+# ── Two-stage chunk retrieval (reranking) ───────────────────────
+#
+# A candidate patent can hold anywhere from 1 to several thousand
+# chunks. Reranking every one of them (the old behaviour) makes
+# reranker cost scale with a patent's total chunk count instead of
+# with how many candidate patents there are. Instead:
+#
+#   1. QdrantDB.search() is asked for up to RERANK_CHUNKS_PER_PATENT
+#      chunks per patent (its group_size) during the initial vector
+#      search - these are the patent's strongest chunks by embedding
+#      similarity, not its first N chunks.
+#   2. For each surviving patent, the top RERANK_CHUNKS_PER_PATENT of
+#      those hits (by vector score) are kept as reranker candidates.
+#   3. RERANK_NEIGHBOR_CHUNKS positions on either side of each kept
+#      chunk (by document_chunk_index) are fetched too, since a
+#      relevant answer can span more than one chunk - fetched
+#      individually (QdrantDB.get_neighbor_chunks), never by pulling a
+#      patent's full chunk set.
+#
+# Reranker workload per patent is therefore bounded by
+# RERANK_CHUNKS_PER_PATENT * (1 + 2 * RERANK_NEIGHBOR_CHUNKS), not by
+# how many chunks the patent actually has.
+RERANK_CHUNKS_PER_PATENT = 10
+RERANK_NEIGHBOR_CHUNKS = 1
 
 # The reranker scores every chunk of a candidate patent individually
 # and takes the MAX as that patent's score (see app/reranker.py), on a
