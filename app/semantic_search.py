@@ -32,8 +32,6 @@ Pipeline:
     MAX across its own chunks (see app/reranker.py) - checking the
     patent's complete text, not a similarity-biased subset.
                           ↓
-    Keep only patents scoring >= PATENT_RELEVANCE_THRESHOLD
-                          ↓
                    Group by patent_id
                           ↓
         Fetch metadata again for the FINAL (small,
@@ -89,7 +87,7 @@ import time
 from collections import defaultdict
 from typing import Callable
 
-from app.config import FINAL_TOP_K, PATENT_RELEVANCE_THRESHOLD
+from app.config import FINAL_TOP_K
 from app.embedder import Embedder
 from app.evidence_selector import EvidenceSelector
 from app.filter_engine import FilterEngine
@@ -221,11 +219,6 @@ class SemanticSearch:
             results=filtered_results,
             requirements=parsed,
         )
-
-        # keep only patents scoring >= PATENT_RELEVANCE_THRESHOLD
-        reranked_results = [
-            item for item in reranked_results if item[0] >= PATENT_RELEVANCE_THRESHOLD
-        ]
 
         # Step 4b: For question queries, extract answer evidence and spans
         if parsed.is_question:

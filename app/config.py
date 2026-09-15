@@ -15,7 +15,8 @@ EMBEDDING_REQUEST_TIMEOUT = 120.0
 VECTOR_SIZE = 1024
 
 QUERY_LLM_REMOTE_BASE_URL = "http://192.168.2.213:8000/v1"
-QUERY_LLM_REMOTE_MODEL = "nvidia/Qwen3.6-35B-A3B-NVFP4"
+# QUERY_LLM_REMOTE_MODEL = "nvidia/Qwen3.6-35B-A3B-NVFP4"
+QUERY_LLM_REMOTE_MODEL = "nvidia/Qwen3.8-27B-NVFP4"
 QUERY_LLM_REMOTE_API_KEY = "EMPTY"
 
 RERANKER_REMOTE_BASE_URL = "http://192.168.2.213:8001"
@@ -24,8 +25,6 @@ RERANKER_REMOTE_API_KEY = "EMPTY"
 RERANKER_REQUEST_TIMEOUT = 360.0
 
 MAX_CHUNK_TOKENS = 4096
-MIN_CHUNK_TOKENS = 20
-MIN_CHUNK_WORDS = 8
 
 # Number of chunks to upload to Qdrant in one request
 BATCH_SIZE = 512
@@ -103,134 +102,7 @@ PATENT_CANDIDATE_TOP_K = 300
 # Chunks per candidate patent returned by the INITIAL vector-search
 # step (QdrantDB.search's default group_size) - used for the "Qdrant
 # Vector Search Candidates" display view and any caller that doesn't
-# need more than a handful of hits per patent. The semantic search
-# pipeline itself asks for RERANK_CHUNKS_PER_PATENT instead (see
-# app/semantic_search.py), since that is the pool the two-stage
-# selection below picks its reranker candidates from.
+# need more than a handful of hits per patent.
 CANDIDATE_CHUNKS_PER_PATENT = 3
 FINAL_TOP_K = 10
 
-# ── Two-stage chunk retrieval (reranking) ───────────────────────
-#
-# A candidate patent can hold anywhere from 1 to several thousand
-# chunks. Reranking every one of them (the old behaviour) makes
-# reranker cost scale with a patent's total chunk count instead of
-# with how many candidate patents there are. Instead:
-#
-#   1. QdrantDB.search() is asked for up to RERANK_CHUNKS_PER_PATENT
-#      chunks per patent (its group_size) during the initial vector
-#      search - these are the patent's strongest chunks by embedding
-#      similarity, not its first N chunks.
-#   2. For each surviving patent, the top RERANK_CHUNKS_PER_PATENT of
-#      those hits (by vector score) are kept as reranker candidates.
-#   3. RERANK_NEIGHBOR_CHUNKS positions on either side of each kept
-#      chunk (by document_chunk_index) are fetched too, since a
-#      relevant answer can span more than one chunk - fetched
-#      individually (QdrantDB.get_neighbor_chunks), never by pulling a
-#      patent's full chunk set.
-#
-# Reranker workload per patent is therefore bounded by
-# RERANK_CHUNKS_PER_PATENT * (1 + 2 * RERANK_NEIGHBOR_CHUNKS), not by
-# how many chunks the patent actually has.
-RERANK_CHUNKS_PER_PATENT = 10
-RERANK_NEIGHBOR_CHUNKS = 1
-
-# The reranker scores every chunk of a candidate patent individually
-# and takes the MAX as that patent's score (see app/reranker.py), on a
-# 0-10 scale; only patents scoring at or above this are kept as a
-# match. A single hard cutoff, not a tunable weighted blend.
-PATENT_RELEVANCE_THRESHOLD = 7.0
-
-assert 0.0 <= PATENT_RELEVANCE_THRESHOLD <= 10.0, (
-    "PATENT_RELEVANCE_THRESHOLD must be between 0.0 and 10.0"
-)
-
-
-# ==============================================================
-# Relevance Verification (app/relevance_verifier.py)
-#
-# The precision gate, running BETWEEN chunk retrieval and reranking: a
-# candidate patent must literally name what the query asked for - in
-# its title, abstract, or the chunks vector search matched - or it is
-# dropped before the cross-encoder ever scores it. Pure string matching
-# against ParsedQuery.required_phrases, which the one Query
-# Understanding LLM call already produces, so this stage costs no model
-# call and saves the reranker the patents it rejects.
-#
-# It exists because a similarity score cannot tell "a TV that is LED"
-# from "an LCD TV with an LED lamp on it": both contain every word of
-# "LED TV". Only the compound phrase separates them.
-# ==============================================================
-
-# Master switch. False restores the previous pipeline exactly: rerank
-# everything, then cut at PATENT_RELEVANCE_THRESHOLD.
-VERIFICATION_ENABLED = False
-
-# The relevance cut applied to patents that PASSED verification. Zero
-# by default: once the phrase gate has confirmed a patent literally
-# names what the query asked for, the cross-encoder score's job is
-# RANKING, not filtering.
-#
-# That is measured, not a preference. bge-reranker-v2-m3 rewards
-# literal term overlap and punishes synonyms, and the phrase gate
-# deliberately ACCEPTS synonyms, so the two disagree exactly where the
-# gate is most useful:
-#
-#   query "water container" -> title "Water container"      8.9/10
-#                           -> title "350ml Water bottle."  4.0/10
-#   query "car"             -> title "Automobile"           3.0/10
-#   query "drinking water jerrycan"
-#                           -> title "350ml Water bottle."  0.0/10  (!)
-#
-# That last one is a correct match scored zero. A signal that returns
-# 0.0 for a right answer cannot be a filter at ANY threshold - it can
-# only order results that something else has already vetted. Every
-# value tried here deleted correct answers: 7.0, then 5.0 (the query
-# "water container" returned nothing while holding two patents titled
-# "Water bottle"), then 3.0 (the jerrycan case above).
-#
-# Raise it only if genuinely off-topic patents start appearing - and
-# fix the gate first if they do, because that is where topicality is
-# decided now.
-VERIFIED_RELEVANCE_THRESHOLD = 0.0
-
-# The same cut for the BROADER fallback pass. Also zero, for the same
-# reason and after the same mistake: a floor of 3.0 here deleted four
-# patents titled "...Water bottle..." from a "drinking water jerrycan"
-# query, all scored 0.0/10 because "jerrycan" shares no word with
-# "water bottle".
-#
-# What keeps that pass honest is not the score but WHERE it accepts the
-# relaxed wording: the patent's TITLE only (RelevanceVerifier.
-# verify_broader). A shaving-razor patent whose body mentions a blade
-# is not a broader match for "kitchen knife"; a patent titled "350ml
-# Water bottle." is a broader match for a jerrycan query. That is a
-# judgement the cross-encoder demonstrably cannot make.
-BROADER_RELEVANCE_THRESHOLD = 0.0
-
-# Keep patents that mention every required phrase, but only outside
-# their title, abstract, and matching chunks (verdict RELATED), ranked
-# below the confirmed matches. False is the precision-first default
-# that the "LED TV" / "car" reports asked for.
-VERIFICATION_KEEP_RELATED = False
-
-# When the strict phrase gate leaves NOTHING, fall back to the relaxed
-# wording Query Understanding supplies for the same query
-# (ParsedQuery.fallback_phrases - the concept without its qualifier,
-# e.g. "container"/"bottle"/"tank" for "water container") and show
-# those separately, labelled as broader matches.
-#
-# Query Understanding leaves fallback_phrases EMPTY whenever dropping
-# the qualifier would change what the thing IS - "LED TV" broadened to
-# "television" is a different product, and that is the false positive
-# this whole stage exists to prevent - so a defining qualifier
-# produces no fallback tier and the answer stays honestly empty.
-# Fallback results are never mixed into the exact matches.
-VERIFICATION_FALLBACK_ENABLED = True
-
-assert 0.0 <= VERIFIED_RELEVANCE_THRESHOLD <= 10.0, (
-    "VERIFIED_RELEVANCE_THRESHOLD must be between 0.0 and 10.0"
-)
-assert 0.0 <= BROADER_RELEVANCE_THRESHOLD <= 10.0, (
-    "BROADER_RELEVANCE_THRESHOLD must be between 0.0 and 10.0"
-)
