@@ -38,13 +38,20 @@ in the first place - a much narrower, more defensible check.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import requests
 
+from app.chunking.token_counter import TokenCounter
 from app.config import (
+    RERANK_BATCH_SIZE,
+    RERANK_CONCURRENT_REQUESTS,
+    RERANKER_MAX_CONTEXT_TOKENS,
     RERANKER_REMOTE_API_KEY,
     RERANKER_REMOTE_BASE_URL,
     RERANKER_REMOTE_MODEL,
     RERANKER_REQUEST_TIMEOUT,
+    RERANKER_TOKEN_SAFETY_MARGIN,
 )
 from app.query_understanding.models import ParsedQuery
 
@@ -90,6 +97,13 @@ class Reranker:
         self.base_url = RERANKER_REMOTE_BASE_URL.rstrip("/")
         self.model = RERANKER_REMOTE_MODEL
         self.headers = {"Authorization": f"Bearer {RERANKER_REMOTE_API_KEY}"}
+        self.max_workers = RERANK_CONCURRENT_REQUESTS
+        # Reranker's own tokenizer (not the embedding model's) - used to
+        # truncate documents to what this specific model can actually
+        # accept, since query + document tokens combined must fit under
+        # RERANKER_MAX_CONTEXT_TOKENS or the server rejects the request
+        # outright with a 400.
+        self._token_counter = TokenCounter(model_name=RERANKER_REMOTE_MODEL)
 
     def rerank(
         self,
@@ -123,7 +137,18 @@ class Reranker:
         if not results:
             return []
 
-        texts = [_format_chunk(chunk.payload) for chunk in results]
+        # query + document tokens combined must fit under
+        # RERANKER_MAX_CONTEXT_TOKENS or the server 400s the whole
+        # request - a chunk can be MAX_CHUNK_TOKENS (4096) on its own
+        # before even adding the "Section: X" prefix, so every document
+        # is truncated to what's left after the query's own tokens.
+        query_tokens = self._token_counter.count(query)
+        budget = RERANKER_MAX_CONTEXT_TOKENS - query_tokens - RERANKER_TOKEN_SAFETY_MARGIN
+
+        texts = [
+            self._fit_to_budget(_format_chunk(chunk.payload), budget)
+            for chunk in results
+        ]
         print(f"Reranking {len(texts)} chunks for query: {query}")
         raw_scores = self._score(query, texts)
 
@@ -153,13 +178,69 @@ class Reranker:
         scored.sort(key=lambda item: item[0], reverse=True)
         return scored
 
+    def _fit_to_budget(self, text: str, budget: int) -> str:
+        """
+        Truncate *text* to at most *budget* tokens (by this reranker's
+        own tokenizer), cutting on a token boundary so the tail isn't
+        split mid-token. A chunk under budget is returned unchanged.
+        """
+
+        if budget <= 0:
+            return ""
+
+        input_ids, offsets = self._token_counter.tokenize_with_offsets(text)
+        if len(input_ids) <= budget:
+            return text
+
+        end_char = offsets[budget - 1][1]
+        return text[:end_char]
+
     def _score(self, query: str, texts: list[str]) -> list[float]:
         """
         Raw 0-1 relevance scores, aligned index-for-index with *texts*.
+
+        Splits *texts* into RERANK_BATCH_SIZE windows and fires up to
+        RERANK_CONCURRENT_REQUESTS of them in parallel via a thread
+        pool, so the next window is already in transit while the
+        current one scores on the server's GPU, instead of every
+        candidate chunk going out as one blocking request.
         """
 
         if not texts:
             return []
+
+        windows = [
+            texts[i : i + RERANK_BATCH_SIZE]
+            for i in range(0, len(texts), RERANK_BATCH_SIZE)
+        ]
+
+        scores: list[float] = [0.0] * len(texts)
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+            futures = {
+                pool.submit(
+                    self._score_window, query, window, request_number
+                ): offset
+                for request_number, (offset, window) in enumerate(
+                    zip(range(0, len(texts), RERANK_BATCH_SIZE), windows), start=1
+                )
+            }
+
+            for future, offset in futures.items():
+                window_scores = future.result()
+                scores[offset : offset + len(window_scores)] = window_scores
+
+        return scores
+
+    def _score_window(
+        self, query: str, texts: list[str], request_number: int
+    ) -> list[float]:
+        """
+        Score one window of texts via a single /rerank request, aligned
+        index-for-index with *texts*.
+        """
+
+        print(f"[Reranker] request #{request_number} sent ({len(texts)} chunks)")
 
         response = requests.post(
             f"{self.base_url}/rerank",
@@ -171,7 +252,10 @@ class Reranker:
             },
             timeout=RERANKER_REQUEST_TIMEOUT,
         )
-        print(f"Reranker response status code: {response.status_code}")
+        print(
+            f"[Reranker] request #{request_number} response status code: "
+            f"{response.status_code}"
+        )
         response.raise_for_status()
 
         # The server's relevance_score is used as-is, under the

@@ -52,11 +52,23 @@ def _parsed(**kwargs) -> ParsedQuery:
     return ParsedQuery(**kwargs)
 
 
+class _FakeTokenCounter:
+    """Word-count stand-in for Reranker._token_counter - no tokenizer download, no network."""
+
+    def count(self, text: str) -> int:
+        return len(text.split())
+
+    def tokenize_with_offsets(self, text: str):
+        words = text.split()
+        return list(range(len(words))), [(0, len(text))] * len(words)
+
+
 def _stub_reranker(score_fn):
     """A Reranker instance with __init__ skipped - _score is replaced with score_fn(query, texts)."""
     r = object.__new__(Reranker)
     r.use_remote = False
     r._score = score_fn
+    r._token_counter = _FakeTokenCounter()
     return r
 
 

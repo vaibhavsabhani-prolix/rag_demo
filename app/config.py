@@ -24,6 +24,36 @@ RERANKER_REMOTE_MODEL = "BAAI/bge-reranker-v2-m3"
 RERANKER_REMOTE_API_KEY = "EMPTY"
 RERANKER_REQUEST_TIMEOUT = 360.0
 
+# Chunks per /rerank HTTP request. Mirrors EMBED_BATCH_SIZE: large
+# enough to amortise network round-trip latency and keep the reranker
+# server's GPU fed, without making a single request so big it dominates
+# RERANKER_REQUEST_TIMEOUT on its own.
+RERANK_BATCH_SIZE = 128
+
+# How many /rerank HTTP requests to fire in parallel via a thread pool
+# (mirrors EMBED_CONCURRENT_REQUESTS) - so the next batch of chunks is
+# already in transit while the current one scores on the GPU, instead
+# of the whole candidate pool going out as one blocking request.
+RERANK_CONCURRENT_REQUESTS = 6
+
+# The reranker model's own hard limit: query + document tokens combined
+# must fit in this many tokens, or the server rejects the whole request
+# with a 400 ("This model's maximum context length is 4096 tokens...").
+# A chunk can be up to MAX_CHUNK_TOKENS (4096) on its own before the
+# "Section: X" prefix Reranker._format_chunk adds - already at or past
+# this budget before the query's own tokens are even counted - so
+# Reranker truncates each formatted document to fit under
+# RERANKER_MAX_CONTEXT_TOKENS minus the query's token count minus
+# RERANKER_TOKEN_SAFETY_MARGIN before sending it.
+RERANKER_MAX_CONTEXT_TOKENS = 4096
+
+# Buffer subtracted from the truncation budget on top of the query's
+# own token count, to absorb the small counting difference between our
+# tokenizer call and whatever tokenization the server applies (special
+# tokens, rounding) - keeps a truncated document from landing exactly
+# on the server's limit and still getting rejected.
+RERANKER_TOKEN_SAFETY_MARGIN = 16
+
 MAX_CHUNK_TOKENS = 4096
 
 # Number of chunks to upload to Qdrant in one request
