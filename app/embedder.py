@@ -188,3 +188,12 @@ class Embedder:
 
         vectors = self._request_embeddings([query])
         return vectors[0]
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """
+        Generate embeddings for a list of query strings / retrieval views
+        in a single batch request to avoid repeated HTTP calls.
+        """
+        if not texts:
+            return []
+        return self._request_embeddings(texts)

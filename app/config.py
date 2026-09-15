@@ -118,3 +118,29 @@ TOKEN_COUNT_CACHE_SIZE = 4096
 
 PATENT_VIEW_URL_TEMPLATE = "https://www.qubeip.com/en/patent-view/{patent_id}"
 
+# Phase 2 Retrieval configuration
+RETRIEVAL_TOP_K_PER_VIEW = 100
+PATENT_CANDIDATE_TOP_K = 300
+
+# Phase 4 Bounded Evidence Retrieval configuration
+EVIDENCE_CHUNKS_PER_PATENT = 5
+EVIDENCE_NEIGHBOR_CHUNKS = 1
+EVIDENCE_GLOBAL_TOP_K_CHUNKS = 1000
+
+# Phase 5 Relationship Verification configuration
+VERIFICATION_MAX_CANDIDATES = 25
+VERIFICATION_CONCURRENT_REQUESTS = 6
+VERIFICATION_LLM_TIMEOUT = 30.0
+
+# Phase 7 Final Patent Scoring & Result Selection configuration
+# Minimum final patent score required for a patent to appear in final results (0.0 to 10.0 scale)
+FINAL_SCORE_THRESHOLD = 7.0
+FINAL_TOP_K = 10
+
+# Multi-signal scoring weights (must sum to 1.0)
+FINAL_WEIGHT_RELATIONSHIP = 0.45
+FINAL_WEIGHT_REQUIREMENT = 0.25
+FINAL_WEIGHT_RERANKER = 0.20
+FINAL_WEIGHT_RETRIEVAL = 0.10
+
+
