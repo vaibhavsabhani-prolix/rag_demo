@@ -115,24 +115,3 @@ TOKEN_COUNT_CACHE_SIZE = 4096
 
 PATENT_VIEW_URL_TEMPLATE = "https://www.qubeip.com/en/patent-view/{patent_id}"
 
-STREAMLIT_PAGE_TITLE = "Patent Semantic Search"
-STREAMLIT_LAYOUT = "wide"
-HISTORY_DB_PATH = "data/search_history.db"
-
-# Number of candidate patents identified by vector search that go on
-# to have EVERY one of their indexed chunks checked by the reranker
-# (see app/reranker.py / SemanticSearch.search_detailed) - not a
-# top-K-chunks cut, the patent's complete chunk set. Since a patent can
-# have anywhere from 1 to several thousand chunks, this is the lever
-# for total reranking cost per query: lower it to examine fewer
-# candidate patents (each still checked completely), raise it to
-# consider more candidates at higher latency cost.
-PATENT_CANDIDATE_TOP_K = 300
-
-# Chunks per candidate patent returned by the INITIAL vector-search
-# step (QdrantDB.search's default group_size) - used for the "Qdrant
-# Vector Search Candidates" display view and any caller that doesn't
-# need more than a handful of hits per patent.
-CANDIDATE_CHUNKS_PER_PATENT = 3
-FINAL_TOP_K = 10
-
