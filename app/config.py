@@ -131,11 +131,20 @@ EVIDENCE_GLOBAL_TOP_K_CHUNKS = 1000
 VERIFICATION_MAX_CANDIDATES = 25
 VERIFICATION_CONCURRENT_REQUESTS = 6
 VERIFICATION_LLM_TIMEOUT = 30.0
+# Minimum cross-encoder relevance score required to mark a relationship/requirement as
+# SUPPORTED. Was 0.05, which is far too permissive for a BGE cross-encoder — near-zero
+# scores would still pass, letting patents that only share generic terms (e.g. "method",
+# "manufacturing") with the query get marked as satisfying a specific requirement/relationship
+# (e.g. "produces water") even though the key subject term never appears in the evidence.
+# Raise this if unrelated patents are still slipping into results; lower it if genuinely
+# relevant patents are being excluded.
+VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD = 0.35
+VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD = 0.35
 
 # Phase 7 Final Patent Scoring & Result Selection configuration
-# Minimum final patent score required for a patent to appear in final results (0.0 to 10.0 scale)
+# Minimum final patent score required for a patent to appear in final results (0.0 to 10.0 scale).
+# All qualifying patents are returned (no fixed top-K cap) — change this value to raise/lower the bar.
 FINAL_SCORE_THRESHOLD = 7.0
-FINAL_TOP_K = 10
 
 # Multi-signal scoring weights (must sum to 1.0)
 FINAL_WEIGHT_RELATIONSHIP = 0.45

@@ -25,6 +25,8 @@ from app.config import (
     RERANKER_REMOTE_MODEL,
     RERANKER_REQUEST_TIMEOUT,
     VERIFICATION_MAX_CANDIDATES,
+    VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD,
+    VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD,
 )
 from app.models.evidence import EvidenceChunk, EvidenceRetrievalResult, PatentEvidence
 from app.models.parsed_query import ParsedQuery, SemanticRelationship
@@ -291,7 +293,7 @@ class RelationshipVerifier:
                             best_cid = ch.chunk_id
 
                 # Relationship is supported if proximity matches or cross-encoder score indicates positive entailment
-                is_supported = has_proximity or best_score >= 0.05
+                is_supported = has_proximity or best_score >= VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD
                 if is_supported and best_cid is not None:
                     status = "SUPPORTED"
                     confidence = round(max(0.75, min(0.98, best_score * 2.0 if best_score > 0 else 0.85)), 2)
@@ -335,7 +337,7 @@ class RelationshipVerifier:
                         best_req_score = effective_score
                         best_req_cid = ch.chunk_id
 
-                is_req_supported = best_req_score >= 0.05
+                is_req_supported = best_req_score >= VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD
                 if is_req_supported and best_req_cid is not None:
                     req_verifications.append(
                         RequirementVerification(

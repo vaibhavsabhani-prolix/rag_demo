@@ -157,6 +157,7 @@ class BGEReranker:
         query: str,
         documents: List[str],
         retry_on_token_error: bool = True,
+        batch_label: str = "?",
     ) -> List[float]:
         """
         Send a single batch of documents to the remote BGE reranker endpoint.
@@ -176,12 +177,14 @@ class BGEReranker:
         last_exception: Optional[Exception] = None
 
         for endpoint in endpoints:
+            print(f"[Reranker] Request {batch_label} -> {endpoint} ({len(documents)} docs)")
             try:
                 resp = self.session.post(
                     endpoint,
                     json=payload,
                     timeout=self.timeout,
                 )
+                print(f"[Reranker] Request {batch_label} <- HTTP {resp.status_code}")
                 if resp.status_code == 200:
                     data = resp.json()
                     results = data.get("results", [])
@@ -303,7 +306,7 @@ class BGEReranker:
                 # Single batch optimization (no thread pool overhead)
                 batch = batches[0]
                 docs = [item[3] for item in batch]
-                batch_scores = self._score_batch(reranking_query, docs)
+                batch_scores = self._score_batch(reranking_query, docs, batch_label="1/1")
                 for item, score in zip(batch, batch_scores):
                     pid, c_idx = item[0], item[1]
                     scores_map[(pid, c_idx)] = score
@@ -314,8 +317,9 @@ class BGEReranker:
                             self._score_batch,
                             reranking_query,
                             [item[3] for item in batch],
+                            batch_label=f"{i + 1}/{len(batches)}",
                         ): batch
-                        for batch in batches
+                        for i, batch in enumerate(batches)
                     }
                     for future in as_completed(future_to_batch):
                         batch = future_to_batch[future]

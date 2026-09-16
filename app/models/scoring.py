@@ -150,12 +150,8 @@ class FinalSearchResult(BaseModel):
         description="Count of candidates excluded due to score < FINAL_SCORE_THRESHOLD."
     )
     threshold_used: float = Field(
-        default=7.0,
+        default=9.0,
         description="FINAL_SCORE_THRESHOLD used for inclusion."
-    )
-    top_k_limit: int = Field(
-        default=10,
-        description="FINAL_TOP_K maximum limit applied."
     )
     weights_used: Dict[str, float] = Field(
         default_factory=dict,

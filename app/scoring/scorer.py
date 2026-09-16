@@ -11,7 +11,7 @@ Key guarantees:
 - Score range strictly normalized to 0.0 <= final_score <= 10.0 (rounded to 2 decimal places).
 - Configurable threshold enforcement: final_score >= FINAL_SCORE_THRESHOLD included; strictly excluded otherwise.
 - Strict weight validation: weights must sum to 1.0 (within 1e-6 tolerance).
-- Descending score sorting and bounded to FINAL_TOP_K.
+- Descending score sorting; all qualifying patents returned (no fixed count cap).
 - Complete explainability via ScoreBreakdown.
 - Full preservation of Phase 5 verification and Phase 6 evidence data.
 """
@@ -22,7 +22,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import (
     FINAL_SCORE_THRESHOLD,
-    FINAL_TOP_K,
     FINAL_WEIGHT_RELATIONSHIP,
     FINAL_WEIGHT_REQUIREMENT,
     FINAL_WEIGHT_RERANKER,
@@ -68,14 +67,12 @@ class FinalScorer:
     def __init__(
         self,
         score_threshold: float = FINAL_SCORE_THRESHOLD,
-        top_k: int = FINAL_TOP_K,
         weight_relationship: float = FINAL_WEIGHT_RELATIONSHIP,
         weight_requirement: float = FINAL_WEIGHT_REQUIREMENT,
         weight_reranker: float = FINAL_WEIGHT_RERANKER,
         weight_retrieval: float = FINAL_WEIGHT_RETRIEVAL,
     ):
         self.score_threshold = float(score_threshold)
-        self.top_k = int(top_k)
         self.weight_relationship = float(weight_relationship)
         self.weight_requirement = float(weight_requirement)
         self.weight_reranker = float(weight_reranker)
@@ -143,7 +140,8 @@ class FinalScorer:
     ) -> FinalSearchResult:
         """
         Evaluate all candidate patents from Phase 6, compute final scores,
-        filter by FINAL_SCORE_THRESHOLD, sort descending, and return top FINAL_TOP_K results.
+        filter by FINAL_SCORE_THRESHOLD, and sort descending. All qualifying
+        patents are returned (no fixed result count cap).
         """
         t_start = time.perf_counter()
 
@@ -156,7 +154,6 @@ class FinalScorer:
                 passed_threshold_count=0,
                 rejected_count=0,
                 threshold_used=self.score_threshold,
-                top_k_limit=self.top_k,
                 weights_used={
                     "relationship": self.weight_relationship,
                     "requirement": self.weight_requirement,
@@ -198,7 +195,7 @@ class FinalScorer:
         t_filter_start = time.perf_counter()
         qualifying = [p for p in scored_patents if p.final_score >= self.score_threshold]
         qualifying.sort(key=lambda p: p.final_score, reverse=True)
-        top_results = qualifying[: self.top_k]
+        top_results = qualifying
 
         filter_sort_time_ms = (time.perf_counter() - t_filter_start) * 1000
         total_time_ms = (time.perf_counter() - t_start) * 1000
@@ -212,7 +209,6 @@ class FinalScorer:
             passed_threshold_count=passed_count,
             rejected_count=rejected_count,
             threshold_used=self.score_threshold,
-            top_k_limit=self.top_k,
             weights_used={
                 "relationship": self.weight_relationship,
                 "requirement": self.weight_requirement,
