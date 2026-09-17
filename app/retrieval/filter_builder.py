@@ -5,18 +5,17 @@ Constructs Qdrant Filter objects from Phase 1 MetadataFilters using a centralize
 field mapping and supporting dynamic comparison operators (==, !=, >, >=, <, <=, contains, in).
 """
 
+import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchAny,
-    MatchText,
     MatchValue,
     Range,
 )
 
 from app.models.parsed_query import MetadataFilter
-from metadata_fields import METADATA_FIELD_CODES
 
 # Centralized mapping from canonical codes to actual JSON metadata keys in Qdrant payloads
 CANONICAL_TO_PAYLOAD_KEYS: Dict[str, List[str]] = {
@@ -55,7 +54,20 @@ CANONICAL_TO_PAYLOAD_KEYS: Dict[str, List[str]] = {
     "LST": ["Legal Status (Filed/Granted/Ceased)"],
     "ALD": ["Legal State\n(Alive/Dead)"],
     "PT": ["Publication Type"],
+    "APT": ["Applicant Type"],
+    "AG_EN": ["Attorney/Agent"],
 }
+
+
+def _normalize_name_text(s: str) -> str:
+    """
+    Normalize a name/free-text value for comparison: lowercase and strip
+    punctuation (commas, periods) so "Last, First" (the dataset's stored
+    format for Inventor/Assignee) compares equal to a query written as
+    "First Last", collapsing any resulting extra whitespace.
+    """
+    cleaned = re.sub(r"[,.]", " ", s.lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def resolve_payload_field_names(field: str) -> List[str]:
@@ -66,13 +78,35 @@ def resolve_payload_field_names(field: str) -> List[str]:
     if upper in CANONICAL_TO_PAYLOAD_KEYS:
         return CANONICAL_TO_PAYLOAD_KEYS[upper]
 
-    # Check METADATA_FIELD_CODES description
-    if upper in METADATA_FIELD_CODES:
-        desc = METADATA_FIELD_CODES[upper]
-        return [desc]
+    # Deliberately NOT falling back to METADATA_FIELD_CODES[upper] here: that
+    # table is a generic patent-field reference, and its description text
+    # ("Attorney/Agent English") frequently doesn't match this dataset's
+    # actual ingested payload key ("Attorney/Agent") - a wrong guess is
+    # worse than no guess, since it causes a real, resolvable field to be
+    # silently treated as absent and fail the whole filter. Only the
+    # hand-verified CANONICAL_TO_PAYLOAD_KEYS table above is trusted.
 
-    # If it's already a full description/key
-    return [field.strip()]
+    # Unknown field (e.g. a raw phrase the LLM invented like "cpc_12_digit"
+    # or "attorney_or_agent" that never resolved to a canonical code) - we
+    # have no reliable payload key to check, so return nothing rather than
+    # guessing the literal string as a key. Guessing it almost never
+    # matches the real Qdrant field name/casing, and callers treat "no
+    # resolvable key" as "can't verify, don't reject the patent for it" -
+    # very different from "resolved to a real key that this patent lacks".
+    return []
+
+
+def _is_name_field(payload_key: str) -> bool:
+    """
+    Fields holding free-text person/org names (inventor, assignee, etc.) or
+    titles/addresses. These are stored with formatting (e.g. "Last, First")
+    that varies from how a query states them, and there is no full-text
+    payload index in this Qdrant collection to fuzzy-match them - so they
+    must never get a hard Qdrant equality/MatchAny condition (that always
+    requires an exact string match). Left to match_patent_metadata() for
+    Python-side, punctuation-insensitive verification instead.
+    """
+    return any(kw in payload_key.lower() for kw in ["assignee", "inventor", "title", "address"])
 
 
 def _build_condition_for_key(
@@ -86,28 +120,39 @@ def _build_condition_for_key(
     """
     key_path = f'metadata."{payload_key}"'
     op = (operator or "==").strip().lower()
+    is_name = _is_name_field(payload_key)
 
     if op in ("==", "eq"):
+        if is_name:
+            return None, False
         if isinstance(value, list):
             return FieldCondition(key=key_path, match=MatchAny(any=[str(v) for v in value])), False
-        if isinstance(value, str) and any(kw in payload_key.lower() for kw in ["assignee", "inventor", "title", "address"]):
-            return FieldCondition(key=key_path, match=MatchText(text=str(value))), False
-        return FieldCondition(key=key_path, match=MatchValue(value=value)), False
+        # Every field in this collection is stored as a string or list of
+        # strings (confirmed against live payloads), even ones the
+        # normalizer converts to int for range comparisons (e.g. year
+        # fields: "2006" in Qdrant vs normalized int 2006). MatchValue is
+        # type-sensitive, so an int here would never match the stored
+        # string - always compare as string for exact equality.
+        return FieldCondition(key=key_path, match=MatchValue(value=str(value))), False
 
     elif op in ("!=", "ne", "neq"):
+        if is_name:
+            return None, False
         if isinstance(value, list):
             return FieldCondition(key=key_path, match=MatchAny(any=[str(v) for v in value])), True
-        return FieldCondition(key=key_path, match=MatchValue(value=value)), True
+        return FieldCondition(key=key_path, match=MatchValue(value=str(value))), True
 
     elif op in ("contains", "like", "match", "includes", "has"):
-        if isinstance(value, list):
-            return FieldCondition(key=key_path, match=MatchAny(any=[str(v) for v in value])), False
-        return FieldCondition(key=key_path, match=MatchText(text=str(value))), False
+        # No full-text index exists for MatchText to use on any field here,
+        # so this always defers to match_patent_metadata() in Python.
+        return None, False
 
     elif op in ("in", "any"):
+        if is_name:
+            return None, False
         if isinstance(value, list):
             return FieldCondition(key=key_path, match=MatchAny(any=[str(v) for v in value])), False
-        return FieldCondition(key=key_path, match=MatchValue(value=value)), False
+        return FieldCondition(key=key_path, match=MatchValue(value=str(value))), False
 
     elif op in (">", "gt"):
         num_val = _coerce_numeric(value)
@@ -205,6 +250,15 @@ def match_patent_metadata(metadata: Dict[str, Any], metadata_filters: List[Metad
         field_name = f.field or f.raw_field or ""
         payload_keys = resolve_payload_field_names(field_name)
 
+        if not payload_keys:
+            # Unknown field - we have no real payload key to check it
+            # against, so we can't verify this constraint either way.
+            # Don't reject an otherwise-matching patent just because one
+            # filter refers to a field we don't know how to look up; that
+            # would let a single unmapped field (out of possibly dozens on
+            # a dense query) zero out every candidate.
+            continue
+
         # Extract values present in metadata for any resolved key
         found_values: List[Any] = []
         for key in payload_keys:
@@ -216,7 +270,8 @@ def match_patent_metadata(metadata: Dict[str, Any], metadata_filters: List[Metad
                     found_values.append(val)
 
         if not found_values:
-            # Field is missing from patent metadata
+            # Field resolved to a real payload key, but this patent
+            # genuinely doesn't have it - a legitimate mismatch.
             if f.operator in ("!=", "ne", "neq"):
                 continue
             return False
@@ -227,32 +282,33 @@ def match_patent_metadata(metadata: Dict[str, Any], metadata_filters: List[Metad
         matched = False
         for actual in found_values:
             actual_str = str(actual).strip()
+            actual_norm = _normalize_name_text(actual_str)
             if op in ("==", "eq"):
                 if isinstance(target, list):
-                    if any(str(t).lower() == actual_str.lower() or str(t).lower() in actual_str.lower() for t in target):
+                    if any(_normalize_name_text(str(t)) == actual_norm or _normalize_name_text(str(t)) in actual_norm for t in target):
                         matched = True
                         break
-                elif str(target).lower() == actual_str.lower() or str(target).lower() in actual_str.lower():
+                elif _normalize_name_text(str(target)) == actual_norm or _normalize_name_text(str(target)) in actual_norm:
                     matched = True
                     break
 
             elif op in ("!=", "ne", "neq"):
-                if str(target).lower() == actual_str.lower():
+                if _normalize_name_text(str(target)) == actual_norm:
                     matched = False
                     return False
                 matched = True
 
             elif op in ("contains", "like", "match", "includes", "has"):
-                if str(target).lower() in actual_str.lower():
+                if _normalize_name_text(str(target)) in actual_norm:
                     matched = True
                     break
 
             elif op in ("in", "any"):
                 if isinstance(target, list):
-                    if any(str(t).lower() in actual_str.lower() for t in target):
+                    if any(_normalize_name_text(str(t)) in actual_norm for t in target):
                         matched = True
                         break
-                elif actual_str.lower() in str(target).lower():
+                elif actual_norm in _normalize_name_text(str(target)):
                     matched = True
                     break
 

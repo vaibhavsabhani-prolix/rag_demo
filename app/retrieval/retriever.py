@@ -148,31 +148,33 @@ class CandidateRetriever:
             matching_patent_ids = [p["patent_id"] for p in matching_patents if "patent_id" in p]
 
             if not matching_patent_ids:
-                # No patents match metadata filters
-                qdrant_time_ms = (time.perf_counter() - t_qdrant_start) * 1000
-                total_time_ms = (time.perf_counter() - t_start) * 1000
-                return CandidateRetrievalResult(
-                    candidates=[],
-                    retrieval_views=views,
-                    total_chunk_hits=0,
-                    unique_patents=0,
-                    is_metadata_only=False,
-                    timings={
-                        "embedding_ms": round(embedding_time_ms, 2),
-                        "qdrant_retrieval_ms": round(qdrant_time_ms, 2),
-                        "merge_ms": 0.0,
-                        "total_ms": round(total_time_ms, 2),
-                    },
+                # The metadata pre-filter is an optimization (narrow the
+                # vector search to patents we already know match, which is
+                # both faster and more precise than pure semantic top-K
+                # search) - it is NOT meant to be a hard gate. If it finds
+                # zero patents, that's just as likely to be an extraction/
+                # mapping gap (wrong field code, formatting mismatch, an
+                # LLM-invented constraint) as a genuine "no such patent."
+                # Rather than killing the search outright, fall back to an
+                # unrestricted vector search across the whole collection
+                # and let Phase 3's metadata_filter (which runs on whatever
+                # candidates come back) do the real enforcement - the same
+                # place every other candidate already gets checked.
+                print(
+                    f"[Retriever] Metadata pre-filter matched 0 patents for "
+                    f"{len(parsed_query.metadata_filters)} filter(s); falling back to "
+                    f"unrestricted vector search, Phase 3 will still enforce the filters"
                 )
-
-            chunk_filter = Filter(
-                must=[
-                    FieldCondition(
-                        key="patent_id",
-                        match=MatchAny(any=matching_patent_ids),
-                    )
-                ]
-            )
+                chunk_filter = None
+            else:
+                chunk_filter = Filter(
+                    must=[
+                        FieldCondition(
+                            key="patent_id",
+                            match=MatchAny(any=matching_patent_ids),
+                        )
+                    ]
+                )
 
         # Step 4: Retrieve candidate chunks per view
         raw_results_per_view: List[tuple[str, Any]] = []

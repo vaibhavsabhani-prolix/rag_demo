@@ -5,6 +5,7 @@ Handles metadata resolution against metadata_fields.py, operator canonicalizatio
 case-insensitive deduplication, and value formatting.
 """
 
+import re
 from typing import Any, List, Optional, Set, Tuple, Union
 from metadata_fields import METADATA_FIELD_CODES
 from app.models.parsed_query import (
@@ -246,6 +247,13 @@ class QueryNormalizer:
             if field in ("PY", "AY", "PRY", "EPRY"):
                 if val_clean.isdigit() and len(val_clean) == 4:
                     return int(val_clean)
+            # Classification code normalization: the LLM often "corrects" a
+            # bare code like "H04N7163" into standard notation "H04N7/163",
+            # but Qdrant's CPC/IPC payload fields store the unpunctuated
+            # form - strip separators here so the Qdrant exact-match filter
+            # built later actually hits.
+            if field in ("CPC", "CPCP", "CPC12", "CPC4", "CPC8", "IPC", "IPC12", "IPC4", "IPC8"):
+                return re.sub(r"[\s/\-.]", "", val_clean).upper()
             return val_clean
 
         if isinstance(value, (int, float)):

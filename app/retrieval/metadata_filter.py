@@ -26,10 +26,15 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_string(val: Any) -> str:
-    """Normalize string value for comparison (strip whitespace and lower case)."""
+    """
+    Normalize a string value for comparison: strip whitespace, lower case,
+    and strip commas/periods so a "Last, First" stored name compares equal
+    to a "First Last" query value, collapsing the resulting whitespace.
+    """
     if val is None:
         return ""
-    return str(val).strip().lower()
+    cleaned = re.sub(r"[,.]", " ", str(val).strip().lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def _parse_date_or_year(val: Any) -> Optional[Tuple[int, str]]:
@@ -79,7 +84,11 @@ def _compare_dates(actual_val: Any, op: str, target_val: Any) -> bool:
             return a_num < t_num
         elif op_clean in ("<=", "lte"):
             return a_num <= t_num
-        elif op_clean in ("==", "eq"):
+        # "in"/"any" is handled the same as equality here: the caller
+        # (matches_metadata_filter) already loops this comparison over
+        # every (actual, target) pair for a list-valued filter and treats
+        # any single True as a match, which is exactly "in" semantics.
+        elif op_clean in ("==", "eq", "in", "any"):
             return a_num == t_num
         elif op_clean in ("!=", "ne", "neq"):
             return a_num != t_num
@@ -95,7 +104,7 @@ def _compare_dates(actual_val: Any, op: str, target_val: Any) -> bool:
             return a_year < t_num
         elif op_clean in ("<=", "lte"):
             return a_year <= t_num
-        elif op_clean in ("==", "eq"):
+        elif op_clean in ("==", "eq", "in", "any"):
             return a_year == t_num
         elif op_clean in ("!=", "ne", "neq"):
             return a_year != t_num
@@ -111,7 +120,7 @@ def _compare_dates(actual_val: Any, op: str, target_val: Any) -> bool:
             return a_num < t_year or (a_num == t_year and (a_num * 10000 + 101) < t_num)
         elif op_clean in ("<=", "lte"):
             return a_num <= t_year
-        elif op_clean in ("==", "eq"):
+        elif op_clean in ("==", "eq", "in", "any"):
             return a_num == t_year
         elif op_clean in ("!=", "ne", "neq"):
             return a_num != t_year
@@ -197,6 +206,11 @@ def matches_metadata_filter(
 
     field_name = filter_item.field or filter_item.raw_field or ""
     payload_keys = resolve_payload_field_names(field_name)
+
+    if not payload_keys:
+        # Unknown field with no resolvable payload key - can't verify this
+        # constraint, so don't let it veto an otherwise-matching patent.
+        return True
 
     # Collect all existing values in the patent's metadata matching the resolved keys
     actual_values: List[Any] = []

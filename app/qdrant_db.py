@@ -175,6 +175,7 @@ class QdrantDB:
         chunks: list[PatentChunk],
         batch_size: int = BATCH_SIZE,
         on_progress=None,
+        wait: bool = True,
     ) -> int:
         """
         Upload embedded chunks to the chunks collection in batches.
@@ -203,6 +204,7 @@ class QdrantDB:
             self.client.upsert(
                 collection_name=CHUNKS_COLLECTION_NAME,
                 points=points,
+                wait=wait,
             )
 
             if on_progress is not None:
@@ -243,6 +245,7 @@ class QdrantDB:
         self,
         patents: list[tuple[str, dict]],
         batch_size: int = 64,
+        wait: bool = True,
     ) -> int:
         """
         Store metadata for multiple patents in the "patents" collection
@@ -275,6 +278,7 @@ class QdrantDB:
             self.client.upsert(
                 collection_name=PATENTS_COLLECTION_NAME,
                 points=points,
+                wait=wait,
             )
 
             inserted += len(points)

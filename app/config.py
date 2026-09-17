@@ -18,8 +18,9 @@ QUERY_LLM_REMOTE_BASE_URL = "http://192.168.2.213:8000/v1"
 # QUERY_LLM_REMOTE_MODEL = "nvidia/Qwen3.6-35B-A3B-NVFP4"
 QUERY_LLM_REMOTE_MODEL = "nvidia/Qwen3.8-27B-NVFP4"
 QUERY_LLM_REMOTE_API_KEY = "EMPTY"
-QUERY_LLM_REQUEST_TIMEOUT = 30.0
+QUERY_LLM_REQUEST_TIMEOUT = 180.0
 QUERY_LLM_TEMPERATURE = 0.0
+QUERY_LLM_MAX_TOKENS = 1400
 QUERY_CACHE_SIZE = 1024
 
 RERANKER_REMOTE_BASE_URL = "http://192.168.2.213:8001"
@@ -119,7 +120,7 @@ TOKEN_COUNT_CACHE_SIZE = 4096
 PATENT_VIEW_URL_TEMPLATE = "https://www.qubeip.com/en/patent-view/{patent_id}"
 
 # Phase 2 Retrieval configuration
-RETRIEVAL_TOP_K_PER_VIEW = 100
+RETRIEVAL_TOP_K_PER_VIEW = 500  
 PATENT_CANDIDATE_TOP_K = 300
 
 # Phase 4 Bounded Evidence Retrieval configuration
@@ -140,6 +141,16 @@ VERIFICATION_LLM_TIMEOUT = 30.0
 # relevant patents are being excluded.
 VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD = 0.35
 VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD = 0.35
+# The deterministic span-proximity check (do subject/object words appear near
+# each other in the text?) and the bag-of-words token-overlap heuristic are
+# both blind to semantic role - "water" appearing anywhere within 40 words of
+# "storage" in a long chunk (e.g. an unrelated "water level" sensor mention on
+# an LNG tank) used to be enough to mark "storage stores water" SUPPORTED even
+# when the cross-encoder found ~0 real relevance. This floor requires at least
+# this much genuine cross-encoder support before proximity/overlap can push a
+# relationship or requirement over the line - they may boost a score that
+# already shows real relevance, but can no longer manufacture one from nothing.
+VERIFICATION_MIN_EVIDENCE_SCORE = 0.15
 
 # Phase 7 Final Patent Scoring & Result Selection configuration
 # Minimum final patent score required for a patent to appear in final results (0.0 to 10.0 scale).

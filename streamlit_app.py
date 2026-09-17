@@ -11,7 +11,6 @@ Phase 7: Final Patent Scoring & Result Selection
 
 import json
 import textwrap
-import time
 from typing import Any, Dict, List, Optional
 import streamlit as st
 
@@ -36,7 +35,6 @@ from app.config import (
     RERANKER_REMOTE_BASE_URL,
     RERANKER_REMOTE_MODEL,
     RETRIEVAL_TOP_K_PER_VIEW,
-    VERIFICATION_MAX_CANDIDATES,
 )
 from app.models.candidate import (
     CandidateChunk,
@@ -69,11 +67,9 @@ from app.models.verification import (
 from app.query_understanding.engine import QueryUnderstandingEngine
 from app.reranking.reranker import BGEReranker
 from app.retrieval.evidence_retriever import EvidenceRetriever
-from app.retrieval.metadata_filter import filter_candidates
 from app.retrieval.retriever import CandidateRetriever
 from app.scoring.scorer import FinalScorer
-from app.verification.verifier import RelationshipVerifier
-from app.retrieval.retriever import CandidateRetriever
+from app.semantic_search import SearchPipeline
 from app.verification.verifier import RelationshipVerifier
 
 
@@ -660,10 +656,9 @@ def render_phase4(evidence_result: Optional[EvidenceRetrievalResult]) -> None:
                 st.code(evidence_result.evidence_query_text, language="text")
 
         # Evidence Chunks Showcase per Patent Candidate
-        # Capped to keep this phase's render fast — only the first
-        # VERIFICATION_MAX_CANDIDATES patents make it into Phase 5 anyway,
-        # so showing the full (potentially hundreds-long) filtered list here
-        # would block the rest of the pipeline behind a huge HTML render.
+        # Capped to keep this phase's render fast - Phase 5 now verifies
+        # every surviving candidate (no cap), so the filtered list here can
+        # be long; rendering all of it as expanders would block the UI.
         EVIDENCE_DISPLAY_CAP = 25
         if not evidence_result.patent_evidence_list:
             st.warning("⚠️ No evidence chunks retrieved for the qualified candidate patents.")
@@ -822,15 +817,24 @@ def render_phase5(verification_result: Optional[VerificationBatchResult]) -> Non
             )
 
         # Verified Candidates Showcase
+        # Rendering a detailed HTML card per candidate is slow in Streamlit
+        # at scale - Phase 5 now verifies every surviving candidate (no
+        # cap), so cap how many get a full card here the same way Phase 4
+        # already does; the full data is still in the raw JSON below.
+        VERIFICATION_DISPLAY_CAP = 25
         if not verification_result.verified_patents:
             st.warning("⚠️ No candidates were evaluated during Phase 5 verification.")
         else:
+            display_list = verification_result.verified_patents[:VERIFICATION_DISPLAY_CAP]
+            remaining = len(verification_result.verified_patents) - len(display_list)
             st.markdown("---")
             with st.expander(
-                f"🔽 Top {len(verification_result.verified_patents)} Verified Candidate Patents & Relationship Proof (Click to View/Collapse)",
+                f"🔽 Top {len(display_list)} of {len(verification_result.verified_patents)} Verified Candidate Patents & Relationship Proof (Click to View/Collapse)",
                 expanded=False,
             ):
-                for idx, vpat in enumerate(verification_result.verified_patents):
+                if remaining > 0:
+                    st.caption(f"Showing the top {len(display_list)} candidates for display speed. {remaining} more are in the raw JSON data below.")
+                for idx, vpat in enumerate(display_list):
                     meta = vpat.metadata or {}
                     title = meta.get("Title-english") or meta.get("Title") or "Title not available"
                     assignee_list = meta.get("Current Assignee Standardized") or meta.get("Applicant First Organization") or []
@@ -1028,16 +1032,23 @@ def render_phase6(rerank_result: Optional[RerankBatchResult]) -> None:
             with st.expander("👁️ View Deterministic Reranking Query (Semantic Query + Relationships + Requirements)", expanded=False):
                 st.code(rerank_result.reranking_query, language="text")
 
-        # Reranked Candidates Showcase
+        # Reranked Candidates Showcase - capped for the same reason as
+        # Phase 5's display: rendering a full HTML card per candidate is
+        # slow at 300 candidates; the full data is still in the raw JSON.
+        RERANK_DISPLAY_CAP = 25
         if not rerank_result.reranked_patents:
             st.warning("⚠️ No candidate patents were scored in Phase 6.")
         else:
+            display_list = rerank_result.reranked_patents[:RERANK_DISPLAY_CAP]
+            remaining = len(rerank_result.reranked_patents) - len(display_list)
             st.markdown("---")
             with st.expander(
-                f"🔽 Top {len(rerank_result.reranked_patents)} Candidate Patents & BGE Cross-Encoder Scored Evidence (Click to View/Collapse)",
+                f"🔽 Top {len(display_list)} of {len(rerank_result.reranked_patents)} Candidate Patents & BGE Cross-Encoder Scored Evidence (Click to View/Collapse)",
                 expanded=False,
             ):
-                for idx, rpat in enumerate(rerank_result.reranked_patents):
+                if remaining > 0:
+                    st.caption(f"Showing the top {len(display_list)} candidates for display speed. {remaining} more are in the raw JSON data below.")
+                for idx, rpat in enumerate(display_list):
                     meta = rpat.metadata or {}
                     title = meta.get("Title-english") or meta.get("Title") or "Title not available"
                     assignee_list = meta.get("Current Assignee Standardized") or meta.get("Applicant First Organization") or []
@@ -1330,7 +1341,9 @@ def render_phase7(final_result: Optional[FinalSearchResult]) -> None:
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def get_engine() -> QueryUnderstandingEngine:
-    return QueryUnderstandingEngine()
+    engine = QueryUnderstandingEngine()
+    engine.warm_up()
+    return engine
 
 @st.cache_resource
 def get_retriever() -> CandidateRetriever:
@@ -1359,6 +1372,19 @@ verifier = get_verifier()
 reranker = get_reranker()
 scorer = get_scorer()
 
+@st.cache_resource
+def get_pipeline() -> SearchPipeline:
+    return SearchPipeline(
+        engine=get_engine(),
+        retriever=get_retriever(),
+        evidence_retriever=get_evidence_retriever(),
+        verifier=get_verifier(),
+        reranker=get_reranker(),
+        scorer=get_scorer(),
+    )
+
+pipeline = get_pipeline()
+
 # -----------------------------------------------------------------------------
 # Sidebar: Settings & Cache Management
 # -----------------------------------------------------------------------------
@@ -1374,7 +1400,7 @@ with st.sidebar:
     st.caption(f"**Candidate Limit:** `{PATENT_CANDIDATE_TOP_K}`")
     st.caption(f"**Evidence / Patent:** `{EVIDENCE_CHUNKS_PER_PATENT}`")
     st.caption(f"**Neighbor Radius:** `±{EVIDENCE_NEIGHBOR_CHUNKS}`")
-    st.caption(f"**Verification Limit:** `{VERIFICATION_MAX_CANDIDATES}`")
+    st.caption("**Verification Limit:** `none (all surviving candidates)`")
     st.caption(f"**Rerank Batch Size:** `{RERANK_BATCH_SIZE}`")
     st.caption(f"**Rerank Max Tokens:** `{RERANKER_MAX_CONTEXT_TOKENS}`")
 
@@ -1470,113 +1496,104 @@ if analyze_clicked:
     if not clean_q:
         st.warning("Please enter a search query.")
     else:
+        # Reset downstream phases so a stale result from the previous run
+        # never lingers under a phase that hasn't executed yet this run.
+        st.session_state["last_query"] = clean_q
+        st.session_state["last_parsed_query"] = None
+        st.session_state["last_phase1_timings"] = None
+        st.session_state["last_retrieval_result"] = None
+        st.session_state["last_filtered_result"] = None
+        st.session_state["last_evidence_result"] = None
+        st.session_state["last_verification_result"] = None
+        st.session_state["last_rerank_result"] = None
+        st.session_state["last_final_result"] = None
+
+        was_cached = engine.cache.get(clean_q) is not None if use_cache else False
+
         # A single persistent status container spans the whole pipeline run:
         # its spinner icon stays visible through every phase (including the
         # time spent rendering each phase's UI, not just its computation) and
         # only flips to a checkmark once Phase 7's final result is in — so
         # there is never a gap where it looks like nothing is happening.
         with st.status("🚀 Running Search Pipeline: Stage 1 / 7 — Query Understanding...", expanded=True) as pipeline_status:
-            # Phase 1: Query Understanding
-            was_cached = engine.cache.get(clean_q) is not None if use_cache else False
-            t1_start = time.perf_counter()
-            parsed_query = engine.parse(clean_q, use_cache=use_cache)
-            t1_total_ms = (time.perf_counter() - t1_start) * 1000
 
-            if was_cached:
-                llm_ms = 0.0
-                norm_ms = t1_total_ms
-                status_text = "⚡ CACHE HIT"
-                status_color = "#10b981"
-            else:
-                norm_ms = 0.005
-                llm_ms = max(0.0, t1_total_ms - norm_ms)
-                status_text = "❄️ COLD (1 LLM Call)"
-                status_color = "#06b6d4"
-
-            p1_timings = {
-                "total_ms": t1_total_ms,
-                "llm_ms": llm_ms,
-                "norm_ms": norm_ms,
-                "status_text": status_text,
-                "status_color": status_color,
+            STAGE_LABELS = {
+                1: "Query Understanding",
+                2: "Candidate Vector Retrieval",
+                3: "Metadata Filtering",
+                4: "Bounded Evidence Retrieval",
+                5: "Semantic Relationship Verification",
+                6: "BGE Cross-Encoder Reranking",
+                7: "Final Patent Scoring",
             }
 
-            st.session_state["last_query"] = clean_q
-            st.session_state["last_parsed_query"] = parsed_query
-            st.session_state["last_phase1_timings"] = p1_timings
-            # Reset downstream phases so a stale result from the previous run
-            # never lingers under a phase that hasn't executed yet this run.
-            st.session_state["last_retrieval_result"] = None
-            st.session_state["last_filtered_result"] = None
-            st.session_state["last_evidence_result"] = None
-            st.session_state["last_verification_result"] = None
-            st.session_state["last_rerank_result"] = None
-            st.session_state["last_final_result"] = None
+            def on_phase_complete(phase_num: int, phase_name: str, result: object, elapsed_ms: float) -> None:
+                """Render each phase's result the moment it's ready, and
+                advance the status label to the next stage."""
+                if phase_num == 1:
+                    parsed_query = result
+                    if was_cached:
+                        llm_ms = 0.0
+                        norm_ms = elapsed_ms
+                        status_text = "⚡ CACHE HIT"
+                        status_color = "#10b981"
+                    else:
+                        norm_ms = 0.005
+                        llm_ms = max(0.0, elapsed_ms - norm_ms)
+                        status_text = "❄️ COLD (1 LLM Call)"
+                        status_color = "#06b6d4"
 
-            render_phase1(parsed_query, p1_timings)
-            st.markdown("---")
+                    p1_timings = {
+                        "total_ms": elapsed_ms,
+                        "llm_ms": llm_ms,
+                        "norm_ms": norm_ms,
+                        "status_text": status_text,
+                        "status_color": status_color,
+                    }
+                    st.session_state["last_parsed_query"] = parsed_query
+                    st.session_state["last_phase1_timings"] = p1_timings
+                    render_phase1(parsed_query, p1_timings)
 
-            # Phase 2: Dynamic Candidate Retrieval (Vector Search)
-            pipeline_status.update(label="🚀 Running Search Pipeline: Stage 2 / 7 — Candidate Vector Retrieval...")
-            retrieval_result = retriever.retrieve_candidates(parsed_query)
-            st.session_state["last_retrieval_result"] = retrieval_result
-            render_phase2(retrieval_result, retrieval_result.timings)
-            st.markdown("---")
+                elif phase_num == 2:
+                    st.session_state["last_retrieval_result"] = result
+                    render_phase2(result, result.timings)
 
-            # Phase 3: Metadata Filtering & Constraint Enforcement
-            pipeline_status.update(label="🚀 Running Search Pipeline: Stage 3 / 7 — Metadata Filtering...")
-            filtered_result = filter_candidates(
-                candidates=retrieval_result.candidates,
-                metadata_filters=parsed_query.metadata_filters,
-                is_metadata_only=parsed_query.is_metadata_only,
-            )
-            st.session_state["last_filtered_result"] = filtered_result
-            render_phase3(filtered_result)
-            st.markdown("---")
+                elif phase_num == 3:
+                    st.session_state["last_filtered_result"] = result
+                    render_phase3(result)
 
-            # Phase 4: Bounded Evidence Retrieval
-            pipeline_status.update(label="🚀 Running Search Pipeline: Stage 4 / 7 — Bounded Evidence Retrieval...")
-            evidence_result = evidence_retriever.retrieve_evidence(
-                parsed_query=parsed_query,
-                candidates=filtered_result.candidates,
-            )
-            st.session_state["last_evidence_result"] = evidence_result
-            render_phase4(evidence_result)
-            st.markdown("---")
+                elif phase_num == 4:
+                    st.session_state["last_evidence_result"] = result
+                    render_phase4(result)
 
-            # Phase 5: Semantic Relationship Verification (Fast Cross-Encoder & Proximity)
-            pipeline_status.update(label="🚀 Running Search Pipeline: Stage 5 / 7 — Semantic Relationship Verification...")
-            verification_result = verifier.verify_candidates(
-                parsed_query=parsed_query,
-                evidence_result=evidence_result,
-            )
-            st.session_state["last_verification_result"] = verification_result
-            render_phase5(verification_result)
-            st.markdown("---")
+                elif phase_num == 5:
+                    st.session_state["last_verification_result"] = result
+                    render_phase5(result)
 
-            # Phase 6: BGE Cross-Encoder Reranking
-            pipeline_status.update(label="🚀 Running Search Pipeline: Stage 6 / 7 — BGE Cross-Encoder Reranking...")
-            rerank_result = reranker.rerank_candidates(
-                parsed_query=parsed_query,
-                verification_result=verification_result,
-                evidence_result=evidence_result,
-            )
-            st.session_state["last_rerank_result"] = rerank_result
-            render_phase6(rerank_result)
-            st.markdown("---")
+                elif phase_num == 6:
+                    st.session_state["last_rerank_result"] = result
+                    render_phase6(result)
 
-            # Phase 7: Final Patent Scoring & Result Selection
-            pipeline_status.update(label="🚀 Running Search Pipeline: Stage 7 / 7 — Final Patent Scoring...")
-            final_result = scorer.score_and_rank(rerank_batch=rerank_result)
-            st.session_state["last_final_result"] = final_result
-            render_phase7(final_result)
+                elif phase_num == 7:
+                    st.session_state["last_final_result"] = result
+                    render_phase7(result)
+                    # Only now does the loader stop — final result is ready.
+                    pipeline_status.update(
+                        label=f"✅ Search Pipeline Complete — {len(result.results)} qualifying patent(s) found.",
+                        state="complete",
+                        expanded=True,
+                    )
+                    return
 
-            # Only now does the loader stop — final result is ready.
-            pipeline_status.update(
-                label=f"✅ Search Pipeline Complete — {len(final_result.results)} qualifying patent(s) found.",
-                state="complete",
-                expanded=True,
-            )
+                st.markdown("---")
+                next_num = phase_num + 1
+                pipeline_status.update(
+                    label=f"🚀 Running Search Pipeline: Stage {next_num} / 7 — {STAGE_LABELS[next_num]}..."
+                )
+
+            # One call runs Phase 1 through Phase 7 in order internally,
+            # threading each phase's output into the next.
+            pipeline.run(clean_q, use_cache=use_cache, on_phase_complete=on_phase_complete)
 
 elif st.session_state.get("last_parsed_query") is not None:
     # Re-render the previous run's results on reruns that aren't a new
