@@ -38,6 +38,10 @@ class Embedder:
         self.max_workers = EMBED_CONCURRENT_REQUESTS
         self._init_remote()
 
+    def close(self) -> None:
+        """Release the underlying HTTP session's connections."""
+        self.session.close()
+
     # ==============================================================
     # Initialisation helpers
     # ==============================================================
@@ -85,18 +89,27 @@ class Embedder:
     # Remote API call
     # ==============================================================
 
-    def _request_embeddings(self, texts: list[str]) -> list[list[float]]:
+    def _request_embeddings(
+        self, texts: list[str], batch_label: str = "1/1"
+    ) -> list[list[float]]:
         """
         Encode a batch of texts and return one vector per text,
         index-aligned with the input.
         """
-        return self._encode_remote(texts)
+        return self._encode_remote(texts, batch_label)
 
-    def _encode_remote(self, texts: list[str]) -> list[list[float]]:
+    def _encode_remote(
+        self, texts: list[str], batch_label: str = "1/1"
+    ) -> list[list[float]]:
         """
         Send a batch of texts to the remote /embeddings endpoint and
         return one vector per text, index-aligned with the input.
         """
+
+        print(
+            f"[Embedder] Request {batch_label} -> {self.base_url}/embeddings"
+            f" ({len(texts)} texts)"
+        )
 
         response = self.session.post(
             f"{self.base_url}/embeddings",
@@ -107,6 +120,8 @@ class Embedder:
             timeout=EMBEDDING_REQUEST_TIMEOUT,
         )
         response.raise_for_status()
+
+        print(f"[Embedder] Request {batch_label} <- HTTP {response.status_code}")
 
         data = response.json()["data"]
         # The OpenAI API returns objects with an "index" field; sort by
@@ -130,6 +145,7 @@ class Embedder:
         self,
         chunks: list[PatentChunk],
         on_progress=None,
+        label: str | None = None,
     ) -> list[PatentChunk]:
         """
         Generate embeddings for many PatentChunks.
@@ -144,6 +160,12 @@ class Embedder:
         futures complete (possibly out of submission order), but every
         vector is assigned to the correct chunk regardless.
 
+        *label*, if given, identifies this call in the request log
+        (e.g. a caller-assigned window number) instead of the default
+        "i/N" split label - useful when the caller already guarantees
+        each call is a single window, so "i/N" would always read "1/1"
+        and give no sense of progress across calls.
+
         Vectors are assigned back onto the chunks in place; the same
         list is returned for convenience.
         """
@@ -156,9 +178,17 @@ class Embedder:
             for i in range(0, len(chunks), EMBED_BATCH_SIZE)
         ]
 
+        def _label(i: int) -> str:
+            if label is None:
+                return f"{i + 1}/{len(windows)}"
+            if len(windows) == 1:
+                return label
+            return f"{label}.{i + 1}/{len(windows)}"
+
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             futures = {
-                pool.submit(self._encode_into, window): window for window in windows
+                pool.submit(self._encode_into, window, _label(i)): window
+                for i, window in enumerate(windows)
             }
 
             for future in as_completed(futures):
@@ -168,11 +198,11 @@ class Embedder:
 
         return chunks
 
-    def _encode_into(self, chunks: list[PatentChunk]) -> None:
+    def _encode_into(self, chunks: list[PatentChunk], batch_label: str = "1/1") -> None:
         """Encode *chunks* and assign each vector back."""
 
         texts = [chunk.text for chunk in chunks]
-        vectors = self._request_embeddings(texts)
+        vectors = self._request_embeddings(texts, batch_label)
 
         for chunk, vector in zip(chunks, vectors):
             chunk.vector = vector

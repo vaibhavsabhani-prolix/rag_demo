@@ -1,18 +1,61 @@
+"""
+Concurrent Patent Ingestion
+
+Five stages, each with its own worker pool, connected by bounded
+queues so a slow stage backs up the one feeding it instead of one
+stage's I/O stalling another:
+
+    parallel parsing/chunking workers   parse + chunk patent files
+        -> parsed_queue (patent-level, one entry per patent)
+    chunk dispatcher (main thread)      buffers raw chunks. The first
+                                        CHUNK_QUEUE_CAPACITY chunks
+                                        accumulate before any embedding
+                                        window is cut, so the first
+                                        round of requests goes out
+                                        against a full backlog instead
+                                        of dribbling out while parsing
+                                        is still warming up. After
+                                        that, one window is cut every
+                                        time >= EMBED_BATCH_SIZE chunks
+                                        are buffered.
+        -> embed_task_queue
+    EMBED_CONCURRENT_REQUESTS           long-lived pool: each worker
+    embedding workers                   embeds one window, then loops
+                                        straight back for the next
+                                        ready one - no batch boundary
+                                        to wait out.
+        -> vector_queue
+    vector dispatcher (thread)          buffers embedded windows; once
+                                        BATCH_SIZE chunks are on hand,
+                                        cuts an insertion batch.
+        -> insertion_task_queue
+    INSERT_WORKERS                      each upserts one batch (chunk
+    insert workers                      vectors + patent metadata) to
+                                        Qdrant and checkpoints the
+                                        patents it just committed.
+
+Concurrency is controlled by four config values: CHUNK_QUEUE_CAPACITY,
+EMBED_BATCH_SIZE, EMBED_CONCURRENT_REQUESTS and INSERT_WORKERS - all in
+app/config.py.
+"""
+
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from queue import Queue
-from threading import Thread
+from threading import Lock, Thread
 
 from app.chunker import PatentChunker
 from app.config import (
     BATCH_SIZE,
+    CHUNK_QUEUE_CAPACITY,
     EMBED_BATCH_SIZE,
+    EMBED_CONCURRENT_REQUESTS,
     INGEST_PREFETCH,
     INGEST_PROGRESS_FILE,
     INSERT_REPORT_EVERY,
-    METADATA_BATCH_SIZE,
+    INSERT_WORKERS,
     PATENT_DIRECTORY,
 )
 from app.embedder import Embedder
@@ -20,410 +63,447 @@ from app.parser import PatentParser
 from app.progress import IngestProgress
 from app.qdrant_db import QdrantDB
 
-# Sentinels pushed onto the prefetch/write queues to mark end-of-input.
 _DONE = object()
-_WRITE_DONE = object()
+_EMBED_DONE = object()
+_INSERT_DONE = object()
 
-# How many completed batches may be waiting on the writer thread at
-# once: one uploading plus one queued behind it. This decouples
-# embedding from the write's HTTP round trip without letting embedded
-# chunks pile up in memory without limit if Qdrant falls behind.
-_WRITE_QUEUE_DEPTH = 2
+# Windows waiting on an embed worker, sized off the same
+# CHUNK_QUEUE_CAPACITY the chunk dispatcher primes against, so the
+# first priming flush (CHUNK_QUEUE_CAPACITY / EMBED_BATCH_SIZE windows)
+# always fits without blocking on a worker completing first.
+_EMBED_QUEUE_DEPTH = max(EMBED_CONCURRENT_REQUESTS, CHUNK_QUEUE_CAPACITY // EMBED_BATCH_SIZE)
+
+# Insertion batches waiting on an insert worker, mirroring the embed
+# queue's headroom on the write side.
+_INSERT_QUEUE_DEPTH = INSERT_WORKERS * 2
 
 
-def _prefetch_documents(txt_files, queue: Queue, on_progress=None):
+def _scan_patent_files(directory: str) -> list[Path]:
+    """List every *.txt patent file in *directory* using a directory scanner."""
+
+    with os.scandir(directory) as entries:
+        return sorted(
+            Path(entry.path)
+            for entry in entries
+            if entry.is_file() and entry.name.endswith(".txt")
+        )
+
+
+def _load_completed_patents(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+
+    with path.open("r", encoding="utf-8") as file:
+        return {line.strip() for line in file if line.strip()}
+
+
+def _prefetch_documents(txt_files, parsed_queue: Queue, on_progress=None):
     """
-    Parse and chunk patents ahead of the embedder, using a ThreadPoolExecutor
-    across 16 parallel threads to utilize all CPU cores.
-
-    Produces (txt_file, document, chunks, error) tuples in the SAME
-    order as *txt_files*, so ingestion order and per-file error
-    reporting are identical to processing them inline.
-
-    A bounded queue keeps this from running away: the prefetcher blocks
-    once it is INGEST_PREFETCH patents ahead, so memory stays flat no
-    matter how large the directory is.
+    Parse and chunk patents on a pool of worker threads, pushing
+    (path, document, chunks, error) tuples onto *parsed_queue* as each
+    one finishes.
     """
 
     parser = PatentParser()
     chunker = PatentChunker()
 
-    def _process_one(txt_file):
+    def process_one(path):
         try:
-            document = parser.load_patent(txt_file)
+            document = parser.load_patent(path)
             chunks = chunker.split(document)
-            return (txt_file, document, chunks, None)
+            return path, document, chunks, None
         except Exception as exc:
-            return (txt_file, None, None, exc)
+            return path, None, None, exc
 
     workers = max(16, (os.cpu_count() or 4) * 2)
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for result in pool.map(_process_one, txt_files):
-            queue.put(result)
+        for result in pool.map(process_one, txt_files):
+            parsed_queue.put(result)
             if on_progress is not None:
                 on_progress(1)
 
-    queue.put(_DONE)
+    parsed_queue.put(_DONE)
 
 
-def _load_completed_patents(path: Path) -> set[str]:
+def _embed_worker(
+    embedder: Embedder,
+    embed_task_queue: Queue,
+    vector_queue: Queue,
+    progress: IngestProgress,
+    failures_lock: Lock,
+    failed_files: list,
+):
     """
-    Read the set of patent filenames already fully committed to Qdrant
-    from a previous run, so ingest_directory() can skip them.
-
-    Missing file means nothing has ever been checkpointed - a fresh
-    directory, not an error.
+    Pull the next ready embedding window and embed it, forever, until
+    told to stop via _EMBED_DONE. A fixed pool of these run against the
+    same queue for the whole run, so the moment one finishes it is
+    straight back at queue.get() for whatever window is next.
     """
 
-    if not path.exists():
-        return set()
+    while True:
+        job = embed_task_queue.get()
 
-    with path.open("r", encoding="utf-8") as f:
-        return {line.strip() for line in f if line.strip()}
+        if job is _EMBED_DONE:
+            return
+
+        window_chunks, window_metadata, window_patents, window_number = job
+
+        try:
+            embedder.embed_batch(
+                window_chunks,
+                on_progress=progress.advance_embedding,
+                label=f"window {window_number}",
+            )
+        except Exception as exc:
+            progress.report(f"Embedding failure: {exc}")
+
+            with failures_lock:
+                for _patent_id, _count, filename in window_patents:
+                    failed_files.append(filename)
+
+            continue
+
+        vector_queue.put((window_metadata, window_chunks, window_patents))
+
+
+class _VectorDispatcher:
+    """
+    Buffers embedded windows as embed workers finish them and cuts an
+    insertion batch every time BATCH_SIZE chunks are on hand.
+
+    Runs on a single thread so the buffer never needs a lock: only
+    this dispatcher ever touches it, the same way the chunk dispatcher
+    below owns the pre-embedding buffer.
+    """
+
+    def __init__(self, vector_queue: Queue, insertion_task_queue: Queue):
+        self.vector_queue = vector_queue
+        self.insertion_task_queue = insertion_task_queue
+
+        self._metadata_buffer = []
+        self._chunk_buffer = []
+        self._pending_buffer = []
+
+    def _submit(self, wait: bool):
+        if not self._metadata_buffer and not self._chunk_buffer:
+            return
+
+        self.insertion_task_queue.put(
+            (self._metadata_buffer, self._chunk_buffer, self._pending_buffer, wait)
+        )
+        self._metadata_buffer = []
+        self._chunk_buffer = []
+        self._pending_buffer = []
+
+    def run(self):
+        while True:
+            job = self.vector_queue.get()
+
+            if job is _DONE:
+                # Final partial batch, written with wait=True so the
+                # caller can trust the counts once this returns.
+                self._submit(wait=True)
+                return
+
+            metadata, chunks, pending_patents = job
+            self._metadata_buffer.extend(metadata)
+            self._chunk_buffer.extend(chunks)
+            self._pending_buffer.extend(pending_patents)
+
+            if len(self._chunk_buffer) >= BATCH_SIZE:
+                self._submit(wait=False)
+
+
+class _InsertStats:
+    """Counters shared across the parallel insert workers, behind a lock."""
+
+    def __init__(self):
+        self._lock = Lock()
+        self.total_inserted = 0
+        self.write_failures = []
+        self._next_report = INSERT_REPORT_EVERY
+
+    def record_inserted(self, count: int, progress: IngestProgress):
+        with self._lock:
+            self.total_inserted += count
+            progress.advance_inserting(count)
+
+            due = self.total_inserted >= self._next_report
+            if due:
+                self._next_report = self.total_inserted + INSERT_REPORT_EVERY
+                total = self.total_inserted
+
+        if due:
+            progress.report(f"inserting | total={total}")
+
+    def record_failure(self, patent_ids):
+        with self._lock:
+            self.write_failures.extend(patent_ids)
+
+
+def _insert_worker(
+    db: QdrantDB,
+    insertion_task_queue: Queue,
+    stats: _InsertStats,
+    progress: IngestProgress,
+    progress_file,
+    progress_file_lock: Lock,
+):
+    """
+    Pull one assembled batch at a time and upsert it to Qdrant. A pool
+    of these run against the same queue, so a slow upsert only blocks
+    the worker handling it, not the batches queued behind it.
+    """
+
+    while True:
+        job = insertion_task_queue.get()
+
+        if job is _INSERT_DONE:
+            return
+
+        metadata, chunks, pending_patents, wait = job
+
+        if not metadata and not chunks:
+            continue
+
+        try:
+            if metadata:
+                db.upsert_patent_metadata_batch(metadata, wait=wait)
+
+            if chunks:
+                db.insert_batch(
+                    chunks,
+                    batch_size=BATCH_SIZE,
+                    on_progress=lambda n: stats.record_inserted(n, progress),
+                    wait=wait,
+                )
+
+            with progress_file_lock:
+                for patent_id, count, filename in pending_patents:
+                    progress.report(
+                        f"{patent_id:<20} | embedded={count:>4} | inserted={count:>4}"
+                    )
+                    progress_file.write(filename + "\n")
+                    progress.advance_completed()
+                progress_file.flush()
+
+        except Exception as exc:
+            progress.report(f"Write failure: {exc}")
+            stats.record_failure(patent_id for patent_id, _, _ in pending_patents)
 
 
 def ingest_directory(directory: str):
-
     embedder = Embedder()
     db = QdrantDB()
     db.create_collections()
 
-    all_txt_files = sorted(Path(directory).glob("*.txt"))
-
+    all_files = _scan_patent_files(directory)
     progress_path = Path(INGEST_PROGRESS_FILE)
-    completed_patents = _load_completed_patents(progress_path)
+    completed = _load_completed_patents(progress_path)
+    txt_files = [path for path in all_files if path.name not in completed]
 
-    txt_files = [f for f in all_txt_files if f.name not in completed_patents]
-    skipped = len(all_txt_files) - len(txt_files)
+    print(f"Found {len(txt_files)} file(s) to process.")
+    print(f"Skipped {len(all_files) - len(txt_files)} completed file(s).")
 
-    if skipped:
-        print(f"\nResuming: {skipped} patent(s) already completed, skipping.")
-
-    print(f"\nFound {len(txt_files)} patent file(s) left to process.\n")
-    print("Starting ingestion: scanning/chunking and embedding concurrently...\n")
-
-    # Opened once and appended to as each batch is confirmed fully
-    # written (see flush() below), so a stopped or crashed run can be
-    # resumed by re-running the same command: the patents already
-    # recorded here are skipped on the next start instead of redone.
     progress_path.parent.mkdir(parents=True, exist_ok=True)
-    progress_file = open(progress_path, "a", encoding="utf-8")
+    progress_file = progress_path.open("a", encoding="utf-8")
+    progress_file_lock = Lock()
 
-    # Chunks waiting to be written, and the patents they belong to.
-    # Once a batch is handed to the writer thread (see below) these
-    # are replaced with fresh lists rather than cleared in place,
-    # since the writer may still be reading the ones just handed off.
-    batch = []
-    pending_patents = []
+    progress = IngestProgress(total_files=len(txt_files))
 
-    metadata_batch = []
+    parsed_queue: Queue = Queue(maxsize=INGEST_PREFETCH)
+    embed_task_queue: Queue = Queue(maxsize=_EMBED_QUEUE_DEPTH)
+    vector_queue: Queue = Queue()
+    insertion_task_queue: Queue = Queue(maxsize=_INSERT_QUEUE_DEPTH)
 
-    # Cross-patent embed pool: chunks from multiple patents are
-    # accumulated here until the pool reaches EMBED_BATCH_SIZE, then
-    # embedded in one call. This fills every GPU batch completely even
-    # when individual patents are small (5-50 chunks each), instead of
-    # sending half-empty requests per patent.
-    embed_pool = []
-    pool_patents = []  # (patent_id, chunk_count, filename) per pooled patent
+    failures_lock = Lock()
+    failed_files: list[str] = []
+    stats = _InsertStats()
+
+    # ---- Stage 5: parallel Qdrant insert workers ----
+    insert_workers = [
+        Thread(
+            target=_insert_worker,
+            args=(db, insertion_task_queue, stats, progress, progress_file, progress_file_lock),
+            daemon=True,
+        )
+        for _ in range(INSERT_WORKERS)
+    ]
+    for worker in insert_workers:
+        worker.start()
+
+    # ---- Stage 4: vector dispatcher (buffers embedded chunks into insertion batches) ----
+    vector_dispatcher = _VectorDispatcher(vector_queue, insertion_task_queue)
+    vector_thread = Thread(target=vector_dispatcher.run, daemon=True)
+    vector_thread.start()
+
+    # ---- Stage 3: parallel embedding workers ----
+    embed_workers = [
+        Thread(
+            target=_embed_worker,
+            args=(embedder, embed_task_queue, vector_queue, progress, failures_lock, failed_files),
+            daemon=True,
+        )
+        for _ in range(EMBED_CONCURRENT_REQUESTS)
+    ]
+    for worker in embed_workers:
+        worker.start()
+
+    # ---- Stage 1: parallel parsing/chunking workers ----
+    producer_thread = Thread(
+        target=_prefetch_documents,
+        args=(txt_files, parsed_queue, progress.advance_scanning),
+        daemon=True,
+    )
+    producer_thread.start()
+
+    # ---- Stage 2: chunk dispatcher (this thread) ----
+    # Raw chunks buffered ahead of the first embedding window. Not
+    # flushed at all until it reaches CHUNK_QUEUE_CAPACITY for the
+    # first time, so the first round of embedding requests goes out
+    # against a full backlog instead of a few half-empty ones while
+    # parsing is still ramping up.
+    #
+    # Windows are cut at exact EMBED_BATCH_SIZE offsets, not patent
+    # boundaries, so CHUNK_QUEUE_CAPACITY buffered chunks always yields
+    # exactly CHUNK_QUEUE_CAPACITY / EMBED_BATCH_SIZE clean windows (one
+    # HTTP request each) instead of oversized ones that
+    # embedder.embed_batch then has to re-split. A patent's chunks can
+    # end up split across two windows; buffer_owners tracks which
+    # patent each buffered chunk belongs to, and each patent_table
+    # entry's "remaining" counts down so a patent is only checkpointed
+    # once its LAST chunk has actually gone out, whichever window that
+    # lands in.
+    buffer_chunks = []
+    buffer_owners = []  # same length as buffer_chunks: index into patent_table
+    patent_table = []  # index -> {"patent_id", "metadata", "filename", "count", "remaining"}
+    primed = False
+
+    # Sequence number stamped on each window as it's cut, purely for
+    # the request log - so consecutive requests read "window 1",
+    # "window 2", ... instead of embed_batch's default "1/1" on every
+    # single one now that windows are always <= EMBED_BATCH_SIZE.
+    window_counter = 0
+
+    def submit_window():
+        """Cut exactly one EMBED_BATCH_SIZE window (or the final partial one) off the front of the buffer."""
+
+        nonlocal buffer_chunks, buffer_owners, window_counter
+
+        if not buffer_chunks:
+            return
+
+        n = min(EMBED_BATCH_SIZE, len(buffer_chunks))
+        window_chunks = buffer_chunks[:n]
+        window_owners = buffer_owners[:n]
+        buffer_chunks = buffer_chunks[n:]
+        buffer_owners = buffer_owners[n:]
+
+        window_metadata = []
+        window_patents = []
+        completed = set()
+
+        for owner in window_owners:
+            entry = patent_table[owner]
+            entry["remaining"] -= 1
+            if entry["remaining"] == 0 and owner not in completed:
+                completed.add(owner)
+                window_metadata.append((entry["patent_id"], entry["metadata"]))
+                window_patents.append(
+                    (entry["patent_id"], entry["count"], entry["filename"])
+                )
+
+        window_counter += 1
+
+        # Blocks only once every embed worker already has a window
+        # queued - the backpressure that keeps memory flat.
+        embed_task_queue.put(
+            (window_chunks, window_metadata, window_patents, window_counter)
+        )
 
     total_patents = 0
     total_chunks = 0
-    total_inserted = 0
-    failed_patents = 0
-    failed_files = []
-
-    # Patents that embedded fine but whose batch write was rejected.
-    # Kept apart from failed_files: those failed before producing
-    # anything, these produced chunks that simply never landed.
-    write_failures = []
-
     start_time = time.time()
 
-    # Bounded hand-off queue: parse/chunk runs ahead of embedding by at
-    # most INGEST_PREFETCH patents.
-    queue: Queue = Queue(maxsize=INGEST_PREFETCH)
-
-    # ---- Progress display (all bars managed by IngestProgress) ----
-    ip = IngestProgress(total_files=len(txt_files))
-
-    producer = Thread(
-        target=_prefetch_documents,
-        args=(txt_files, queue, lambda n: ip.advance_scanning(n)),
-        daemon=True,
-    )
-    producer.start()
-
-    # Bounded hand-off to the writer thread, mirroring the prefetch
-    # queue above but on the output side: the main loop keeps
-    # embedding the next patent while a previous batch uploads to
-    # Qdrant on this separate thread instead of blocking on it.
-    write_queue: Queue = Queue(maxsize=_WRITE_QUEUE_DEPTH)
-
-    def flush(metadata_batch, batch, pending_patents, wait: bool = False):
-        """
-        Write one already-assembled batch of metadata + chunks to
-        Qdrant, then report per patent.
-
-        Runs on the writer thread only - the main loop hands off a
-        batch and immediately starts a fresh one rather than calling
-        this directly, so embedding the next patent and writing the
-        previous one happen at the same time instead of one blocking
-        the other.
-
-        The error is reported and swallowed for the same reason as
-        before: the patents in this batch are lost either way, and the
-        run has no reason to stop writing the ones that follow.
-        """
-
-        nonlocal total_inserted
-
-        write_error = None
-
-        pending_chunks = len(batch)
-        pending_metadata = len(metadata_batch)
-
-        if pending_chunks or pending_metadata:
-            ip.report(
-                f"{'writing to qdrant':<20} | {pending_chunks:>5} chunks"
-                f" | {pending_metadata:>4} patent metadata"
-            )
-
-        # Chunks written so far in THIS flush, and the run-wide count
-        # at which the next live line is due. The threshold is carried
-        # across flushes rather than reset per flush: a flush is
-        # usually only one or two Qdrant requests, so a per-flush
-        # counter never reached the reporting interval and the lines
-        # only ever showed up on the rare patent big enough to need
-        # thousands of writes on its own.
-        written = 0
-        next_report = total_inserted + INSERT_REPORT_EVERY
-
-        def on_written(done: int):
-            nonlocal written, next_report, total_inserted
-
-            written += done
-
-            # Counted here rather than from insert_batch's return
-            # value, so the running total moves while the write is
-            # still going - and so a batch that fails halfway still
-            # counts the requests that did land, instead of discarding
-            # them along with the ones that did not.
-            total_inserted += done
-
-            ip.advance_inserting(done)
-
-            if total_inserted >= next_report:
-                ip.report(
-                    f"{'inserting':<20} | {written:>6} /"
-                    f" {pending_chunks} chunks written"
-                    f" | running total {total_inserted}"
-                )
-
-                next_report = total_inserted + INSERT_REPORT_EVERY
-
-        try:
-            if metadata_batch:
-                db.upsert_patent_metadata_batch(metadata_batch, wait=wait)
-
-            if batch:
-                # Return value ignored: on_written already counted
-                # every point as its request landed.
-                db.insert_batch(
-                    batch,
-                    wait=wait,
-                    on_progress=on_written,
-                )
-
-        except Exception as exc:
-            write_error = exc
-
-        # Reported after the write, so a patent is only ever announced
-        # as inserted once its chunks have actually gone to Qdrant. A
-        # patent that produced no chunks still reports, as 0 / 0.
-        if write_error is None:
-            if pending_chunks:
-                ip.report(
-                    f"{'inserted':<20} | {pending_chunks:>6} chunks committed"
-                    f" to qdrant | running total {total_inserted}"
-                )
-
-            # Checkpointed only here, once metadata + chunks are both
-            # confirmed committed - never on a failed or partial write,
-            # so a resumed run always retries anything not fully done
-            # rather than treating a partial batch as complete.
-            for name, embedded_count, filename in pending_patents:
-                ip.report(
-                    f"{name:<20} | embedded {embedded_count:>4} chunks"
-                    f" | inserted {embedded_count:>4} chunks"
-                )
-
-                progress_file.write(filename + "\n")
-                ip.advance_completed()
-
-            progress_file.flush()
-        else:
-            ip.report(f"\nFailed to write batch: {write_error}")
-
-            for name, embedded_count, filename in pending_patents:
-                ip.report(
-                    f"{name:<20} | embedded {embedded_count:>4} chunks | NOT inserted"
-                )
-
-                write_failures.append(name)
-
-    def writer_loop():
-        """
-        Drain write_queue and flush each batch, one at a time.
-
-        A single consumer thread, so batches land at Qdrant in the
-        same order the main loop produced them, without needing a
-        lock around total_inserted/write_failures - only this thread
-        ever touches them.
-        """
-
+    with progress:
         while True:
-            job = write_queue.get()
-
-            if job is _WRITE_DONE:
-                break
-
-            flush(*job)
-
-    writer = Thread(target=writer_loop, daemon=True)
-    writer.start()
-
-    with ip:
-        while True:
-            item = queue.get()
-
+            item = parsed_queue.get()
             if item is _DONE:
                 break
 
-            txt_file, document, chunks, error = item
+            path, document, chunks, error = item
 
-            # Advanced in the finally block, once the patent is actually
-            # finished. Advancing on dequeue would report a patent as
-            # done before a single one of its chunks had been embedded.
-            try:
-                if error is not None:
-                    failed_patents += 1
-                    failed_files.append(txt_file.name)
+            if error is not None:
+                with failures_lock:
+                    failed_files.append(path.name)
+                progress.report(f"Failed: {path.name} | {error}")
+                continue
 
-                    ip.report(f"\nFailed : {txt_file.name}")
-                    ip.report(f"Reason : {error}")
-                    continue
+            count = len(chunks)
+            patent_id = document.patent_id
 
-                # Parsing and chunking already succeeded on the prefetch
-                # thread; this guards the embed/write half, so one bad
-                # patent still cannot abort the run.
-                try:
-                    chunk_count = len(chunks)
+            progress.advance_chunking(count)
+            progress.report(f"{patent_id:<20} | chunks={count:>4} | buffering")
 
-                    ip.report(
-                        f"{document.patent_id:<20} | split into"
-                        f" {chunk_count:>5} chunks - pooling"
-                    )
+            owner = len(patent_table)
+            patent_table.append(
+                {
+                    "patent_id": patent_id,
+                    "metadata": document.metadata,
+                    "filename": path.name,
+                    "count": count,
+                    "remaining": count,
+                }
+            )
+            buffer_chunks.extend(chunks)
+            buffer_owners.extend([owner] * count)
 
-                    # Advance the Chunking bar (also updates Embedding
-                    # and Inserting totals).
-                    ip.advance_chunking(chunk_count)
+            total_patents += 1
+            total_chunks += count
 
-                    # Metadata is buffered rather than written per
-                    # patent, but still written exactly once per patent,
-                    # before its chunks.
-                    metadata_batch.append((document.patent_id, document.metadata))
+            if not primed:
+                if len(buffer_chunks) >= CHUNK_QUEUE_CAPACITY:
+                    primed = True
+                    # Cut every full window out of the now-primed
+                    # buffer in one go, so all embed workers have work
+                    # waiting immediately instead of racing the
+                    # dispatcher one window at a time.
+                    while len(buffer_chunks) >= EMBED_BATCH_SIZE:
+                        submit_window()
+            else:
+                while len(buffer_chunks) >= EMBED_BATCH_SIZE:
+                    submit_window()
 
-                    # Pool chunks for cross-patent batching: small
-                    # patents (5-50 chunks) are accumulated so each GPU
-                    # request carries a full EMBED_BATCH_SIZE batch
-                    # instead of a mostly-empty one.
-                    embed_pool.extend(chunks)
-                    pool_patents.append(
-                        (document.patent_id, chunk_count, txt_file.name)
-                    )
-
-                    total_patents += 1
-                    total_chunks += chunk_count
-
-                    # Flush the pool once it has enough chunks to fill
-                    # at least one full GPU batch.
-                    if len(embed_pool) >= EMBED_BATCH_SIZE:
-                        embedder.embed_batch(
-                            embed_pool,
-                            on_progress=lambda done: ip.advance_embedding(done),
-                        )
-
-                        batch.extend(embed_pool)
-                        pending_patents.extend(pool_patents)
-                        embed_pool = []
-                        pool_patents = []
-
-                    if (
-                        len(batch) >= BATCH_SIZE
-                        or len(metadata_batch) >= METADATA_BATCH_SIZE
-                    ):
-                        # Hand the completed batch to the writer thread
-                        # and start fresh ones immediately, so the next
-                        # patent's chunks embed while this batch uploads
-                        # instead of waiting for it to finish.
-                        write_queue.put((metadata_batch, batch, pending_patents, False))
-                        batch = []
-                        pending_patents = []
-                        metadata_batch = []
-
-                except Exception as exc:
-                    # Embedding failure affects every patent in the pool.
-                    for pool_pid, pool_nc, pool_fn in pool_patents:
-                        failed_patents += 1
-                        failed_files.append(pool_fn)
-                        ip.report(f"\nFailed : {pool_fn}")
-
-                    ip.report(f"Reason : {exc}")
-                    embed_pool = []
-                    pool_patents = []
-                    continue
-
-            finally:
-                pass
-
-            # Print progress every 500 patents
             if total_patents % 500 == 0:
-                elapsed = time.time() - start_time
-
-                ip.report("\n" + "=" * 60)
-                ip.report(f"Processed Patents : {total_patents}/{len(txt_files)}")
-                ip.report(f"Chunks Indexed    : {total_chunks}")
-                ip.report(f"Failed Patents    : {failed_patents}")
-                ip.report(f"Elapsed Time      : {elapsed:.2f} seconds")
-                ip.report(
-                    f"Rate              : {total_patents / elapsed:.2f} patents/s"
+                elapsed = max(time.time() - start_time, 0.001)
+                progress.report(
+                    f"Processed={total_patents} | chunks={total_chunks} | "
+                    f"rate={total_patents / elapsed:.2f} patents/s"
                 )
-                ip.report("=" * 60)
 
-    producer.join()
+    producer_thread.join()
 
-    # Embed any remaining chunks left in the pool after the last patent
-    # was dequeued — the pool only flushes once it reaches
-    # EMBED_BATCH_SIZE, so the tail end of a run will always have a
-    # partial pool unless the total chunk count happens to be a multiple.
-    if embed_pool:
-        try:
-            embedder.embed_batch(embed_pool)
-            batch.extend(embed_pool)
-            pending_patents.extend(pool_patents)
-        except Exception as exc:
-            for pool_pid, pool_nc, pool_fn in pool_patents:
-                failed_patents += 1
-                failed_files.append(pool_fn)
-            print(f"\nFailed to embed final pool: {exc}")
+    # Whatever's left in the buffer, primed or not, still needs
+    # embedding - flush it out as however many windows it makes.
+    while buffer_chunks:
+        submit_window()
 
-    # Final batch, written with wait=True so the counts below reflect
-    # data Qdrant has actually committed, then shut the writer thread
-    # down behind it.
-    write_queue.put((metadata_batch, batch, pending_patents, True))
-    write_queue.put(_WRITE_DONE)
-    writer.join()
+    for _ in embed_workers:
+        embed_task_queue.put(_EMBED_DONE)
+    for worker in embed_workers:
+        worker.join()
 
+    # No more embedded windows are coming - let the vector dispatcher
+    # cut its final (possibly partial) batch and stop.
+    vector_queue.put(_DONE)
+    vector_thread.join()
+
+    for _ in insert_workers:
+        insertion_task_queue.put(_INSERT_DONE)
+    for worker in insert_workers:
+        worker.join()
+
+    embedder.close()
     progress_file.close()
 
     elapsed = time.time() - start_time
@@ -433,26 +513,21 @@ def ingest_directory(directory: str):
     print("=" * 60)
     print(f"Patents Indexed : {total_patents}")
     print(f"Chunks Indexed  : {total_chunks}")
-    print(f"Chunks Inserted : {total_inserted}")
-    print(f"Failed Patents  : {failed_patents}")
-    print(f"Write Failures  : {len(write_failures)}")
+    print(f"Chunks Inserted : {stats.total_inserted}")
+    print(f"Failed Patents  : {len(failed_files)}")
+    print(f"Write Failures  : {len(stats.write_failures)}")
     print(f"Elapsed Time    : {elapsed:.2f} seconds")
     print("=" * 60)
 
     if failed_files:
         print("\nFailed Files:")
+        for filename in failed_files:
+            print(f"- {filename}")
 
-        for file in failed_files:
-            print(f"- {file}")
-
-    # Distinct from the list above: these parsed, chunked and embedded
-    # successfully, and were lost at the write. Re-running them costs
-    # only the write, not the embedding, if the cause is fixed first.
-    if write_failures:
+    if stats.write_failures:
         print("\nEmbedded But Not Inserted:")
-
-        for name in write_failures:
-            print(f"- {name}")
+        for patent_id in stats.write_failures:
+            print(f"- {patent_id}")
 
 
 if __name__ == "__main__":

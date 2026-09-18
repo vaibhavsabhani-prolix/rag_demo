@@ -2,7 +2,7 @@ QDRANT_HOST = "localhost"
 QDRANT_PORT = 6333
 QDRANT_TIMEOUT = 120.0
 
-PATENT_DIRECTORY = "patents-processed"
+PATENT_DIRECTORY = "patents/1"
 
 CHUNKS_COLLECTION_NAME = "patent_chunks_4096"
 PATENTS_COLLECTION_NAME = "patents_metadata_4096"
@@ -74,7 +74,7 @@ EMBED_BATCH_SIZE = 256
 # batch #1 computes on the GPU, batches #2-#N are already in transit
 # over the network, hiding round-trip latency. 4 is a good default;
 # raise it for a high-latency link, lower it if the server is shared.
-EMBED_CONCURRENT_REQUESTS = 4
+EMBED_CONCURRENT_REQUESTS = 8
 
 # How many chunks to write between insert progress lines, counted
 # across the whole run rather than per batch. The progress bar covers
@@ -85,14 +85,24 @@ EMBED_CONCURRENT_REQUESTS = 4
 # per-patent ones.
 INSERT_REPORT_EVERY = 100
 
-# Patent metadata points written to Qdrant in one request during
-# ingestion. Without this each patent costs its own HTTP round trip.
-METADATA_BATCH_SIZE = 64
-
 # How many patents the ingest prefetcher parses and chunks ahead of the
 # embedder. Increasing this buffer keeps all CPU cores busy prefetching
 # documents while the remote GPU embeds.
 INGEST_PREFETCH = 512
+
+# Raw chunks held in ingest.py's pre-embedding buffer before the very
+# first embedding window is cut. 4096 == EMBED_BATCH_SIZE * 16, so the
+# first round of embedding requests goes out against a full backlog
+# (enough for every embed worker to have several windows queued)
+# instead of firing off a handful of half-empty requests while parsing
+# is still warming up. Only the first fill waits for this; every window
+# after that is cut as soon as EMBED_BATCH_SIZE chunks are available.
+CHUNK_QUEUE_CAPACITY = 4096
+
+# Parallel Qdrant insert workers draining ingest.py's insertion task
+# queue. Plural workers, rather than a single writer thread, so a slow
+# upsert doesn't stall every batch behind it.
+INSERT_WORKERS = 8
 
 # Append-only log of patent filenames fully committed to Qdrant
 # (metadata + every chunk). ingest_directory() reads it on startup to
@@ -132,8 +142,6 @@ EVIDENCE_GLOBAL_TOP_K_CHUNKS = 1000
 
 # Phase 5 Relationship Verification configuration
 VERIFICATION_MAX_CANDIDATES = 25
-VERIFICATION_CONCURRENT_REQUESTS = 6
-VERIFICATION_LLM_TIMEOUT = 30.0
 # Minimum cross-encoder relevance score required to mark a relationship/requirement as
 # SUPPORTED. Was 0.05, which is far too permissive for a BGE cross-encoder — near-zero
 # scores would still pass, letting patents that only share generic terms (e.g. "method",
@@ -143,16 +151,6 @@ VERIFICATION_LLM_TIMEOUT = 30.0
 # relevant patents are being excluded.
 VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD = 0.35
 VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD = 0.35
-# The deterministic span-proximity check (do subject/object words appear near
-# each other in the text?) and the bag-of-words token-overlap heuristic are
-# both blind to semantic role - "water" appearing anywhere within 40 words of
-# "storage" in a long chunk (e.g. an unrelated "water level" sensor mention on
-# an LNG tank) used to be enough to mark "storage stores water" SUPPORTED even
-# when the cross-encoder found ~0 real relevance. This floor requires at least
-# this much genuine cross-encoder support before proximity/overlap can push a
-# relationship or requirement over the line - they may boost a score that
-# already shows real relevance, but can no longer manufacture one from nothing.
-VERIFICATION_MIN_EVIDENCE_SCORE = 0.15
 
 # Phase 7 Final Patent Scoring & Result Selection configuration
 # Minimum final patent score required for a patent to appear in final results (0.0 to 10.0 scale).

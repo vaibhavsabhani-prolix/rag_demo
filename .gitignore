@@ -27,17 +27,8 @@ Thumbs.db
 qdrant_storage/
 
 # Large Patent Data
-patents-processed/
-us-patent/
+patents/
 data/
-new_patents/
-television/
-Book-cover-list/
-JP2025106030A/
-semiconductor/
-petroleum/
-bluetooth/
-transformer/
 
 
 # Jupyter

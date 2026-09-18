@@ -121,8 +121,8 @@ To prevent indexing low-quality vector noise into Qdrant, every chunk passes thr
 * **Batch Ingestion**:
   * `app/ingest.py` calls `QdrantDB.create_collections()` on startup (idempotent — no-ops if they already exist), so a fresh Qdrant instance gets both collections created automatically on first run; no manual setup step is required.
   * It then orchestrates ingestion of patent files from `PATENT_DIRECTORY` (`app/config.py`, currently `"television"`).
-  * Accumulates embedded chunks in batches of `BATCH_SIZE = 100` and upserts via `QdrantDB.insert_batch()`.
-  * Upserts patent metadata once per patent, buffered `METADATA_BATCH_SIZE` at a time via `QdrantDB.upsert_patent_metadata_batch()`.
+  * Accumulates embedded chunks in batches of `BATCH_SIZE = 512` and upserts via `QdrantDB.insert_batch()`.
+  * Upserts patent metadata alongside each chunk batch via `QdrantDB.upsert_patent_metadata_batch()`.
 * **Ingestion Throughput**: the stage order is parse → metadata → chunk → embed → insert, but the work is scheduled to keep the embedding model busy, since embedding dominates total ingest time:
   * Each patent's chunks are embedded in **one batched forward pass** (`Embedder.embed_batch`, `EMBED_BATCH_SIZE` chunks per pass) rather than one `model.encode()` call per chunk.
   * A prefetch thread parses and chunks up to `INGEST_PREFETCH` patents ahead, so file I/O and tokenization overlap with embedding instead of alternating with it.
@@ -285,9 +285,11 @@ All system thresholds are centrally managed in `app/config.py`:
 | **Chunking** | `MAX_CHUNK_TOKENS` | `512` | Token capacity limit per chunk |
 | | `MIN_CHUNK_TOKENS` / `MIN_CHUNK_WORDS` | `20` / `8` | Minimum size for a valid chunk |
 | | `BATCH_SIZE` | `100` | Points per Qdrant upload batch |
-| **Ingestion** | `EMBED_BATCH_SIZE` | `8` | Chunks per batched embedding forward pass — the main ingest throughput lever |
-| | `METADATA_BATCH_SIZE` | `256` | Patent metadata points per Qdrant upload batch |
-| | `INGEST_PREFETCH` | `2` | Patents parsed/chunked ahead of the embedder by the prefetch thread |
+| **Ingestion** | `EMBED_BATCH_SIZE` | `256` | Chunks per embedding HTTP request — the main ingest throughput lever |
+| | `EMBED_CONCURRENT_REQUESTS` | `8` | Parallel embedding workers/requests in flight at once |
+| | `CHUNK_QUEUE_CAPACITY` | `4096` | Chunks buffered before the first embedding window is cut |
+| | `INSERT_WORKERS` | `8` | Parallel Qdrant insert workers |
+| | `INGEST_PREFETCH` | `512` | Patents parsed/chunked ahead of the embedder by the prefetch thread |
 | **Validator** | `VALIDATOR_LOW_INFO_THRESHOLD` | `0.30` | Minimum ratio of alpha characters required |
 | | `VALIDATOR_DEGENERATE_OVERLAP_THRESHOLD` | `0.9` | Minimum unique-content ratio vs. previous chunk |
 | **Query Understanding** | `QUERY_LLM_REMOTE_BASE_URL` / `_MODEL` | — | Remote OpenAI-compatible endpoint & model |
