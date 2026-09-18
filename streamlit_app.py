@@ -16,7 +16,6 @@ import streamlit as st
 
 from app.config import (
     CHUNKS_COLLECTION_NAME,
-    EVIDENCE_CHUNKS_PER_PATENT,
     EVIDENCE_NEIGHBOR_CHUNKS,
     FINAL_SCORE_THRESHOLD,
     FINAL_WEIGHT_RELATIONSHIP,
@@ -633,7 +632,7 @@ def render_phase4(evidence_result: Optional[EvidenceRetrievalResult]) -> None:
                 textwrap.dedent(f"""
                 <div class="metric-box">
                     <div class="metric-label">Avg Chunks / Patent</div>
-                    <div class="metric-val" style="color: #f472b6;">{avg_chunks:.1f} <span style="font-size: 0.75rem; color: #94a3b8;">/ {EVIDENCE_CHUNKS_PER_PATENT} max</span></div>
+                    <div class="metric-val" style="color: #f472b6;">{avg_chunks:.1f} <span style="font-size: 0.75rem; color: #94a3b8;">(no cap)</span></div>
                 </div>
                 """).strip(),
                 unsafe_allow_html=True,
@@ -1398,7 +1397,7 @@ with st.sidebar:
     st.caption(f"**Qdrant Chunk Coll:** `{CHUNKS_COLLECTION_NAME}`")
     st.caption(f"**Top K / View:** `{RETRIEVAL_TOP_K_PER_VIEW}`")
     st.caption(f"**Candidate Limit:** `{PATENT_CANDIDATE_TOP_K}`")
-    st.caption(f"**Evidence / Patent:** `{EVIDENCE_CHUNKS_PER_PATENT}`")
+    st.caption("**Evidence / Patent:** `no cap (all matched chunks + neighbors)`")
     st.caption(f"**Neighbor Radius:** `±{EVIDENCE_NEIGHBOR_CHUNKS}`")
     st.caption("**Verification Limit:** `none (all surviving candidates)`")
     st.caption(f"**Rerank Batch Size:** `{RERANK_BATCH_SIZE}`")

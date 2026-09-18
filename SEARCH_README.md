@@ -451,16 +451,7 @@ Rendered as **Phase 4: Bounded Evidence Retrieval**.
 ## Phase 5 — Semantic Relationship & Requirement Verification
 
 **Module:** `app/verification/verifier.py` (`RelationshipVerifier.verify_candidates`)
-**Config:** `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD=0.35`, `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD=0.35`, `VERIFICATION_MIN_EVIDENCE_SCORE=0.15`
-
-**No candidate cap** — every candidate that survived Phase 2/3 gets verified
-here, not just a top-N slice by vector-similarity score (there used to be a
-`VERIFICATION_MAX_CANDIDATES=25` cap; see the callout below for why it was
-removed). This means Phase 5/6 cost scales with how many candidates survive
-metadata filtering — a broad, filter-less query with nothing narrowing the
-pool can mean verifying/reranking the full 300-candidate pool, which is
-noticeably slower than a filter-narrowed query but never silently drops a
-real match by rank.
+**Config:** `VERIFICATION_MAX_CANDIDATES=25`, `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD=0.35`, `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD=0.35`
 
 This is the **precision gate** — the phase responsible for deciding, patent
 by patent, whether the query's specific relationships and requirements are
@@ -487,12 +478,12 @@ PHASE 5 — RELATIONSHIP & REQUIREMENT VERIFICATION
     ↓                     ↓
    Yes                   No
     ↓                     ↓
- Auto-pass          Take ALL surviving candidates (no cap)
- every patent               ↓
- (coverage = 1.0)   Build one hypothesis string
+ Auto-pass          Take up to 25 candidates
+ every patent        (VERIFICATION_MAX_CANDIDATES)
+ (coverage = 1.0)          ↓
+                    Build one hypothesis string
                     per relationship
-                    ("subject relation object" — plain,
-                     no context clause appended)
+                    ("subject relation object")
                           ↓
                     Build one hypothesis string
                     per requirement
@@ -504,17 +495,10 @@ PHASE 5 — RELATIONSHIP & REQUIREMENT VERIFICATION
                     (subject & object words within
                      40 words of each other?)
                           ↓
-                    score ≥ 0.35?
+                    score ≥ 0.35  OR  proximity match?
                     ┌──────┴──────┐
                     ↓             ↓
-                   Yes            No
-                    ↓             ↓
-               SUPPORTED    proximity AND score ≥ 0.15?
-                             ┌──────┴──────┐
-                             ↓             ↓
-                            Yes            No
-                             ↓             ↓
-                        SUPPORTED    NOT_SUPPORTED
+                SUPPORTED    NOT_SUPPORTED
                     └──────┬──────┘
                            ↓
                     relationship_coverage = supported / total
@@ -532,11 +516,10 @@ PHASE 5 — RELATIONSHIP & REQUIREMENT VERIFICATION
 Skipped entirely (auto-pass, coverage = 1.0) when the query is metadata-only
 or carries no relationships/requirements — there's nothing to verify.
 
-Otherwise, for **every** surviving candidate:
+Otherwise, for up to `VERIFICATION_MAX_CANDIDATES` (25) candidates:
 
-1. **Build one hypothesis string per relationship** — just
-   `"{subject} {relation} {object}"` (e.g. `"storage stores water"`), no
-   context clause appended — see the callout below for why.
+1. **Build one hypothesis string per relationship** — e.g.
+   `"manufacturing method produces water (process for making water)"`.
 2. **Build one hypothesis string per requirement** — the requirement's own text.
 3. **Batch cross-encoder scoring** — every hypothesis is scored against every
    evidence chunk of every candidate in batched calls to the same BGE
@@ -544,54 +527,38 @@ Otherwise, for **every** surviving candidate:
 4. **Deterministic span-proximity check** (`check_span_proximity`) — a
    cheap, non-ML backstop: do the relationship's subject words and object
    words literally co-occur within 40 words of each other in a chunk?
-5. **Relationship verdict** — `SUPPORTED` if the cross-encoder score alone
-   clears `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD` (0.35), **or** the
-   span-proximity check fires *and* the score also clears the much lower
-   `VERIFICATION_MIN_EVIDENCE_SCORE` (0.15) floor; `NOT_SUPPORTED` otherwise
-   — see the callout below for why proximity alone is no longer sufficient.
+5. **Relationship verdict** — `SUPPORTED` if either the span-proximity check
+   fires, **or** the cross-encoder score clears
+   `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD`; `NOT_SUPPORTED` otherwise.
 6. **Requirement verdict** — similar, but blends the cross-encoder score with
    a word-overlap ratio (`overlap * 0.5`) as a fallback signal, checked
-   against `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD`. This word-overlap
-   fallback has the same class of weakness the relationship check used to
-   have (a loose heuristic that can independently manufacture a match) and
-   has not yet been tightened the same way — worth revisiting if a query's
-   requirement is getting satisfied by content that doesn't actually satisfy it.
+   against `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD`.
 7. **Coverage ratios** — `relationship_coverage` and `requirement_coverage`
    are simply `supported / total` for that patent. A patent with an explicit
    `CONTRADICTED` relationship status is later zeroed out in Phase 7
    regardless of its raw coverage number.
 
-> **Past bugs that lived here:**
-> - `is_supported` used to be `has_proximity OR score >= threshold` — an
->   unconditional `OR`. `check_span_proximity` is a crude, whole-chunk
->   word-distance check with no sense of semantic role, so it could fire on
->   pure coincidence (e.g. "water" and "storage" both appearing in a
->   multi-thousand-word chunk, in a sentence about an unrelated liquid-level
->   *sensor*, not about water being stored) and completely override a
->   cross-encoder score that had correctly judged the chunk as ~0% relevant.
->   Real-world result: an LNG storage tank patent and a cryogenic fluid
->   tank patent both ranked #1/#3 for a "water storage" query, neither
->   patent mentioning water as the stored substance at all. Fixed by
->   requiring the cross-encoder score to clear a floor
->   (`VERIFICATION_MIN_EVIDENCE_SCORE`) whenever proximity is the deciding
->   factor — proximity can now only boost an already-plausible score, never
->   manufacture one from ~0 relevance.
-> - The relationship hypothesis used to append `" in {context}"` (e.g.
->   `"storage stores water in water-only storage"`). Measured against an
->   identical, clearly-matching chunk, this scored the cross-encoder ~6x
->   lower (`0.07` vs `0.42`) than the plain `"storage stores water"` —  the
->   context field often restates subject/object words in a way the model
->   reads as redundant/unnatural rather than clarifying. Dropped entirely.
-> - A compound object like `"LED display"` tokenizes to `{"led", "display"}`,
->   and `check_span_proximity` only required *any one* of those words to be
->   nearby the subject — so the generic word "display" (present in nearly
->   every television patent) alone satisfied it, regardless of whether "LED"
->   ever appeared anywhere in the document. This is a known remaining gap:
->   a stricter fix (requiring a multi-word term's own words to cluster
->   together, plus acronym/expansion normalization for terms like
->   LCD↔"liquid crystal") was prototyped in-session but is not currently on
->   disk — check `app/verification/verifier.py` for `all_key_terms_present`
->   before relying on this being fixed.
+> **Known sharp edge, tried and reverted:** the unconditional
+> `has_proximity OR score >= threshold` above is a real precision risk.
+> `check_span_proximity` is a crude, whole-chunk word-distance check with no
+> sense of semantic role — it can fire on pure coincidence (e.g. "water" and
+> "storage" both appearing in a multi-thousand-word chunk, in a sentence
+> about an unrelated liquid-level *sensor*, not about water being stored)
+> and completely override a cross-encoder score that had correctly judged
+> the chunk as ~0% relevant. This produced real false positives in testing
+> (an LNG storage tank patent and a cryogenic fluid tank patent both ranking
+> #1/#3 for a "water storage" query). A fix was built and verified this
+> session — requiring the cross-encoder score to clear a low floor
+> (`VERIFICATION_MIN_EVIDENCE_SCORE`) whenever proximity is the deciding
+> factor, dropping the redundant `" in {context}"` clause from the
+> relationship hypothesis (it independently cut cross-encoder scores ~6x on
+> identical, clearly-matching text), and a stricter compound-term grounding
+> check (`all_key_terms_present`) for multi-word objects like "LED display"
+> — but all three were explicitly reverted back to this state. If picking
+> this up again, the removed code lived directly in `is_supported`'s
+> condition and the `rel_hypotheses` construction in
+> `app/verification/verifier.py`; check `git stash list` / recent history
+> before rewriting it from scratch.
 
 These two coverage numbers matter a lot downstream — together they make up
 **70% of the final score** in Phase 7 (`FINAL_WEIGHT_RELATIONSHIP` +
@@ -763,38 +730,35 @@ in `app/config.py`:
 - **Too high** → genuinely relevant patents that use different wording than
   the query get marked `NOT_SUPPORTED` and disappear from results entirely.
 
-The second lever is `VERIFICATION_MIN_EVIDENCE_SCORE` — it controls how much
-the deterministic span-proximity check is allowed to override the
-cross-encoder. Too high and proximity effectively never helps (relying on the
-cross-encoder alone); too low and proximity drifts back toward its old
-failure mode of manufacturing matches from near-zero relevance (see the Phase
-5 callout above).
+Even with the threshold well-tuned, `has_proximity OR score >= threshold`
+means the deterministic span-proximity check can single-handedly override a
+cross-encoder score that correctly judged a chunk as irrelevant — see the
+"known sharp edge" callout in the Phase 5 section above for a real example
+and what a fix would look like.
 
-Even with both thresholds well-tuned, the verification layer only checks
-"do the subject and object words show up near each other / does the
-cross-encoder think this is relevant" — it does not verify that a
-multi-word qualifier (LED, wireless, lithium, ...) actually describes the
-*specific thing* the query asked about, as opposed to some other, unrelated
-component that happens to share one word with it. A patent titled
-"Multi-functional **LCD** TV" with a separate, unrelated **LED** indicator
-lamp can still satisfy a naive "television has LED display" check, because
-"LED" and "display" are each present in the document without ever
-describing the same component. Treat a `SUPPORTED` relationship as "the
-query's words are grounded in this evidence," not as "this exact claim is
-true," especially for compound technical terms.
+Relatedly, the verification layer only checks "do the subject and object
+words show up near each other / does the cross-encoder think this is
+relevant" — it does not verify that a multi-word qualifier (LED, wireless,
+lithium, ...) actually describes the *specific thing* the query asked about,
+as opposed to some other, unrelated component that happens to share one word
+with it. A patent titled "Multi-functional **LCD** TV" with a separate,
+unrelated **LED** indicator lamp can still satisfy a naive "television has
+LED display" check, because "LED" and "display" are each present in the
+document without ever describing the same component. Treat a `SUPPORTED`
+relationship as "the query's words are grounded in this evidence," not as
+"this exact claim is true," especially for compound technical terms.
 
 The next lever is `FINAL_SCORE_THRESHOLD` in Phase 7 — it decides how many
 of the qualifying patents actually get shown at all, independent of how they
 were scored.
 
-Finally, Phase 5 no longer caps how many candidates get verified/reranked —
-every candidate that survives Phase 2/3 gets the full treatment. This trades
-latency for recall: a broad, filter-less query with nothing narrowing the
-candidate pool can mean verifying and reranking the full 300-candidate pool
-(tens of seconds), where a filter-narrowed query stays fast. There is
-currently no cap to re-add if that latency becomes a problem — see
-`RelationshipVerifier.verify_candidates`'s `max_candidates` parameter, which
-still exists and defaults to `None` (no limit), if you need to reintroduce one.
+Finally, `VERIFICATION_MAX_CANDIDATES` (25) means Phase 5/6 only ever look at
+the top 25 candidates by Phase 2's vector-similarity score, even if more than
+25 survive Phase 3's metadata filtering — a patent that's a correct exact
+metadata/keyword match but ranks 30th by raw embedding similarity never gets
+verified or reranked at all, and so can never appear in the final results
+regardless of how well it would have scored. Raising this trades latency
+(each extra candidate costs a reranker call) for that recall.
 
 ---
 

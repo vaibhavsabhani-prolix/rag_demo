@@ -124,7 +124,9 @@ RETRIEVAL_TOP_K_PER_VIEW = 500
 PATENT_CANDIDATE_TOP_K = 300
 
 # Phase 4 Bounded Evidence Retrieval configuration
-EVIDENCE_CHUNKS_PER_PATENT = 5
+# No per-patent chunk cap by design - every matched chunk and its neighbors
+# are kept; EVIDENCE_GLOBAL_TOP_K_CHUNKS is the only ceiling, applied across
+# the whole candidate batch during the Qdrant vector fetch.
 EVIDENCE_NEIGHBOR_CHUNKS = 1
 EVIDENCE_GLOBAL_TOP_K_CHUNKS = 1000
 

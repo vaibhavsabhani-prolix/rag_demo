@@ -10,7 +10,8 @@ Key characteristics:
 - Single batched query embedding (no LLM, no BGE reranker).
 - Zero N+1 Qdrant queries (batched vector search + batched neighbor scroll).
 - Preserves & enriches Phase 2 matched chunks.
-- Strict per-patent chunk bounding (default 5 chunks per patent).
+- No per-patent chunk cap - every matched chunk and its neighbors are kept,
+  bounded only by EVIDENCE_GLOBAL_TOP_K_CHUNKS across the whole batch.
 - Deduplicates chunks per patent.
 """
 
@@ -22,7 +23,6 @@ from qdrant_client.models import FieldCondition, Filter, MatchAny
 
 from app.config import (
     CHUNKS_COLLECTION_NAME,
-    EVIDENCE_CHUNKS_PER_PATENT,
     EVIDENCE_GLOBAL_TOP_K_CHUNKS,
     EVIDENCE_NEIGHBOR_CHUNKS,
 )
@@ -76,13 +76,11 @@ class EvidenceRetriever:
         self,
         embedder: Optional[Embedder] = None,
         db: Optional[QdrantDB] = None,
-        chunks_per_patent: int = EVIDENCE_CHUNKS_PER_PATENT,
         neighbor_chunks: int = EVIDENCE_NEIGHBOR_CHUNKS,
         global_top_k: int = EVIDENCE_GLOBAL_TOP_K_CHUNKS,
     ):
         self.embedder = embedder or Embedder()
         self.db = db or QdrantDB()
-        self.chunks_per_patent = chunks_per_patent
         self.neighbor_chunks = neighbor_chunks
         self.global_top_k = global_top_k
 
@@ -153,10 +151,10 @@ class EvidenceRetriever:
                     ]
                 )
 
-                search_limit = min(
-                    len(candidate_patent_ids) * self.chunks_per_patent * 2,
-                    self.global_top_k,
-                )
+                # No per-patent multiplier here anymore - fetch up to the
+                # global cap regardless of candidate count, since there's
+                # no per-patent truncation downstream to size this against.
+                search_limit = self.global_top_k
 
                 search_res = self.db.client.query_points(
                     collection_name=CHUNKS_COLLECTION_NAME,
@@ -251,24 +249,25 @@ class EvidenceRetriever:
             pid = cand.patent_id
             raw_chunks = list(evidence_pool.get(pid, {}).values())
 
-            # Sort chunks: direct evidence (initial/query) sorted by score desc, then neighbors
+            # Sort chunks: direct evidence (initial/query) sorted by score desc, then neighbors.
+            # No per-patent truncation - every matched chunk and its neighbors are kept.
             def _sort_key(c: EvidenceChunk) -> Tuple[int, float]:
                 priority = 0 if c.retrieval_source in ("initial_candidate", "evidence_query") else 1
                 return (priority, -c.retrieval_score)
 
             raw_chunks.sort(key=_sort_key)
-            bounded_chunks = raw_chunks[: self.chunks_per_patent]
+            all_chunks = raw_chunks
 
-            evidence_by_patent[pid] = bounded_chunks
+            evidence_by_patent[pid] = all_chunks
             patent_evidence_list.append(
                 PatentEvidence(
                     patent_id=pid,
-                    chunks=bounded_chunks,
+                    chunks=all_chunks,
                     metadata=cand.metadata,
                     candidate_score=cand.retrieval_score,
                 )
             )
-            total_chunks_collected += len(bounded_chunks)
+            total_chunks_collected += len(all_chunks)
 
         dedup_time_ms = (time.perf_counter() - t_dedup_start) * 1000
         total_time_ms = (time.perf_counter() - t_start) * 1000
