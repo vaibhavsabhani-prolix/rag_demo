@@ -28,7 +28,12 @@ from app.chunking.chunk_validator import ChunkValidator
 from app.chunking.section_detector import SectionDetector
 from app.chunking.token_counter import TokenCounter
 from app.chunking.token_window_chunker import TokenWindowChunker
-from app.config import DEBUG_CHUNKS, DEBUG_CHUNKS_DIR, MAX_CHUNK_TOKENS
+from app.config import (
+    DEBUG_CHUNKS,
+    DEBUG_CHUNKS_DIR,
+    EMBED_TOKEN_SAFETY_MARGIN,
+    MAX_CHUNK_TOKENS,
+)
 from app.models.patent_chunk import PatentChunk
 from app.models.patent_document import PatentDocument
 
@@ -65,7 +70,7 @@ class PatentChunker:
 
     def __init__(
         self,
-        max_tokens: int = MAX_CHUNK_TOKENS,
+        max_tokens: int = MAX_CHUNK_TOKENS - EMBED_TOKEN_SAFETY_MARGIN,
         debug: bool = DEBUG_CHUNKS,
         debug_dir: str = DEBUG_CHUNKS_DIR,
     ) -> None:

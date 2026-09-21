@@ -2,7 +2,7 @@ QDRANT_HOST = "localhost"
 QDRANT_PORT = 6333
 QDRANT_TIMEOUT = 120.0
 
-PATENT_DIRECTORY = "patents/1"
+PATENT_DIRECTORY = "patents/2"
 
 CHUNKS_COLLECTION_NAME = "patent_chunks_4096"
 PATENTS_COLLECTION_NAME = "patents_metadata_4096"
@@ -11,7 +11,7 @@ PATENTS_COLLECTION_NAME = "patents_metadata_4096"
 EMBEDDING_REMOTE_BASE_URL = "http://192.168.2.213:8002/v1"
 EMBEDDING_REMOTE_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 EMBEDDING_REMOTE_API_KEY = "EMPTY"
-EMBEDDING_REQUEST_TIMEOUT = 120.0
+EMBEDDING_REQUEST_TIMEOUT = 300.0
 VECTOR_SIZE = 1024
 
 QUERY_LLM_REMOTE_BASE_URL = "http://192.168.2.213:8000/v1"
@@ -60,14 +60,25 @@ RERANKER_TOKEN_SAFETY_MARGIN = 16
 
 MAX_CHUNK_TOKENS = 4096
 
+# Safety margin subtracted from MAX_CHUNK_TOKENS when the chunker builds
+# windows. TokenCounter counts chunk tokens with add_special_tokens=False,
+# but the remote vLLM embedding server adds its own special token(s) per
+# sequence - so a chunk that lands exactly at MAX_CHUNK_TOKENS locally can
+# come in one token over the server's real limit and get rejected with
+# 400 ("maximum context length is 4096 tokens ... 4097 input tokens").
+# Mirrors RERANKER_TOKEN_SAFETY_MARGIN, which exists for the same reason.
+EMBED_TOKEN_SAFETY_MARGIN = 8
+
 # Number of chunks to upload to Qdrant in one request
 BATCH_SIZE = 512
 
 # Texts sent to the remote embedding server in a single HTTP request.
 # With a remote GPU (DGX), this should be large to amortise network
-# round-trip latency and keep the GPU fed. 256 × 512-token chunks ≈
-# 128 K tokens per call — well within vLLM's capacity. Raise further
-# if the server has headroom; lower if requests start timing out.
+# round-trip latency and keep the GPU fed. 256 x ~4096-token chunks is
+# well within the server's batching capacity (confirmed: a single
+# request of 256 max-size chunks returns 200) - the actual 400s came
+# from individual chunks landing exactly at MAX_CHUNK_TOKENS, fixed via
+# EMBED_TOKEN_SAFETY_MARGIN above, not from batch size.
 EMBED_BATCH_SIZE = 256
 
 # How many embedding HTTP requests to keep in flight at once. While
