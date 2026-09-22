@@ -2,7 +2,7 @@ QDRANT_HOST = "localhost"
 QDRANT_PORT = 6333
 QDRANT_TIMEOUT = 120.0
 
-PATENT_DIRECTORY = "patents/2"
+PATENT_DIRECTORY = "patents/3"
 
 CHUNKS_COLLECTION_NAME = "patent_chunks_4096"
 PATENTS_COLLECTION_NAME = "patents_metadata_4096"
@@ -79,13 +79,13 @@ BATCH_SIZE = 512
 # request of 256 max-size chunks returns 200) - the actual 400s came
 # from individual chunks landing exactly at MAX_CHUNK_TOKENS, fixed via
 # EMBED_TOKEN_SAFETY_MARGIN above, not from batch size.
-EMBED_BATCH_SIZE = 256
+EMBED_BATCH_SIZE = 64
 
 # How many embedding HTTP requests to keep in flight at once. While
 # batch #1 computes on the GPU, batches #2-#N are already in transit
 # over the network, hiding round-trip latency. 4 is a good default;
 # raise it for a high-latency link, lower it if the server is shared.
-EMBED_CONCURRENT_REQUESTS = 8
+EMBED_CONCURRENT_REQUESTS = 3
 
 # How many chunks to write between insert progress lines, counted
 # across the whole run rather than per batch. The progress bar covers
