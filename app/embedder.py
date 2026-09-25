@@ -55,6 +55,17 @@ class Embedder:
         # Persistent session — reuses TCP connections across requests
         # to the same host, skipping per-call handshake overhead.
         self.session = requests.Session()
+
+        # The default adapter pools only 10 connections per host; with
+        # more concurrent workers than that, the extras are opened and
+        # thrown away on every request instead of being reused.
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=1,
+            pool_maxsize=max(10, self.max_workers),
+        )
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+
         self.session.headers.update(
             {
                 "Authorization": f"Bearer {EMBEDDING_REMOTE_API_KEY}",

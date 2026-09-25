@@ -40,6 +40,7 @@ app/config.py.
 """
 
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -105,10 +106,19 @@ def _prefetch_documents(txt_files, parsed_queue: Queue, on_progress=None):
     """
 
     parser = PatentParser()
-    chunker = PatentChunker()
+
+    # PatentChunker is stateful (its validator's duplicate set and the
+    # token-count cache are reset per document), so sharing one across
+    # the pool lets threads wipe or pollute each other's state and
+    # silently drop chunks. Each worker thread gets its own instead.
+    local = threading.local()
 
     def process_one(path):
         try:
+            chunker = getattr(local, "chunker", None)
+            if chunker is None:
+                chunker = local.chunker = PatentChunker()
+
             document = parser.load_patent(path)
             chunks = chunker.split(document)
             return path, document, chunks, None

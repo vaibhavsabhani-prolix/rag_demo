@@ -1,8 +1,9 @@
 """
 Section Detector
 
-Dynamically detects section headings in structured documents.
-No hardcoded field names — uses heuristic patterns only.
+Detects section headings in the patent .txt corpus by verifying each
+candidate line against the known heading whitelist (KNOWN_SECTION_HEADINGS
+in app.config), rather than generic heuristics.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from app.chunking.known_headings import KNOWN_SECTION_HEADINGS
 from app.config import (
     ALLCAPS_MIN_ALPHA,
     MAX_HEADING_LENGTH,
@@ -37,31 +39,25 @@ class Section:
 
 
 # ==================================================================
-# Heading patterns (generic, no domain-specific words)
-# ==================================================================
-
-# Numbered heading:  "1.", "1.1", "1.1.2", "1)", "1.1)"
-_NUMBERED_RE = re.compile(r"^\s*\d+(?:\.\d+)*[.)]\s+\S")
-
-# Markdown-style heading:  "# Heading", "## Sub-heading"
-_MARKDOWN_RE = re.compile(r"^\s*#{1,6}\s+\S")
-
-
-# ==================================================================
 # Detector
 # ==================================================================
 
 
 class SectionDetector:
     """
-    Generic section detector for structured documents.
+    Section detector for the patent .txt corpus.
 
-    Detection heuristics (none are domain-specific):
+    A line is a heading only if it normalizes to one of the known patent
+    section headings (KNOWN_SECTION_HEADINGS in app.config) — e.g.
+    "Title-english:", "Claims-korean:", "Abstract:". Everything else is
+    treated as section content, regardless of how heading-like it looks
+    (short, colon-terminated, ALL-CAPS, numbered, ...).
 
-    1. Line ends with ':'  and is short   → heading
-    2. Numbered prefix (1., 1.1, 1))      → heading
-    3. Markdown-style (# / ## / ###)      → heading
-    4. ALL-CAPS short line                 → heading
+    This whitelist check replaces the previous generic heuristics, which
+    misfired on CJK text: CJK characters have no case, so `line ==
+    line.upper()` was trivially true for any short Chinese/Japanese/Korean
+    line, causing claim/title body text to be misdetected as headings and
+    the section to be shredded into dozens of spurious fragments.
     """
 
     def __init__(
@@ -80,9 +76,9 @@ class SectionDetector:
     # ==============================================================
 
     def is_heading(self, line: str) -> bool:
-        # all the heading condtions
-        #   1. heading length is more then max_heading_length then its not heading
-        #   2. heading word count is more then max_heading_words then its not heading
+        # A line is a heading only if it verifies against the known
+        # heading whitelist — length/word-count gates below are just a
+        # cheap early-out, they don't decide anything on their own.
 
         stripped = line.strip()
 
@@ -98,29 +94,14 @@ class SectionDetector:
         if word_count > self.max_heading_words:
             return False
 
-        # ---- Pattern 1: colon-terminated short line ----
-        if stripped.endswith(":"):
-            return True
+        return self._is_known_heading(stripped)
 
-        # ---- Pattern 2: numbered heading ----
-        if _NUMBERED_RE.match(stripped) and stripped.endswith(":"):
-            return True
+    @staticmethod
+    def _is_known_heading(stripped: str) -> bool:
+        """Verify *stripped* against KNOWN_SECTION_HEADINGS: yes → heading, no → content."""
 
-        # ---- Pattern 3: markdown heading ----
-        if _MARKDOWN_RE.match(stripped):
-            return True
-
-        # ---- Pattern 4: ALL-CAPS line ----
-        alpha_chars = sum(1 for c in stripped if c.isalpha())
-
-        if (
-            alpha_chars >= self.allcaps_min_alpha
-            and stripped == stripped.upper()
-            and word_count <= self.max_heading_words
-        ):
-            return True
-
-        return False
+        normalized = SectionDetector.clean_heading(stripped).strip().lower()
+        return normalized in KNOWN_SECTION_HEADINGS
 
     # ==============================================================
     # Clean heading text
