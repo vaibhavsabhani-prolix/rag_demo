@@ -5,3 +5,9 @@ python-dotenv==1.1.1
 rich>=13.7.0
 openai>=2.0.0
 requests>=2.32.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+pydantic>=2.7
+transformers>=4.45
+sqlalchemy>=2.0
+psycopg[binary]>=3.2

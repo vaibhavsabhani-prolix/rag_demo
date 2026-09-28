@@ -1,8 +1,16 @@
-QDRANT_HOST = "localhost"
-QDRANT_PORT = 6333
+import os
+
+# Overridable so the Docker web service can reach Qdrant by its compose service name.
+QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 QDRANT_TIMEOUT = 120.0
 
-PATENT_DIRECTORY = "patents/2"
+# PostgreSQL for search history (the `postgres` service in docker-compose.yml).
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql+psycopg://patent:patent@localhost:5434/patent_search"
+)
+
+PATENT_DIRECTORY = "patents/patents-processed"
 
 CHUNKS_COLLECTION_NAME = "patent_chunks_512"
 PATENTS_COLLECTION_NAME = "patents_metadata_512"

@@ -1,0 +1,12 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+data
+patents
+qdrant_storage
+scratch
+frontend/node_modules
+frontend/dist

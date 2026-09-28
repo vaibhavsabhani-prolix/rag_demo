@@ -2,7 +2,7 @@
 
 A production-ready Patent Retrieval & Semantic Search system built with **Python**, **Qdrant Vector DB**, the **Qwen3 Embedding Model**, an **LLM-based Query Understanding layer**, **metadata filtering**, a **cross-encoder reranker**, and an **Answer Evidence Extraction & Highlighting engine**.
 
-The pipeline handles end-to-end processing of complex technical patent documents: from raw document parsing and multi-stage semantic chunking, through validation, vector embedding, and batch indexing — to natural-language query understanding, answer-target-preserving semantic retrieval for questions, patent-grouped vector search, post-retrieval metadata filtering, cross-encoder reranking, evidence selection, and patent-level result aggregation. A Streamlit UI and CLI tools are included for search and index inspection.
+The pipeline handles end-to-end processing of complex technical patent documents: from raw document parsing and multi-stage semantic chunking, through validation, vector embedding, and batch indexing — to natural-language query understanding, answer-target-preserving semantic retrieval for questions, patent-grouped vector search, post-retrieval metadata filtering, cross-encoder reranking, evidence selection, and patent-level result aggregation. A React + FastAPI web app and CLI tools are included for search and index inspection.
 
 ---
 
@@ -58,7 +58,7 @@ flowchart TD
         ES1 --> P
         
         P --> Q["PatentSearchResult list, top FINAL_TOP_K\n(question queries: a patent with a genuine\nanswer leads, otherwise sorted by relevance score)"]
-        Q --> R["Streamlit UI (app/ui/search_app.py) / CLI"]
+        Q --> R["React UI (frontend/) + FastAPI (app/api/) / CLI"]
     end
 ```
 
@@ -330,8 +330,8 @@ rag_demo/
 │   │   ├── patent_document.py          # Raw parsed PatentDocument dataclass
 │   │   ├── patent_search_result.py     # PatentSearchResult, RankedChunk, AnswerEvidence
 │   │   └── search_result.py            # Shared search result helpers
-│   ├── ui/
-│   │   └── search_app.py               # Streamlit search UI with answer badges & highlight rendering
+│   ├── api/
+│   │   └── main.py                     # FastAPI server: streams search pipeline results to the React UI
 │   ├── scripts/
 │   │   └── show_indexed_patents.py     # Summary table generator for all Qdrant-indexed patents
 │   ├── _tests_/                        # Component & end-to-end test/diagnostic scripts
@@ -401,13 +401,47 @@ Run the end-to-end search pipeline diagnostics tool:
 ./venv/bin/python -m app._tests_.test_semantic_search "Microdrilling"
 ```
 
-### 4.1 Run the Search UI
-Launch the interactive Streamlit search application:
+### 4.1 Run the Web App (React + FastAPI)
+The React frontend (`frontend/`) talks to a FastAPI server (`app/api/main.py`) that runs the
+`SearchPipeline` and streams each phase's result as it completes.
+
+**With Docker (next to Qdrant):** the `web` service in `docker-compose.yml` builds the UI and
+serves it together with the API on http://localhost:8000.
+
+Every search is saved to PostgreSQL (the `postgres` service, host port 5434) and can be
+reviewed on the **History** page. Tables are created automatically on API startup. Outside
+Docker the API uses `DATABASE_URL` (default `postgresql+psycopg://patent:patent@localhost:5434/patent_search`),
+so run `docker compose up -d postgres` first when using `./run_api.sh`.
+
 ```bash
-./venv/bin/streamlit run app/ui/search_app.py
+docker compose up -d --build        # qdrant + web
+docker compose logs -f web          # follow API logs
 ```
-* Supports topic searches, metadata-filtered queries, and question queries.
-* For questions, renders extracted answer summary badges and visual `<mark>` evidence highlighting.
+
+**Local development:**
+
+```bash
+# Terminal 1 — API on http://localhost:8000
+./run_api.sh
+
+# Terminal 2 — dev UI on http://localhost:5173 (proxies /api to :8000)
+cd frontend && npm install && npm run dev
+```
+
+For a single-server setup, run `npm run build` in `frontend/`; the API then serves the built UI at
+http://localhost:8000.
+
+Frontend stack: Vite + React + TypeScript, Tailwind CSS, Redux Toolkit (search/UI state),
+React Query (server calls), Zod (form + API response validation).
+
+| Folder | Contents |
+| --- | --- |
+| `src/components/ui/` | Generic reusable UI kit (Button, Card, Drawer, DataTable, Tabs, …) |
+| `src/components/patent/` | Patent-specific reusable pieces (heading, evidence chunk, verification list) |
+| `src/features/` | Screens: search form, pipeline tracker, results, pipeline details, settings |
+| `src/schemas/` | Zod schemas — mirror the Pydantic models in `app/models/`; types come from `z.infer` |
+| `src/store/` | Redux slices and selectors |
+| `src/hooks/` | React Query hooks, including the streaming `useSearch` |
 
 ### 5. Running Component Verification Tests
 Component tests live under `app/_tests_/` as plain Python scripts (no pytest required):

@@ -1,13 +1,14 @@
 # Patent Search Pipeline — Query to Results, A to Z
 
 This document explains what happens, in order, from the moment a user types a
-query in [streamlit_app.py](streamlit_app.py) to the moment ranked patents are
+query in the React web app ([frontend/](frontend/)) to the moment ranked patents are
 shown on screen. It covers the current 7-phase search pipeline only. For how
 patents get chunked, embedded, and indexed into Qdrant in the first place, see
 [INDEXING_README.md](INDEXING_README.md).
 
-The pipeline is orchestrated top-to-bottom in `streamlit_app.py` (search for
-`Phase 1:` … `Phase 7:` around line 1478 onward). Each phase is a standalone
+The pipeline is orchestrated top-to-bottom by `SearchPipeline.run()` in
+[app/semantic_search.py](app/semantic_search.py), exposed to the UI by the
+FastAPI server in [app/api/main.py](app/api/main.py). Each phase is a standalone
 module under `app/`, takes the previous phase's output as input, and produces
 a typed Pydantic result object that both feeds the next phase and renders its
 own section in the UI.
@@ -106,7 +107,7 @@ ParsedQuery     (system + 2 few-shot anchor examples + query)
    and returns instantly (shown in the UI as "⚡ CACHE HIT").
 2. **Warm-up on startup** — `QueryUnderstandingEngine.warm_up()` fires one
    throwaway request at the remote LLM when the engine singleton is created
-   (`streamlit_app.py`'s `get_engine()`), so a cold/unloaded remote model
+   (`build_pipeline()` in `app/api/main.py`, at server startup), so a cold/unloaded remote model
    pays its startup latency once at app launch instead of on a real user's
    first query.
 3. **One LLM call** — the query is sent to a remote OpenAI-compatible LLM
