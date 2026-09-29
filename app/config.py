@@ -12,6 +12,13 @@ DATABASE_URL = os.getenv(
 
 PATENT_DIRECTORY = "patents/patents-processed"
 
+# Search discovers collections in Qdrant by name: every "patent_chunks_<name>"
+# that has a matching "patents_metadata_<name>" can be searched as "<name>",
+# and the user picks one in the UI. Name new collections this way.
+CHUNKS_COLLECTION_PREFIX = "patent_chunks_"
+PATENTS_COLLECTION_PREFIX = "patents_metadata_"
+
+# The collection pair that ingestion writes to. Search preselects it when it exists.
 CHUNKS_COLLECTION_NAME = "patent_chunks_512"
 PATENTS_COLLECTION_NAME = "patents_metadata_512"
 
@@ -114,5 +121,18 @@ FINAL_WEIGHT_RELATIONSHIP = 0.45
 FINAL_WEIGHT_REQUIREMENT = 0.25
 FINAL_WEIGHT_RERANKER = 0.20
 FINAL_WEIGHT_RETRIEVAL = 0.10
+
+# Query match highlighting (computed in Phase 6 reranking)
+# BGE cross-encoder score of each chunk sentence against the reranking query.
+# Scores are sigmoid-shaped. Measured on a real "television" search (2087
+# sentences): sentences mentioning TV had deciles 0.006-0.13, all others
+# 0.0-0.011. 0.02 marked 173/278 TV sentences; 0.05 only 79.
+HIGHLIGHT_SENTENCE_THRESHOLD = 0.02
+HIGHLIGHT_SENTENCE_STRONG_THRESHOLD = 0.25
+# Shorter fragments ("FIG. 1", claim numbers) are not scored.
+HIGHLIGHT_MIN_SENTENCE_CHARS = 8
+# Space-separated languages only: headings like "Electronic equipment" score
+# very high on the cross-encoder without saying anything about the query.
+HIGHLIGHT_MIN_SENTENCE_WORDS = 4
 
 

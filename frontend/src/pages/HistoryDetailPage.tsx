@@ -37,6 +37,8 @@ export function HistoryDetailPage() {
   }
 
   const { item, run } = data
+  const searchAgainParams = new URLSearchParams({ q: item.query })
+  if (item.collection) searchAgainParams.set('collection', item.collection)
 
   return (
     <div className="space-y-6">
@@ -48,12 +50,13 @@ export function HistoryDetailPage() {
           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-500">
             <HistoryStatusBadge status={item.status} />
             <span>{formatDate(item.created_at)}</span>
+            {item.collection && <span>· collection {item.collection}</span>}
             {item.total_ms !== null && <span>· {formatMs(item.total_ms)}</span>}
             <span>· cache {item.use_cache ? (item.cache_hit ? 'hit' : 'miss') : 'off'}</span>
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="secondary" size="sm" onClick={() => navigate(`/?q=${encodeURIComponent(item.query)}`)}>
+          <Button variant="secondary" size="sm" onClick={() => navigate(`/?${searchAgainParams}`)}>
             <SearchIcon className="size-4" />
             Search again
           </Button>

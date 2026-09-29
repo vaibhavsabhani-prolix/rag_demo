@@ -25,17 +25,17 @@ export function useSearch() {
   const abortRef = useRef<AbortController | null>(null)
 
   return useMutation({
-    mutationFn: async ({ query, useCache }: SearchFormValues) => {
+    mutationFn: async ({ query, collection, useCache }: SearchFormValues) => {
       // Starting a new search cancels the one still streaming.
       abortRef.current?.abort()
       const controller = new AbortController()
       abortRef.current = controller
 
-      dispatch(searchStarted(query))
+      dispatch(searchStarted({ query, collection }))
       let finished = false
 
       await api.streamSearch(
-        { query, use_cache: useCache },
+        { query, collection, use_cache: useCache },
         (event) => {
           switch (event.type) {
             case 'start':

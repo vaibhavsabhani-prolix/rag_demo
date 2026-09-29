@@ -1,4 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
+import { compareStarted } from './compareSlice'
 import { searchStarted } from './searchSlice'
 
 export type ResultTab = 'results' | 'pipeline'
@@ -31,9 +32,10 @@ const uiSlice = createSlice({
   },
   extraReducers: (builder) => {
     // A new search closes any open patent from the previous run.
-    builder.addCase(searchStarted, (state) => {
+    const closePatent = (state: UiState) => {
       state.selectedPatentId = null
-    })
+    }
+    builder.addCase(searchStarted, closePatent).addCase(compareStarted, closePatent)
   },
 })
 

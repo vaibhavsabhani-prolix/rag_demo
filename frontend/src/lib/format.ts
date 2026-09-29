@@ -36,3 +36,10 @@ export function formatRelative(iso: string): string {
   if (abs < 7 * 86400) return relativeFormat.format(Math.round(seconds / 86400), 'day')
   return formatDate(iso)
 }
+
+const compactFormat = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
+
+/** 1859780 → "1.9M" */
+export function formatCompact(n: number): string {
+  return compactFormat.format(n)
+}

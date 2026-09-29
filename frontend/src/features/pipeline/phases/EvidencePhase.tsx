@@ -1,10 +1,28 @@
+import { useMemo } from 'react'
 import { EvidenceChunkCard } from '@/components/patent'
 import { Badge, Collapsible, Section, Stat, StatGrid } from '@/components/ui'
 import { formatMs } from '@/lib/format'
 import { summarizePatent } from '@/lib/patent'
-import type { PhaseResults } from '@/schemas/pipeline'
+import type { ChunkHighlight, PhaseResults } from '@/schemas/pipeline'
 
-export function EvidencePhase({ data }: { data: PhaseResults[4] }) {
+interface EvidencePhaseProps {
+  data: PhaseResults[4]
+  /**
+   * Phase 6 output, once available: highlights are computed while reranking, so
+   * chunks of patents that reached Phase 6 get their matching text highlighted.
+   */
+  reranked?: PhaseResults[6]
+}
+
+export function EvidencePhase({ data, reranked }: EvidencePhaseProps) {
+  const highlights = useMemo(() => {
+    const byChunk = new Map<string, ChunkHighlight | null | undefined>()
+    for (const p of reranked?.reranked_patents ?? []) {
+      for (const c of p.evidence) byChunk.set(`${p.patent_id}:${c.chunk_id}`, c.highlight)
+    }
+    return byChunk
+  }, [reranked])
+
   return (
     <div className="space-y-6">
       <StatGrid>
@@ -36,6 +54,7 @@ export function EvidencePhase({ data }: { data: PhaseResults[4] }) {
                     section={c.section}
                     source={c.retrieval_source}
                     retrievalScore={c.retrieval_score}
+                    highlight={highlights.get(`${pe.patent_id}:${c.chunk_id}`)}
                   />
                 ))}
               </div>

@@ -16,8 +16,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from qdrant_client.models import FieldCondition, Filter, MatchAny
 
 from app.config import (
-    CHUNKS_COLLECTION_NAME,
-    PATENTS_COLLECTION_NAME,
     PATENT_CANDIDATE_TOP_K,
     RETRIEVAL_TOP_K_PER_VIEW,
 )
@@ -27,6 +25,7 @@ from app.models.candidate import (
     CandidatePatent,
     CandidateRetrievalResult,
 )
+from app.models.collection import SearchCollection
 from app.models.parsed_query import ParsedQuery
 from app.qdrant_db import QdrantDB
 from app.retrieval.filter_builder import (
@@ -55,21 +54,23 @@ class CandidateRetriever:
         self.top_k_per_view = top_k_per_view
         self.candidate_top_k = candidate_top_k
 
-    def retrieve_candidates(self, parsed_query: ParsedQuery) -> CandidateRetrievalResult:
+    def retrieve_candidates(
+        self, parsed_query: ParsedQuery, collection: SearchCollection
+    ) -> CandidateRetrievalResult:
         """
-        Execute Phase 2 Candidate Retrieval for a ParsedQuery.
+        Execute Phase 2 Candidate Retrieval for a ParsedQuery against *collection*.
         """
         t_start = time.perf_counter()
 
         # Branch 1: Metadata-only query (Skip vector search & embedding)
         if parsed_query.is_metadata_only:
-            return self._retrieve_metadata_only(parsed_query, t_start)
+            return self._retrieve_metadata_only(parsed_query, collection, t_start)
 
         # Branch 2: Semantic (+ optional metadata) retrieval
-        return self._retrieve_semantic_candidates(parsed_query, t_start)
+        return self._retrieve_semantic_candidates(parsed_query, collection, t_start)
 
     def _retrieve_metadata_only(
-        self, parsed_query: ParsedQuery, t_start: float
+        self, parsed_query: ParsedQuery, collection: SearchCollection, t_start: float
     ) -> CandidateRetrievalResult:
         """
         Retrieve candidate patents directly matching metadata filters without vector search.
@@ -77,7 +78,9 @@ class CandidateRetriever:
         t_q_start = time.perf_counter()
 
         q_filter = build_qdrant_filter(parsed_query.metadata_filters)
-        matching_patents = self._fetch_matching_patents(q_filter, parsed_query.metadata_filters)
+        matching_patents = self._fetch_matching_patents(
+            q_filter, parsed_query.metadata_filters, collection
+        )
 
         qdrant_time_ms = (time.perf_counter() - t_q_start) * 1000
 
@@ -119,7 +122,7 @@ class CandidateRetriever:
         )
 
     def _retrieve_semantic_candidates(
-        self, parsed_query: ParsedQuery, t_start: float
+        self, parsed_query: ParsedQuery, collection: SearchCollection, t_start: float
     ) -> CandidateRetrievalResult:
         """
         Execute multi-view semantic candidate retrieval with dynamic metadata pre-filtering.
@@ -143,7 +146,7 @@ class CandidateRetriever:
         if parsed_query.metadata_filters:
             meta_filter = build_qdrant_filter(parsed_query.metadata_filters)
             matching_patents = self._fetch_matching_patents(
-                meta_filter, parsed_query.metadata_filters
+                meta_filter, parsed_query.metadata_filters, collection
             )
             matching_patent_ids = [p["patent_id"] for p in matching_patents if "patent_id" in p]
 
@@ -186,7 +189,7 @@ class CandidateRetriever:
                 continue
 
             search_res = self.db.client.query_points(
-                collection_name=CHUNKS_COLLECTION_NAME,
+                collection_name=collection.chunks_collection,
                 query=vec,
                 query_filter=chunk_filter,
                 limit=self.top_k_per_view,
@@ -261,7 +264,7 @@ class CandidateRetriever:
 
         # Step 7: Enrich with patent metadata
         top_patent_ids = [p.patent_id for p in bounded_candidates]
-        meta_dict = self.db.get_patents_metadata(top_patent_ids)
+        meta_dict = self.db.get_patents_metadata(top_patent_ids, collection.patents_collection)
         for p in bounded_candidates:
             p.metadata = meta_dict.get(p.patent_id, {})
 
@@ -283,7 +286,10 @@ class CandidateRetriever:
         )
 
     def _fetch_matching_patents(
-        self, q_filter: Optional[Filter], metadata_filters: list
+        self,
+        q_filter: Optional[Filter],
+        metadata_filters: list,
+        collection: SearchCollection,
     ) -> List[Dict[str, Any]]:
         """
         Scroll patent metadata collection matching Qdrant filter and verify with Python logic.
@@ -293,7 +299,7 @@ class CandidateRetriever:
         try:
             # Scroll with filter from patents metadata collection
             results, _ = self.db.client.scroll(
-                collection_name=PATENTS_COLLECTION_NAME,
+                collection_name=collection.patents_collection,
                 scroll_filter=q_filter,
                 limit=1000,
                 with_payload=True,
@@ -308,7 +314,7 @@ class CandidateRetriever:
             # Fallback: scan metadata points and evaluate in Python
             try:
                 results, _ = self.db.client.scroll(
-                    collection_name=PATENTS_COLLECTION_NAME,
+                    collection_name=collection.patents_collection,
                     limit=2000,
                     with_payload=True,
                 )

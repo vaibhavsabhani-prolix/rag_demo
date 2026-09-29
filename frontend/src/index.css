@@ -11,8 +11,47 @@
 }
 
 @layer base {
+  :root {
+    /* Query-match highlight colour; overridden from Settings by ApplyAppearance. */
+    --highlight: #f59e0b;
+
+    /*
+     * Chart series colours (Compare page), one per collection in fixed order.
+     * Validated for colour-vision deficiency on the light (#fff) and dark
+     * (slate-900) surfaces; the dark steps are redefined under .dark below.
+     */
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-5: #e87ba4;
+    --series-6: #008300;
+    --series-7: #4a3aa7;
+    --series-8: #e34948;
+  }
+
   body {
     @apply bg-slate-50 text-slate-800 antialiased;
+  }
+}
+
+/*
+ * Query-match highlights in evidence chunks (EvidenceChunkCard). Backgrounds are
+ * a translucent mix of --highlight, so any colour stays readable in both themes.
+ */
+@layer components {
+  .hl-sentence {
+    background-color: color-mix(in srgb, var(--highlight) 22%, transparent);
+    box-decoration-break: clone;
+    color: inherit;
+    border-radius: 0.125rem;
+  }
+  .hl-sentence-strong {
+    background-color: color-mix(in srgb, var(--highlight) 42%, transparent);
+  }
+  .hl-term {
+    @apply font-semibold text-slate-900 underline decoration-2 underline-offset-2;
+    text-decoration-color: var(--highlight);
   }
 }
 
@@ -24,6 +63,14 @@
  */
 .dark {
   color-scheme: dark;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
   --color-surface: oklch(20.8% 0.042 265.755);
   --color-slate-50: oklch(12.9% 0.042 264.695);
   --color-slate-950: oklch(98.4% 0.003 247.858);

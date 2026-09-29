@@ -57,6 +57,7 @@ export function PatentDetailDrawer({ run }: { run: SearchRun }) {
                 section={chunk.section}
                 source={chunk.retrieval_source}
                 rerankerScore={chunk.reranker_score}
+                highlight={chunk.highlight}
               />
             ))}
           </div>

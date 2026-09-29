@@ -6,6 +6,7 @@ import { DEFAULT_UI_SETTINGS } from '@/schemas/settings'
 
 export const queryKeys = {
   config: ['config'] as const,
+  collections: ['collections'] as const,
   cacheStats: ['cache-stats'] as const,
   history: ['history'] as const,
   historyList: (params: HistoryParams) => ['history', 'list', params] as const,
@@ -18,6 +19,14 @@ export function usePipelineConfig() {
     queryKey: queryKeys.config,
     queryFn: api.getConfig,
     staleTime: Infinity, // server config only changes on restart
+  })
+}
+
+export function useCollections() {
+  return useQuery({
+    queryKey: queryKeys.collections,
+    queryFn: api.getCollections,
+    staleTime: 60_000, // new collections appear only after an ingest
   })
 }
 

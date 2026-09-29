@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import { Alert, Button, Drawer, KeyValueList, ScoreBar, Section, Spinner, Stat, StatGrid } from '@/components/ui'
-import { useCacheStats, useClearCache, usePipelineConfig } from '@/hooks/queries'
+import { useCacheStats, useClearCache, useCollections, usePipelineConfig } from '@/hooks/queries'
 import { formatPercent } from '@/lib/format'
 import { useAppDispatch, useAppSelector } from '@/store'
 import { settingsToggled } from '@/store/uiSlice'
@@ -23,6 +23,7 @@ export function SettingsDrawer() {
       <div className="space-y-8">
         <AppearanceSettings />
         <CacheSection />
+        <CollectionsSection />
         <ConfigSection />
       </div>
     </Drawer>
@@ -57,6 +58,30 @@ function CacheSection() {
   )
 }
 
+function CollectionsSection() {
+  const { data, isPending, error } = useCollections()
+
+  if (isPending) return <Spinner className="size-5 text-slate-400" />
+  if (error) return <Alert tone="danger">{error.message}</Alert>
+
+  return (
+    <Section title="Qdrant collections">
+      {data.collections.length === 0 ? (
+        <p className="text-sm text-slate-500">
+          No searchable collection. Search needs a patent_chunks_&lt;name&gt; and patents_metadata_&lt;name&gt; pair.
+        </p>
+      ) : (
+        <KeyValueList
+          items={data.collections.map((c) => ({
+            label: c.name === data.default ? `${c.name} (default)` : c.name,
+            value: `${c.chunk_count.toLocaleString()} chunks · ${c.patent_count.toLocaleString()} patents`,
+          }))}
+        />
+      )}
+    </Section>
+  )
+}
+
 function ConfigSection() {
   const { data: config, isPending, error } = usePipelineConfig()
 
@@ -80,8 +105,6 @@ function ConfigSection() {
             { label: 'LLM base URL', value: config.query_llm_base_url },
             { label: 'Embedding model', value: config.embedding_model },
             { label: 'Verifier / reranker', value: config.reranker_model },
-            { label: 'Chunks collection', value: config.chunks_collection },
-            { label: 'Patents collection', value: config.patents_collection },
           ]}
         />
       </Section>

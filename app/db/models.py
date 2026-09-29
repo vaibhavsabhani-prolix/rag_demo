@@ -17,6 +17,9 @@ class SearchRecord(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     query: Mapped[str] = mapped_column(Text)
+    # Name of the searched collection pair, e.g. "2048". Null for searches
+    # saved before the collection could be chosen.
+    collection: Mapped[Optional[str]] = mapped_column(String(128))
     use_cache: Mapped[bool]
     cache_hit: Mapped[bool] = mapped_column(default=False)
     # "running" | "success" | "error"

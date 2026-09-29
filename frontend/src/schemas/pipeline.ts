@@ -171,8 +171,18 @@ export const verificationBatchSchema = z.object({
 })
 
 // Phase 6 — Reranking (app/models/reranking.py)
+/** Character spans of a chunk's text that match the query. */
+export const chunkHighlightSchema = z.object({
+  /** Sentences the cross-encoder scored as matching the query in meaning. */
+  sentences: z.array(z.object({ start: z.number(), end: z.number(), score: z.number(), strong: z.boolean() })),
+  /** Occurrences of the query's own words and concepts. */
+  terms: z.array(z.object({ start: z.number(), end: z.number() })),
+})
+
 export const rerankedChunkSchema = evidenceChunkSchema.extend({
   reranker_score: z.number(),
+  // Missing on searches saved before highlighting was added.
+  highlight: chunkHighlightSchema.nullish(),
 })
 
 export const rerankedPatentSchema = z.object({
@@ -193,6 +203,7 @@ export const rerankBatchSchema = z.object({
   reranked_patents: z.array(rerankedPatentSchema),
   total_candidates: z.number(),
   total_chunks_reranked: z.number(),
+  total_sentences_scored: z.number().default(0),
   total_requests: z.number(),
   truncated_chunks_count: z.number(),
   reranking_query: z.string(),
@@ -267,5 +278,6 @@ export type EvidenceChunk = z.infer<typeof evidenceChunkSchema>
 export type RelationshipVerification = z.infer<typeof relationshipVerificationSchema>
 export type RequirementVerification = z.infer<typeof requirementVerificationSchema>
 export type RerankedChunk = z.infer<typeof rerankedChunkSchema>
+export type ChunkHighlight = z.infer<typeof chunkHighlightSchema>
 export type ScoreBreakdown = z.infer<typeof scoreBreakdownSchema>
 export type FinalPatent = z.infer<typeof finalPatentSchema>

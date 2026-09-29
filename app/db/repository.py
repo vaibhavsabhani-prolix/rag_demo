@@ -24,9 +24,11 @@ def _top_results(phases: dict[str, Any]) -> list[dict[str, Any]]:
     return preview
 
 
-def create_search(query: str, use_cache: bool, cache_hit: bool) -> int:
+def create_search(query: str, collection: str, use_cache: bool, cache_hit: bool) -> int:
     with SessionLocal.begin() as session:
-        record = SearchRecord(query=query, use_cache=use_cache, cache_hit=cache_hit)
+        record = SearchRecord(
+            query=query, collection=collection, use_cache=use_cache, cache_hit=cache_hit
+        )
         session.add(record)
         session.flush()
         return record.id

@@ -28,7 +28,7 @@ export function PipelineView({ run }: { run: SearchRun }) {
       case 3:
         return phases[3] && <FilterPhase data={phases[3].data} />
       case 4:
-        return phases[4] && <EvidencePhase data={phases[4].data} />
+        return phases[4] && <EvidencePhase data={phases[4].data} reranked={phases[6]?.data} />
       case 5:
         return phases[5] && <VerificationPhase data={phases[5].data} />
       case 6:

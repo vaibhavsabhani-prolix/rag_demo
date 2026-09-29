@@ -1,11 +1,12 @@
 import clsx from 'clsx'
 import { Link, NavLink } from 'react-router'
-import { Button, HistoryIcon, SearchIcon, SettingsIcon } from '@/components/ui'
+import { Button, ChartIcon, HistoryIcon, SearchIcon, SettingsIcon } from '@/components/ui'
 import { useAppDispatch } from '@/store'
 import { settingsToggled } from '@/store/uiSlice'
 
 const NAV = [
   { to: '/', label: 'Search', icon: SearchIcon, end: true },
+  { to: '/compare', label: 'Compare', icon: ChartIcon, end: false },
   { to: '/history', label: 'History', icon: HistoryIcon, end: false },
 ]
 
@@ -25,6 +26,8 @@ export function AppHeader() {
                 key={to}
                 to={to}
                 end={end}
+                aria-label={label}
+                title={label}
                 className={({ isActive }) =>
                   clsx(
                     'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
@@ -33,7 +36,8 @@ export function AppHeader() {
                 }
               >
                 <Icon className="size-4" />
-                {label}
+                {/* Icons only on phones, so the header fits. */}
+                <span className="hidden sm:inline">{label}</span>
               </NavLink>
             ))}
           </nav>

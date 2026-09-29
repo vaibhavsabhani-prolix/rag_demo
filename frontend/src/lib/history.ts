@@ -16,6 +16,7 @@ export function historyToRun(detail: HistoryDetail): SearchRun {
   const interrupted = detail.status === 'running'
   return {
     query: detail.query,
+    collection: detail.collection,
     status: interrupted ? 'error' : detail.status,
     error: interrupted ? 'This search did not finish.' : (detail.error ?? undefined),
     cacheHit: detail.cache_hit,

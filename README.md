@@ -405,8 +405,17 @@ Run the end-to-end search pipeline diagnostics tool:
 The React frontend (`frontend/`) talks to a FastAPI server (`app/api/main.py`) that runs the
 `SearchPipeline` and streams each phase's result as it completes.
 
-**With Docker (next to Qdrant):** the `web` service in `docker-compose.yml` builds the UI and
-serves it together with the API on http://localhost:8000.
+**With Docker (next to Qdrant):** `docker compose up -d` starts everything in development
+mode (`docker-compose.override.yml` is merged in automatically):
+
+* UI with hot reload on **http://localhost:5173** (the `frontend` service, Vite dev server).
+  UI pages on :8000 redirect there.
+* API on http://localhost:8000. `app/` is mounted into the container and uvicorn restarts
+  on every `.py` change.
+
+No rebuild is needed for code changes. Rebuild `web` only after changing `requirements.txt`
+(`docker compose up -d --build web`). For the production-style image, with the UI built into it
+and served on :8000, skip the override: `docker compose -f docker-compose.yml up -d --build`.
 
 Every search is saved to PostgreSQL (the `postgres` service, host port 5434) and can be
 reviewed on the **History** page. Tables are created automatically on API startup. Outside
@@ -414,8 +423,8 @@ Docker the API uses `DATABASE_URL` (default `postgresql+psycopg://patent:patent@
 so run `docker compose up -d postgres` first when using `./run_api.sh`.
 
 ```bash
-docker compose up -d --build        # qdrant + web
-docker compose logs -f web          # follow API logs
+docker compose up -d                # qdrant + postgres + web + frontend
+docker compose logs -f web          # follow API logs (shows reloads)
 ```
 
 **Local development:**

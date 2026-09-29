@@ -11,6 +11,7 @@ export default defineConfig({
   },
   server: {
     // Forward API calls to the FastAPI server (see app/api/main.py).
-    proxy: { '/api': 'http://localhost:8000' },
+    // In Docker the dev server reaches it by service name (docker-compose.override.yml).
+    proxy: { '/api': process.env.API_PROXY_TARGET ?? 'http://localhost:8000' },
   },
 })

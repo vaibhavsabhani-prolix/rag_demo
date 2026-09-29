@@ -14,6 +14,7 @@ instead of once per chunk, which matters at 180M-patent scale where a
 single patent can produce dozens of chunks.
 """
 
+import re
 import uuid
 
 from qdrant_client import QdrantClient
@@ -26,13 +27,16 @@ from qdrant_client.models import (
 from app.config import (
     BATCH_SIZE,
     CHUNKS_COLLECTION_NAME,
+    CHUNKS_COLLECTION_PREFIX,
     PATENTS_COLLECTION_NAME,
+    PATENTS_COLLECTION_PREFIX,
     QDRANT_HOST,
     QDRANT_PORT,
     QDRANT_TIMEOUT,
     VECTOR_SIZE,
 )
 
+from app.models.collection import SearchCollection
 from app.models.patent_chunk import PatentChunk
 
 # Points in the "patents" collection are keyed by patent_id, but Qdrant
@@ -44,6 +48,11 @@ _PATENT_POINT_NAMESPACE = uuid.UUID("6f6d3b2e-6b8b-4b1a-9c1a-8f6e2f6b8b1a")
 
 def _patent_point_id(patent_id: str) -> str:
     return str(uuid.uuid5(_PATENT_POINT_NAMESPACE, patent_id))
+
+
+def _natural_key(name: str) -> list:
+    """Sort key that orders "512" before "2048" and "4096"."""
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", name)]
 
 
 class QdrantDB:
@@ -285,7 +294,11 @@ class QdrantDB:
 
         return inserted
 
-    def get_patents_metadata(self, patent_ids: list[str]) -> dict[str, dict]:
+    def get_patents_metadata(
+        self,
+        patent_ids: list[str],
+        collection_name: str = PATENTS_COLLECTION_NAME,
+    ) -> dict[str, dict]:
         """
         Fetch metadata for a list of patent_ids in one request.
 
@@ -299,7 +312,7 @@ class QdrantDB:
         unique_ids = list(dict.fromkeys(patent_ids))
 
         records = self.client.retrieve(
-            collection_name=PATENTS_COLLECTION_NAME,
+            collection_name=collection_name,
             ids=[_patent_point_id(pid) for pid in unique_ids],
             with_payload=True,
         )
@@ -309,6 +322,43 @@ class QdrantDB:
             for record in records
             if record.payload
         }
+
+    # ==============================================================
+    # Search collections
+    # ==============================================================
+
+    def list_search_collections(self) -> list[SearchCollection]:
+        """
+        Return every searchable collection pair in Qdrant, sorted by name
+        (numbers in natural order, so "512" comes before "2048").
+
+        A pair is "patent_chunks_<name>" plus "patents_metadata_<name>".
+        A chunks collection without its metadata collection is skipped,
+        since search needs both.
+        """
+
+        existing = {c.name for c in self.client.get_collections().collections}
+        pairs = []
+
+        for chunks_name in sorted(existing, key=_natural_key):
+            if not chunks_name.startswith(CHUNKS_COLLECTION_PREFIX):
+                continue
+            name = chunks_name[len(CHUNKS_COLLECTION_PREFIX):]
+            patents_name = PATENTS_COLLECTION_PREFIX + name
+            if not name or patents_name not in existing:
+                continue
+
+            pairs.append(
+                SearchCollection(
+                    name=name,
+                    chunks_collection=chunks_name,
+                    patents_collection=patents_name,
+                    chunk_count=self.client.get_collection(chunks_name).points_count or 0,
+                    patent_count=self.client.get_collection(patents_name).points_count or 0,
+                )
+            )
+
+        return pairs
 
     # ==============================================================
     # Stats

@@ -10,7 +10,7 @@ export function RerankPhase({ data }: { data: PhaseResults[6] }) {
     <div className="space-y-6">
       <StatGrid>
         <Stat label="Candidates" value={data.total_candidates} />
-        <Stat label="Chunks scored" value={data.total_chunks_reranked} hint={`${data.truncated_chunks_count} truncated`} />
+        <Stat label="Chunks scored" value={data.total_chunks_reranked} hint={`${data.truncated_chunks_count} truncated · ${data.total_sentences_scored} sentences for highlights`} />
         <Stat label="Requests" value={data.total_requests} />
         <Stat label="Total time" value={formatMs(data.timings.total_ms)} />
       </StatGrid>

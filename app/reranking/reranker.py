@@ -12,6 +12,8 @@ Key guarantees:
 - Batch processing with bounded concurrency (requests.Session + ThreadPoolExecutor).
 - Full preservation of Phase 5 relationship & requirement verification outcomes.
 - Chunk-level scoring and patent-level intermediate aggregation (best_reranker_score).
+- Query-match highlighting: each chunk's sentences are scored in the same batched
+  requests, and matching sentences/words are attached to the chunk (see app/highlighting).
 - Zero final ranking weights calculated (reserved for Phase 7).
 - Resilient error handling (failures do not crash search).
 """
@@ -34,6 +36,7 @@ from app.config import (
     RERANKER_REQUEST_TIMEOUT,
     RERANKER_TOKEN_SAFETY_MARGIN,
 )
+from app.highlighting import build_chunk_highlight, extract_term_patterns, sentences_to_score
 from app.models.evidence import EvidenceChunk, EvidenceRetrievalResult
 from app.models.parsed_query import ParsedQuery
 from app.models.reranking import (
@@ -237,6 +240,37 @@ class BGEReranker:
         # Resilient fallback: return 0.0 scores so pipeline continues
         return [0.0] * len(documents)
 
+    def _score_documents(self, query: str, documents: List[str]) -> Tuple[List[float], int]:
+        """
+        Score *documents* against *query* in batches of batch_size, with up to
+        concurrent_requests batches in flight. Returns (scores aligned with
+        documents, number of HTTP batches sent). A failed batch scores 0.0.
+        """
+        if not documents:
+            return [], 0
+
+        starts = list(range(0, len(documents), self.batch_size))
+        scores: List[float] = [0.0] * len(documents)
+
+        def run(i: int, start: int) -> None:
+            batch = documents[start : start + self.batch_size]
+            batch_scores = self._score_batch(query, batch, batch_label=f"{i + 1}/{len(starts)}")
+            scores[start : start + len(batch_scores)] = batch_scores
+
+        if len(starts) == 1:
+            # Single batch optimization (no thread pool overhead)
+            run(0, 0)
+        else:
+            with ThreadPoolExecutor(max_workers=min(self.concurrent_requests, len(starts))) as executor:
+                futures = [executor.submit(run, i, start) for i, start in enumerate(starts)]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.error("Error scoring batch of documents: %s", e)
+
+        return scores, len(starts)
+
     def rerank_candidates(
         self,
         parsed_query: ParsedQuery,
@@ -289,52 +323,34 @@ class BGEReranker:
                 items_to_rerank.append((pid, c_idx, ch, formatted_doc, was_trunc))
 
         total_chunks = len(items_to_rerank)
-        scores_map: Dict[Tuple[str, int], float] = {}
-        total_requests = 0
-        http_time_ms = 0.0
 
-        # 4. Batch items and score concurrently
-        if items_to_rerank:
-            batches: List[List[Tuple[str, int, EvidenceChunk, str, bool]]] = []
-            for i in range(0, total_chunks, self.batch_size):
-                batches.append(items_to_rerank[i : i + self.batch_size])
+        # For highlighting, each chunk's sentences are scored too, against the same
+        # query and in the same batched requests as the chunks themselves.
+        sentence_spans: Dict[Tuple[str, int], List[Tuple[int, int]]] = {
+            (item[0], item[1]): sentences_to_score(item[2].text or "") for item in items_to_rerank
+        }
+        sentence_docs = [
+            item[2].text[s:e]
+            for item in items_to_rerank
+            for s, e in sentence_spans[(item[0], item[1])]
+        ]
 
-            total_requests = len(batches)
-            t_http_start = time.perf_counter()
+        # 4. Batch chunks + sentences and score concurrently
+        t_http_start = time.perf_counter()
+        all_scores, total_requests = self._score_documents(
+            reranking_query, [item[3] for item in items_to_rerank] + sentence_docs
+        )
+        http_time_ms = (time.perf_counter() - t_http_start) * 1000
 
-            if len(batches) == 1:
-                # Single batch optimization (no thread pool overhead)
-                batch = batches[0]
-                docs = [item[3] for item in batch]
-                batch_scores = self._score_batch(reranking_query, docs, batch_label="1/1")
-                for item, score in zip(batch, batch_scores):
-                    pid, c_idx = item[0], item[1]
-                    scores_map[(pid, c_idx)] = score
-            else:
-                with ThreadPoolExecutor(max_workers=min(self.concurrent_requests, len(batches))) as executor:
-                    future_to_batch = {
-                        executor.submit(
-                            self._score_batch,
-                            reranking_query,
-                            [item[3] for item in batch],
-                            batch_label=f"{i + 1}/{len(batches)}",
-                        ): batch
-                        for i, batch in enumerate(batches)
-                    }
-                    for future in as_completed(future_to_batch):
-                        batch = future_to_batch[future]
-                        try:
-                            batch_scores = future.result()
-                            for item, score in zip(batch, batch_scores):
-                                pid, c_idx = item[0], item[1]
-                                scores_map[(pid, c_idx)] = score
-                        except Exception as e:
-                            logger.error("Error scoring batch of chunks: %s", e)
-                            for item in batch:
-                                pid, c_idx = item[0], item[1]
-                                scores_map[(pid, c_idx)] = 0.0
-
-            http_time_ms = (time.perf_counter() - t_http_start) * 1000
+        scores_map: Dict[Tuple[str, int], float] = {
+            (item[0], item[1]): score for item, score in zip(items_to_rerank, all_scores)
+        }
+        remaining_sentence_scores = iter(all_scores[total_chunks:])
+        sentence_scores: Dict[Tuple[str, int], List[float]] = {
+            key: [next(remaining_sentence_scores) for _ in spans]
+            for key, spans in sentence_spans.items()
+        }
+        term_pattern = extract_term_patterns(parsed_query.original_query or "", parsed_query.concepts)
 
         # 5. Assemble RerankedPatentResult preserving all Phase 5 verifications
         reranked_patents: List[RerankedPatentResult] = []
@@ -357,6 +373,12 @@ class BGEReranker:
                         document_chunk_index=ch.document_chunk_index,
                         token_count=ch.token_count,
                         reranker_score=round(r_score, 6),
+                        highlight=build_chunk_highlight(
+                            ch.text or "",
+                            sentence_spans.get((pid, c_idx), []),
+                            sentence_scores.get((pid, c_idx), []),
+                            term_pattern,
+                        ),
                     )
                 )
 
@@ -396,6 +418,7 @@ class BGEReranker:
             reranked_patents=reranked_patents,
             total_candidates=len(reranked_patents),
             total_chunks_reranked=total_chunks,
+            total_sentences_scored=len(sentence_docs),
             total_requests=total_requests,
             truncated_chunks_count=truncated_count,
             reranking_query=reranking_query,

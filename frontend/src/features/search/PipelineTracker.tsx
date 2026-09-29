@@ -8,7 +8,7 @@ type StepState = 'done' | 'running' | 'failed' | 'pending'
 
 /** Horizontal 7-step tracker that fills in as phase results stream in. */
 export function PipelineTracker({ run }: { run: SearchRun }) {
-  const { status, phases, totalMs, cacheHit } = run
+  const { status, phases, totalMs, cacheHit, collection } = run
   const nextPhase = PHASES.find((p) => !phases[p.id])?.id
 
   const stepState = (id: PhaseNumber): StepState => {
@@ -22,7 +22,10 @@ export function PipelineTracker({ run }: { run: SearchRun }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-surface p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm">
-        <span className="font-medium text-slate-700">Pipeline</span>
+        <span className="font-medium text-slate-700">
+          Pipeline
+          {collection && <span className="font-normal text-slate-500"> · collection {collection}</span>}
+        </span>
         <span className="text-slate-500">
           {status === 'running' && nextPhase && `Running step ${nextPhase} of 7…`}
           {status === 'success' && `Completed in ${formatMs(totalMs)}${cacheHit ? ' · query cache hit' : ''}`}

@@ -21,6 +21,8 @@ can render each phase's result as soon as it is ready.
 import time
 from typing import Callable, Optional
 
+from app.models.collection import SearchCollection
+from app.models.parsed_query import ParsedQuery
 from app.models.scoring import FinalSearchResult
 from app.query_understanding.engine import QueryUnderstandingEngine
 from app.reranking.reranker import BGEReranker
@@ -78,13 +80,14 @@ class SearchPipeline:
     def run(
         self,
         query: str,
+        collection: SearchCollection,
         use_cache: bool = True,
         on_phase_complete: Optional[PhaseCallback] = None,
     ) -> FinalSearchResult:
         """
-        Run Phase 1 through Phase 7 in order for *query*, invoking
-        *on_phase_complete* after each phase finishes. Returns Phase 7's
-        FinalSearchResult.
+        Run Phase 1 through Phase 7 in order for *query* against the Qdrant
+        *collection*, invoking *on_phase_complete* after each phase
+        finishes. Returns Phase 7's FinalSearchResult.
         """
 
         # Phase 1 — Query Understanding
@@ -92,9 +95,23 @@ class SearchPipeline:
         parsed_query = self.engine.parse(query, use_cache=use_cache)
         self._emit(on_phase_complete, 1, parsed_query, (time.perf_counter() - t0) * 1000)
 
+        return self.run_parsed(parsed_query, collection, on_phase_complete)
+
+    def run_parsed(
+        self,
+        parsed_query: ParsedQuery,
+        collection: SearchCollection,
+        on_phase_complete: Optional[PhaseCallback] = None,
+    ) -> FinalSearchResult:
+        """
+        Run Phase 2 through Phase 7 for an already parsed query. Phase 1 does
+        not depend on the collection, so comparing collections parses once
+        and calls this per collection.
+        """
+
         # Phase 2 — Candidate Retrieval (Vector Search)
         t0 = time.perf_counter()
-        retrieval_result = self.retriever.retrieve_candidates(parsed_query)
+        retrieval_result = self.retriever.retrieve_candidates(parsed_query, collection)
         self._emit(on_phase_complete, 2, retrieval_result, (time.perf_counter() - t0) * 1000)
 
         # Phase 3 — Metadata Filtering & Constraint Enforcement
@@ -109,7 +126,7 @@ class SearchPipeline:
         # Phase 4 — Bounded Evidence Retrieval
         t0 = time.perf_counter()
         evidence_result = self.evidence_retriever.retrieve_evidence(
-            parsed_query, filtered_result.candidates
+            parsed_query, filtered_result.candidates, collection
         )
         self._emit(on_phase_complete, 4, evidence_result, (time.perf_counter() - t0) * 1000)
 
@@ -130,7 +147,10 @@ class SearchPipeline:
         final_result = self.scorer.score_and_rank(rerank_result)
         self._emit(on_phase_complete, 7, final_result, (time.perf_counter() - t0) * 1000)
 
-        print(f"[FinalResult] query={query[:80]!r} -> {len(final_result.results)} qualifying patent(s)")
+        print(
+            f"[FinalResult] query={parsed_query.original_query[:80]!r} "
+            f"collection={collection.name} -> {len(final_result.results)} qualifying patent(s)"
+        )
         for r in final_result.results:
             print(f"[FinalResult]   {r.patent_id}  score={r.final_score:.2f}")
 

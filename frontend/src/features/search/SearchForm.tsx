@@ -1,8 +1,11 @@
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useForm } from 'react-hook-form'
+import { useEffect } from 'react'
+import { useForm, useWatch } from 'react-hook-form'
 import { useSearchParams } from 'react-router'
-import { Button, Checkbox, SearchIcon, TextField } from '@/components/ui'
+import { Button, Checkbox, SearchIcon, SelectField, TextField } from '@/components/ui'
+import { useCollections } from '@/hooks/queries'
 import { useSearch } from '@/hooks/useSearch'
+import { formatCompact } from '@/lib/format'
 import { searchFormSchema, type SearchFormValues } from '@/schemas/search'
 
 const EXAMPLES = [
@@ -11,21 +14,60 @@ const EXAMPLES = [
   'Foldable smartphone hinge using a flexible OLED panel',
 ]
 
+// Remembers the last searched collection in this browser.
+const COLLECTION_STORAGE_KEY = 'patent-search.collection'
+
+function loadSavedCollection(): string | null {
+  try {
+    return localStorage.getItem(COLLECTION_STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function saveCollection(name: string) {
+  try {
+    localStorage.setItem(COLLECTION_STORAGE_KEY, name)
+  } catch {
+    // storage unavailable; the server default is used next time
+  }
+}
+
 export function SearchForm() {
   const search = useSearch()
-  // "Search again" from history links here with ?q=… to prefill the box.
+  const collections = useCollections()
+  // "Search again" from history links here with ?q=…&collection=… to prefill the form.
   const [params] = useSearchParams()
   const {
     register,
     handleSubmit,
     setValue,
+    control,
     formState: { errors },
   } = useForm<SearchFormValues>({
     resolver: zodResolver(searchFormSchema),
-    defaultValues: { query: params.get('q') ?? '', useCache: true },
+    defaultValues: {
+      query: params.get('q') ?? '',
+      collection: params.get('collection') ?? loadSavedCollection() ?? '',
+      useCache: true,
+    },
   })
 
-  const onSubmit = handleSubmit((values) => search.mutate(values))
+  // Fall back to the server's default when the chosen collection doesn't exist (any more).
+  const selected = useWatch({ control, name: 'collection' })
+  useEffect(() => {
+    const data = collections.data
+    if (!data || data.collections.some((c) => c.name === selected)) return
+    const next = data.default ?? ''
+    if (next !== selected) setValue('collection', next)
+  }, [collections.data, selected, setValue])
+
+  const onSubmit = handleSubmit((values) => {
+    saveCollection(values.collection)
+    search.mutate(values)
+  })
+
+  const noCollections = collections.data?.collections.length === 0
 
   return (
     <form onSubmit={onSubmit} noValidate className="space-y-3">
@@ -39,6 +81,25 @@ export function SearchForm() {
           className="flex-1"
           autoFocus
         />
+        <SelectField
+          {...register('collection')}
+          aria-label="Collection to search"
+          title="Collection to search"
+          disabled={!collections.data || noCollections}
+          error={
+            collections.error?.message ??
+            (noCollections ? 'No searchable collection in Qdrant.' : errors.collection?.message)
+          }
+          className="sm:w-52"
+        >
+          {!collections.data && <option value="">{collections.error ? 'Unavailable' : 'Loading…'}</option>}
+          {noCollections && <option value="">No collections</option>}
+          {collections.data?.collections.map((c) => (
+            <option key={c.name} value={c.name}>
+              {c.name} · {formatCompact(c.chunk_count)} chunks
+            </option>
+          ))}
+        </SelectField>
         <Button type="submit" size="lg" loading={search.isPending} className="sm:w-36">
           {search.isPending ? 'Searching' : 'Search'}
         </Button>

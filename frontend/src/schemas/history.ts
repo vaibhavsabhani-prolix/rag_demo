@@ -10,6 +10,7 @@ export const historyTopResultSchema = z.object({
 export const historyItemSchema = z.object({
   id: z.number(),
   query: z.string(),
+  collection: z.string().nullable(),
   use_cache: z.boolean(),
   cache_hit: z.boolean(),
   status: z.enum(['running', 'success', 'error']),

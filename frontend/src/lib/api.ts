@@ -2,8 +2,11 @@
 import type { z } from 'zod'
 import {
   cacheStatsSchema,
+  collectionListSchema,
+  compareEventSchema,
   pipelineConfigSchema,
   searchEventSchema,
+  type CompareEvent,
   type SearchEvent,
 } from '@/schemas/api'
 import { historyDetailSchema, historyListSchema } from '@/schemas/history'
@@ -44,6 +47,40 @@ async function send(path: string, init: RequestInit): Promise<void> {
   if (!res.ok) throw new ApiError(await readError(res), res.status)
 }
 
+/**
+ * POST `body` and call `onEvent` for every NDJSON line as it arrives, validated
+ * with `schema`. Resolves once the stream closes.
+ */
+async function streamNdjson<T>(
+  path: string,
+  body: unknown,
+  schema: z.ZodType<T>,
+  onEvent: (event: T) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+  if (!res.ok || !res.body) throw new ApiError(await readError(res), res.status)
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += value
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (line.trim()) onEvent(schema.parse(JSON.parse(line)))
+    }
+  }
+  if (buffer.trim()) onEvent(schema.parse(JSON.parse(buffer)))
+}
+
 export interface HistoryParams {
   limit: number
   offset: number
@@ -52,6 +89,7 @@ export interface HistoryParams {
 
 export const api = {
   getConfig: () => request('/config', pipelineConfigSchema),
+  getCollections: () => request('/collections', collectionListSchema),
   getCacheStats: () => request('/cache', cacheStatsSchema),
   clearCache: () => request('/cache', cacheStatsSchema, { method: 'DELETE' }),
 
@@ -72,35 +110,17 @@ export const api = {
       body: JSON.stringify(settings),
     }),
 
-  /**
-   * Run a search and call `onEvent` for every NDJSON event as it arrives.
-   * Resolves once the stream closes.
-   */
-  async streamSearch(
-    body: { query: string; use_cache: boolean },
+  /** Run a search, calling `onEvent` for every event as it arrives. */
+  streamSearch: (
+    body: { query: string; collection: string; use_cache: boolean },
     onEvent: (event: SearchEvent) => void,
     signal?: AbortSignal,
-  ): Promise<void> {
-    const res = await fetch(`${API_BASE}/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal,
-    })
-    if (!res.ok || !res.body) throw new ApiError(await readError(res), res.status)
+  ) => streamNdjson('/search', body, searchEventSchema, onEvent, signal),
 
-    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
-    let buffer = ''
-    for (;;) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buffer += value
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
-      for (const line of lines) {
-        if (line.trim()) onEvent(searchEventSchema.parse(JSON.parse(line)))
-      }
-    }
-    if (buffer.trim()) onEvent(searchEventSchema.parse(JSON.parse(buffer)))
-  },
+  /** Run one query against several collections, calling `onEvent` for every event. */
+  streamCompare: (
+    body: { query: string; collections: string[]; use_cache: boolean },
+    onEvent: (event: CompareEvent) => void,
+    signal?: AbortSignal,
+  ) => streamNdjson('/compare', body, compareEventSchema, onEvent, signal),
 }

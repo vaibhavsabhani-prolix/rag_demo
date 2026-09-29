@@ -11,6 +11,26 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.models.verification import RelationshipVerification, RequirementVerification
 
 
+class HighlightSentence(BaseModel):
+    """A sentence of a chunk that matches the query in meaning (character offsets into the text)."""
+    start: int
+    end: int
+    score: float = Field(..., description="BGE cross-encoder score of the sentence alone.")
+    strong: bool = Field(..., description="Score is at or above HIGHLIGHT_SENTENCE_STRONG_THRESHOLD.")
+
+
+class HighlightTerm(BaseModel):
+    """An occurrence of a query word or concept in a chunk (character offsets into the text)."""
+    start: int
+    end: int
+
+
+class ChunkHighlight(BaseModel):
+    """The parts of a chunk's text that match the query, for display in the UI."""
+    sentences: List[HighlightSentence] = Field(default_factory=list)
+    terms: List[HighlightTerm] = Field(default_factory=list)
+
+
 class RerankedEvidenceChunk(BaseModel):
     """
     An evidence chunk scored by the BGE cross-encoder reranker.
@@ -35,6 +55,10 @@ class RerankedEvidenceChunk(BaseModel):
     reranker_score: float = Field(
         default=0.0,
         description="Relevance score returned by the BGE cross-encoder reranker."
+    )
+    highlight: Optional[ChunkHighlight] = Field(
+        default=None,
+        description="Sentences and words of the text that match the query."
     )
 
 
@@ -104,6 +128,10 @@ class RerankBatchResult(BaseModel):
     )
     total_candidates: int = Field(default=0, description="Total candidates processed.")
     total_chunks_reranked: int = Field(default=0, description="Total evidence chunks scored by BGE.")
+    total_sentences_scored: int = Field(
+        default=0,
+        description="Chunk sentences scored alongside the chunks, for query-match highlighting."
+    )
     total_requests: int = Field(default=0, description="Total HTTP requests sent to BGE server.")
     truncated_chunks_count: int = Field(default=0, description="Number of chunks truncated for token budget.")
     reranking_query: str = Field(default="", description="Deterministic reranking query sent to BGE.")

@@ -22,12 +22,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from qdrant_client.models import FieldCondition, Filter, MatchAny
 
 from app.config import (
-    CHUNKS_COLLECTION_NAME,
     EVIDENCE_GLOBAL_TOP_K_CHUNKS,
     EVIDENCE_NEIGHBOR_CHUNKS,
 )
 from app.embedder import Embedder
 from app.models.candidate import CandidateChunk, CandidatePatent
+from app.models.collection import SearchCollection
 from app.models.evidence import (
     EvidenceChunk,
     EvidenceRetrievalResult,
@@ -88,9 +88,11 @@ class EvidenceRetriever:
         self,
         parsed_query: ParsedQuery,
         candidates: List[CandidatePatent],
+        collection: SearchCollection,
     ) -> EvidenceRetrievalResult:
         """
-        Execute Phase 4 Bounded Evidence Retrieval for qualified candidates.
+        Execute Phase 4 Bounded Evidence Retrieval for qualified candidates,
+        reading chunks from *collection*.
         """
         t_start = time.perf_counter()
 
@@ -157,7 +159,7 @@ class EvidenceRetriever:
                 search_limit = self.global_top_k
 
                 search_res = self.db.client.query_points(
-                    collection_name=CHUNKS_COLLECTION_NAME,
+                    collection_name=collection.chunks_collection,
                     query=evidence_vec,
                     query_filter=candidate_filter,
                     limit=search_limit,
@@ -213,7 +215,9 @@ class EvidenceRetriever:
                             needed_neighbors.setdefault(pid, set()).add(next_cid)
 
         if needed_neighbors:
-            fetched_neighbors = self._fetch_neighbor_chunks_batch(needed_neighbors)
+            fetched_neighbors = self._fetch_neighbor_chunks_batch(
+                needed_neighbors, collection.chunks_collection
+            )
             for (pid, cid), payload in fetched_neighbors.items():
                 if pid in evidence_pool and cid not in evidence_pool[pid]:
                     # Find base score of the closest anchor chunk
@@ -290,6 +294,7 @@ class EvidenceRetriever:
     def _fetch_neighbor_chunks_batch(
         self,
         needed_neighbors: Dict[str, Set[int]],
+        chunks_collection: str,
     ) -> Dict[Tuple[str, int], Dict[str, Any]]:
         """
         Fetch neighbor chunk payloads in a single batched Qdrant scroll query.
@@ -314,7 +319,7 @@ class EvidenceRetriever:
 
         try:
             scroll_res, _ = self.db.client.scroll(
-                collection_name=CHUNKS_COLLECTION_NAME,
+                collection_name=chunks_collection,
                 scroll_filter=neighbor_filter,
                 limit=scroll_limit,
                 with_payload=True,

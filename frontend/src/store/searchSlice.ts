@@ -18,6 +18,8 @@ export type PhaseReceivedPayload = {
 /** One pipeline run — either live (this slice) or loaded from history. */
 export interface SearchRun {
   query: string
+  /** Name of the searched collection; null for history saved before collections were selectable. */
+  collection: string | null
   status: SearchStatus
   cacheHit: boolean
   phases: PhaseMap
@@ -29,6 +31,7 @@ export interface SearchRun {
 
 const initialState: SearchRun = {
   query: '',
+  collection: null,
   status: 'idle',
   cacheHit: false,
   phases: {},
@@ -38,8 +41,8 @@ const searchSlice = createSlice({
   name: 'search',
   initialState,
   reducers: {
-    searchStarted(_, action: PayloadAction<string>) {
-      return { ...initialState, query: action.payload, status: 'running' }
+    searchStarted(_, action: PayloadAction<{ query: string; collection: string }>) {
+      return { ...initialState, ...action.payload, status: 'running' }
     },
     streamOpened(state, action: PayloadAction<{ cacheHit: boolean; searchId: number | null }>) {
       state.cacheHit = action.payload.cacheHit

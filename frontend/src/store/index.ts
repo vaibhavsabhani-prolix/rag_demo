@@ -1,11 +1,13 @@
 import { configureStore } from '@reduxjs/toolkit'
 import { useDispatch, useSelector } from 'react-redux'
+import compareReducer from './compareSlice'
 import searchReducer from './searchSlice'
 import uiReducer from './uiSlice'
 
 export const store = configureStore({
   reducer: {
     search: searchReducer,
+    compare: compareReducer,
     ui: uiReducer,
   },
   middleware: (getDefault) =>

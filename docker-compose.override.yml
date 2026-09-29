@@ -1,0 +1,39 @@
+# Development overrides. `docker compose up` merges this file automatically, so
+# code changes show up without rebuilding the image:
+#
+#   - app/ is mounted into `web` and uvicorn restarts on every .py change.
+#   - `frontend` runs the Vite dev server on http://localhost:5173 with hot reload;
+#     it proxies /api to `web`. :8000 redirects its UI pages there.
+#
+# For the production-style image (frontend built into it, no reload), skip this file:
+#   docker compose -f docker-compose.yml up -d --build
+#
+# Rebuild `web` only when requirements.txt changes.
+
+services:
+  web:
+    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
+    environment:
+      FRONTEND_DEV_URL: http://localhost:5173
+    volumes:
+      - ./app:/app/app
+      - ./metadata_fields.py:/app/metadata_fields.py
+
+  frontend:
+    image: node:24-alpine
+    container_name: patent-search-frontend
+    working_dir: /frontend
+    # `npm install` is quick when nothing changed and picks up new dependencies.
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      API_PROXY_TARGET: http://web:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/frontend
+      # The container's own node_modules (Alpine needs different native binaries than the host).
+      - frontend_node_modules:/frontend/node_modules
+    restart: unless-stopped
+
+volumes:
+  frontend_node_modules:

@@ -24,6 +24,7 @@ export function HistoryCard({ item }: { item: HistoryItem }) {
             <time dateTime={item.created_at} title={formatDate(item.created_at)}>
               {formatRelative(item.created_at)}
             </time>
+            {item.collection && <span>· {item.collection}</span>}
             {item.total_ms !== null && <span>· {formatMs(item.total_ms)}</span>}
             {item.cache_hit && <span>· cache hit</span>}
           </div>
