@@ -20,6 +20,7 @@ import uuid
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    OptimizersConfigDiff,
     PointStruct,
     VectorParams,
 )
@@ -31,6 +32,7 @@ from app.config import (
     PATENTS_COLLECTION_NAME,
     PATENTS_COLLECTION_PREFIX,
     QDRANT_HOST,
+    QDRANT_INDEXING_THRESHOLD_KB,
     QDRANT_PORT,
     QDRANT_TIMEOUT,
     VECTOR_SIZE,
@@ -153,6 +155,37 @@ class QdrantDB:
         self._create_patents_collection()
 
         print("Collections ready.")
+
+    # ==============================================================
+    # Bulk loading
+    # ==============================================================
+
+    def pause_indexing(self):
+        """
+        Stop Qdrant from building HNSW indexes for the chunks collection's new
+        segments, so a big ingest doesn't compete with index builds. Segments
+        already indexed stay indexed. Searches scan unindexed segments in full
+        (slower) until resume_indexing().
+        """
+        self.client.update_collection(
+            collection_name=CHUNKS_COLLECTION_NAME,
+            optimizers_config=OptimizersConfigDiff(indexing_threshold=0),
+        )
+
+    def resume_indexing(self):
+        """
+        Index everything added since pause_indexing(). Qdrant does it in the
+        background; the collection is YELLOW until it's done.
+        """
+        self.client.update_collection(
+            collection_name=CHUNKS_COLLECTION_NAME,
+            optimizers_config=OptimizersConfigDiff(indexing_threshold=QDRANT_INDEXING_THRESHOLD_KB),
+        )
+
+    def index_status(self) -> tuple[str, int, int]:
+        """The chunks collection's status (green/yellow/grey/red), indexed vectors and points."""
+        info = self.client.get_collection(CHUNKS_COLLECTION_NAME)
+        return info.status.value, info.indexed_vectors_count or 0, info.points_count or 0
 
     # ==============================================================
     # Chunk insertion

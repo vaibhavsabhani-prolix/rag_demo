@@ -4,6 +4,14 @@ export function formatMs(ms: number | undefined): string {
   return `${ms.toFixed(ms < 10 ? 2 : 0)} ms`
 }
 
+const MB = 2 ** 20
+
+/** Bytes as MB (or GB from 1 GB up). */
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * MB) return `${(bytes / (1024 * MB)).toFixed(2)} GB`
+  return `${(bytes / MB).toFixed(bytes < 10 * MB ? 1 : 0)} MB`
+}
+
 export function formatPercent(ratio: number, digits = 0): string {
   return `${(ratio * 100).toFixed(digits)}%`
 }

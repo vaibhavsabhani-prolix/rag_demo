@@ -119,6 +119,13 @@ class BGEReranker:
             self._token_counter = TokenCounter(model_name=self.model)
         return self._token_counter
 
+    def warm_up(self) -> None:
+        """
+        Load the tokenizer now so the first search doesn't pay for it (~2.5s,
+        including a Hugging Face Hub check).
+        """
+        self.token_counter
+
     def truncate_document_for_budget(
         self,
         text: str,
@@ -335,20 +342,25 @@ class BGEReranker:
             for s, e in sentence_spans[(item[0], item[1])]
         ]
 
+        # Neighboring chunks and boilerplate repeat sentences; score each distinct one once.
+        unique_sentences = list(dict.fromkeys(sentence_docs))
+
         # 4. Batch chunks + sentences and score concurrently
         t_http_start = time.perf_counter()
         all_scores, total_requests = self._score_documents(
-            reranking_query, [item[3] for item in items_to_rerank] + sentence_docs
+            reranking_query, [item[3] for item in items_to_rerank] + unique_sentences
         )
         http_time_ms = (time.perf_counter() - t_http_start) * 1000
 
         scores_map: Dict[Tuple[str, int], float] = {
             (item[0], item[1]): score for item, score in zip(items_to_rerank, all_scores)
         }
-        remaining_sentence_scores = iter(all_scores[total_chunks:])
+        score_by_sentence = dict(zip(unique_sentences, all_scores[total_chunks:]))
         sentence_scores: Dict[Tuple[str, int], List[float]] = {
-            key: [next(remaining_sentence_scores) for _ in spans]
-            for key, spans in sentence_spans.items()
+            (item[0], item[1]): [
+                score_by_sentence[item[2].text[s:e]] for s, e in sentence_spans[(item[0], item[1])]
+            ]
+            for item in items_to_rerank
         }
         term_pattern = extract_term_patterns(parsed_query.original_query or "", parsed_query.concepts)
 
@@ -418,7 +430,7 @@ class BGEReranker:
             reranked_patents=reranked_patents,
             total_candidates=len(reranked_patents),
             total_chunks_reranked=total_chunks,
-            total_sentences_scored=len(sentence_docs),
+            total_sentences_scored=len(unique_sentences),
             total_requests=total_requests,
             truncated_chunks_count=truncated_count,
             reranking_query=reranking_query,

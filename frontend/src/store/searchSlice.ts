@@ -1,4 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
+import type { MemoryUsage } from '@/schemas/api'
 import type { PhaseNumber, PhaseResults } from '@/schemas/pipeline'
 
 export type SearchStatus = 'idle' | 'running' | 'success' | 'error'
@@ -7,6 +8,8 @@ export interface PhaseEntry<T> {
   name: string
   elapsedMs: number
   data: T
+  /** Measured on compare runs only. */
+  memory?: MemoryUsage
 }
 
 export type PhaseMap = { [K in PhaseNumber]?: PhaseEntry<PhaseResults[K]> }
@@ -24,6 +27,8 @@ export interface SearchRun {
   cacheHit: boolean
   phases: PhaseMap
   totalMs?: number
+  /** Memory over Phases 2–7; measured on compare runs only. */
+  memory?: MemoryUsage
   error?: string
   /** History record id, once the server has saved the search. */
   searchId?: number | null

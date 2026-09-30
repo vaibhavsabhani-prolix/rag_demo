@@ -27,10 +27,14 @@ collection at a time so their timings are comparable. Its stream:
     {"type": "start", "query": ..., "collections": [...], "cache_hit": bool}
     {"type": "phase", "collection": null, "phase": 1, ...}      shared by all collections
     {"type": "collection_start", "collection": ...}
-    {"type": "phase", "collection": ..., "phase": 2..7, ...}
-    {"type": "collection_done", "collection": ..., "elapsed_ms": ...}
+    {"type": "phase", "collection": ..., "phase": 2..7, ..., "memory": {"start_bytes", "peak_bytes"} | null}
+    {"type": "collection_done", "collection": ..., "elapsed_ms": ...,
+     "memory": {"start_bytes", "peak_bytes", "end_bytes"} | null}
       or {"type": "collection_error", "collection": ..., "message": ...}
     {"type": "done", "elapsed_ms": ...}  or  {"type": "error", "message": ...}
+
+"memory" is this process's resident memory (see app/api/memory.py); null where
+it can't be read. Send a single collection to run them one by one.
 
 Compare runs are not saved to history.
 
@@ -54,6 +58,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.api.history import router as history_router
+from app.api.memory import MemorySampler, release_free_memory
 from app.api.settings import router as settings_router
 from app.api.schemas import (
     CacheStats,
@@ -110,6 +115,7 @@ def build_pipeline(db: QdrantDB) -> SearchPipeline:
     engine = QueryUnderstandingEngine()
     engine.warm_up()
     reranker = BGEReranker()
+    reranker.warm_up()
     return SearchPipeline(
         engine=engine,
         retriever=CandidateRetriever(db=db),
@@ -328,9 +334,19 @@ def _stream_compare(req: CompareRequest, collections: list[SearchCollection]) ->
     # Set when the client goes away, so the remaining collections are skipped.
     cancelled = threading.Event()
 
-    def phase_callback(collection: Optional[str]) -> Callable[[int, str, object, float], None]:
+    def phase_callback(
+        collection: Optional[str], memory: Optional[MemorySampler] = None
+    ) -> Callable[[int, str, object, float], None]:
         def on_phase_complete(phase_num: int, phase_name: str, result: object, elapsed_ms: float) -> None:
-            events.put({**_phase_event(phase_num, phase_name, result, elapsed_ms), "collection": collection})
+            usage = memory.end_lap() if memory else None
+            events.put({
+                **_phase_event(phase_num, phase_name, result, elapsed_ms),
+                "collection": collection,
+                "memory": usage,
+            })
+            # The next phase's lap starts after this one's result is serialized.
+            if memory:
+                memory.start_lap()
 
         return on_phase_complete
 
@@ -345,13 +361,17 @@ def _stream_compare(req: CompareRequest, collections: list[SearchCollection]) ->
                 if cancelled.is_set():
                     break
                 events.put({"type": "collection_start", "collection": collection.name})
+                # Start every collection from the same baseline; not part of its timing.
+                release_free_memory()
                 t_col = time.perf_counter()
                 try:
-                    pipeline.run_parsed(parsed_query, collection, phase_callback(collection.name))
+                    with MemorySampler() as memory:
+                        pipeline.run_parsed(parsed_query, collection, phase_callback(collection.name, memory))
                     events.put({
                         "type": "collection_done",
                         "collection": collection.name,
                         "elapsed_ms": (time.perf_counter() - t_col) * 1000,
+                        "memory": memory.total(),
                     })
                 except Exception as exc:
                     logger.exception("Compare run failed for collection %s", collection.name)

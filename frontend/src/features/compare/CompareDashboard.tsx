@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { Card, CardBody, CardHeader, DataTable, Stat, Tabs, type Column } from '@/components/ui'
 import { SearchRunView } from '@/features/run/SearchRunView'
-import { formatMs } from '@/lib/format'
+import { formatBytes, formatMs } from '@/lib/format'
 import { PHASES, type PhaseNumber } from '@/schemas/pipeline'
 import type { CompareState } from '@/store/compareSlice'
 import { CollectionBarChart, GroupedBarChart, Legend, RankLineChart, type Series } from './charts'
@@ -20,6 +20,9 @@ const formatCount = (n: number) => n.toLocaleString()
 const formatScore2 = (n: number) => n.toFixed(2)
 /** Milliseconds as seconds, for chart axes and labels. */
 const formatSeconds = (ms: number) => `${(ms / 1000).toFixed(ms > 0 && ms < 10_000 ? 1 : 0)} s`
+/** Megabytes, for chart axes and labels (charts get MB so their ticks come out round). */
+const formatMB = (mb: number) => `${mb.toFixed(mb > 0 && mb < 10 ? 1 : 0)} MB`
+const toMB = (bytes: number | undefined) => (bytes === undefined ? undefined : bytes / 2 ** 20)
 const orDash = <T,>(v: T | undefined, format: (v: T) => string) => (v === undefined ? '—' : format(v))
 
 interface CompareDashboardProps {
@@ -41,6 +44,13 @@ export function CompareDashboard({ state, metrics, series }: CompareDashboardPro
     (id) => !timedSteps.includes(id) && metrics.some((m) => m.phaseMs[id] !== undefined),
   )
   const stepName = (id: PhaseNumber) => PHASES.find((p) => p.id === id)!.short
+
+  // Likewise, steps that needed under 1 MB everywhere are listed instead of drawn.
+  const hasMemory = metrics.some((m) => m.peakMemory !== undefined)
+  const memorySteps = COLLECTION_PHASES.filter((id) => metrics.some((m) => (m.phaseMemory[id] ?? 0) >= 2 ** 20))
+  const lightSteps = COLLECTION_PHASES.filter(
+    (id) => !memorySteps.includes(id) && metrics.some((m) => m.phaseMemory[id] !== undefined),
+  )
 
   const perSeries = (get: (m: CollectionMetrics) => number | undefined) =>
     Object.fromEntries(metrics.map((m) => [m.name, get(m)]))
@@ -80,6 +90,48 @@ export function CompareDashboard({ state, metrics, series }: CompareDashboardPro
             format={formatSeconds}
             xTitle="Time"
           />
+        </ChartCard>
+
+        <ChartCard
+          title="Which collection needs the most memory?"
+          subtitle="Extra memory the search server needed at its peak during steps 2–7, over what it held before. Shorter bar = lighter."
+          footnote="Resident memory of the API process, sampled every 10 ms. Anything else running on the server at the same time is counted too."
+        >
+          {hasMemory ? (
+            <CollectionBarChart
+              data={series.map((s) => ({ name: s.name, color: s.color, value: toMB(byName[s.name]?.peakMemory) }))}
+              format={formatMB}
+              yTitle="Extra memory"
+              valueName="Peak extra memory"
+            />
+          ) : (
+            <EmptyChart>No memory measurements yet.</EmptyChart>
+          )}
+        </ChartCard>
+
+        <ChartCard
+          title="Where does the memory go?"
+          subtitle="Extra memory each step needed at its peak, over what the server held when the step began."
+          series={multi && hasMemory ? series : undefined}
+          footnote={
+            lightSteps.length > 0
+              ? `${lightSteps.map(stepName).join(' and ')} needed under 1 MB everywhere, so ${lightSteps.length === 1 ? "it isn't" : "they aren't"} shown.`
+              : undefined
+          }
+        >
+          {memorySteps.length > 0 ? (
+            <GroupedBarChart
+              categories={memorySteps.map((id) => ({
+                label: stepName(id),
+                values: perSeries((m) => toMB(m.phaseMemory[id])),
+              }))}
+              series={series}
+              format={formatMB}
+              xTitle="Extra memory"
+            />
+          ) : (
+            <EmptyChart>{hasMemory ? 'Every step needed under 1 MB.' : 'No memory measurements yet.'}</EmptyChart>
+          )}
         </ChartCard>
 
         <ChartCard
@@ -138,9 +190,10 @@ export function CompareDashboard({ state, metrics, series }: CompareDashboardPro
       <MetricsTable
         metrics={metrics}
         series={series}
-        parseMs={state.runs[state.collections[0]]?.phases[1]?.elapsedMs}
+        parseMs={Object.values(state.runs).find((r) => r.phases[1])?.phases[1]?.elapsedMs}
       />
-      <DrillDown state={state} series={series} />
+      {/* Remounted when a collection runs on its own, so its tab opens. */}
+      <DrillDown key={state.focus} state={state} series={series} />
     </div>
   )
 }
@@ -176,7 +229,7 @@ function KeyFindings({ findings }: { findings: Finding[] }) {
     <Card>
       <CardHeader title="Key findings" subtitle="Compared across the collections that finished." />
       <CardBody>
-        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {findings.map((f) => (
             <div key={f.label} className="rounded-lg bg-slate-50 px-4 py-3 ring-1 ring-slate-100">
               <dt className="text-xs font-medium tracking-wide text-slate-500 uppercase">{f.label}</dt>
@@ -346,6 +399,8 @@ function Overlap({ metrics, series }: { metrics: CollectionMetrics[]; series: Se
 }
 
 interface MetricRow {
+  /** Defaults to the label. */
+  key?: string
   label: string
   value: (m: CollectionMetrics) => string
 }
@@ -365,6 +420,13 @@ function MetricsTable({
       label: `  ${PHASES.find((p) => p.id === id)!.title}`,
       value: (m) => orDash(m.phaseMs[id], formatMs),
     })),
+    { label: 'Peak extra memory (steps 2–7)', value: (m) => orDash(m.peakMemory, formatBytes) },
+    ...COLLECTION_PHASES.map<MetricRow>((id) => ({
+      key: `memory-${id}`,
+      label: `  ${PHASES.find((p) => p.id === id)!.title}`,
+      value: (m) => orDash(m.phaseMemory[id], formatBytes),
+    })),
+    { label: 'Peak server memory', value: (m) => orDash(m.peakRss, formatBytes) },
     { label: 'Candidates retrieved', value: (m) => orDash(m.candidates, formatCount) },
     { label: 'After metadata filter', value: (m) => orDash(m.afterFilter, formatCount) },
     { label: 'Verified', value: (m) => orDash(m.verified, formatCount) },
@@ -401,7 +463,7 @@ function MetricsTable({
         subtitle={`Every value behind the charts. Query understanding ran once for all collections${parseMs === undefined ? '' : ` (${formatMs(parseMs)})`}.`}
       />
       <CardBody>
-        <DataTable columns={columns} rows={rows} rowKey={(r) => r.label} />
+        <DataTable columns={columns} rows={rows} rowKey={(r) => r.key ?? r.label} />
       </CardBody>
     </Card>
   )
@@ -410,7 +472,7 @@ function MetricsTable({
 /** The regular results and pipeline views for one collection's run. */
 function DrillDown({ state, series }: { state: CompareState; series: Series[] }) {
   const [chosen, setChosen] = useState<string | null>(null)
-  const active = chosen && state.runs[chosen] ? chosen : state.collections[0]
+  const active = chosen && state.runs[chosen] ? chosen : (state.focus ?? state.collections[0])
   const run = active ? state.runs[active] : undefined
   if (!run) return null
 

@@ -13,5 +13,7 @@ export default defineConfig({
     // Forward API calls to the FastAPI server (see app/api/main.py).
     // In Docker the dev server reaches it by service name (docker-compose.override.yml).
     proxy: { '/api': process.env.API_PROXY_TARGET ?? 'http://localhost:8000' },
+    // Let an ngrok tunnel (`ngrok http 5173`) reach the dev server.
+    allowedHosts: ['.ngrok-free.app', '.ngrok-free.dev', '.ngrok.app', '.ngrok.dev'],
   },
 })

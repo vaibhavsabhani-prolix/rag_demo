@@ -30,6 +30,19 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # Browser UI for the search history database: http://localhost:8080
+  # (log in with System "PostgreSQL", user/password "patent", database "patent_search").
+  adminer:
+    image: adminer:latest
+    container_name: patent-search-adminer
+    depends_on:
+      - postgres
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
   # React UI + FastAPI search API on http://localhost:8000
   web:
     build: .

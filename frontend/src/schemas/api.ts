@@ -58,6 +58,17 @@ export const searchEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('error'), message: z.string() }),
 ])
 
+/**
+ * The API process's resident memory during a compare run (app/api/memory.py):
+ * at the start of a step or collection, and its peak during it.
+ */
+export const memoryUsageSchema = z.object({
+  start_bytes: z.number(),
+  peak_bytes: z.number(),
+  /** Only on a whole collection's run. */
+  end_bytes: z.number().nullish(),
+})
+
 /** One NDJSON line from POST /api/compare. `collection` is null on the shared Phase 1 event. */
 export const compareEventSchema = z.discriminatedUnion('type', [
   z.object({
@@ -73,9 +84,15 @@ export const compareEventSchema = z.discriminatedUnion('type', [
     name: z.string(),
     elapsed_ms: z.number(),
     data: z.unknown(),
+    memory: memoryUsageSchema.nullish(),
   }),
   z.object({ type: z.literal('collection_start'), collection: z.string() }),
-  z.object({ type: z.literal('collection_done'), collection: z.string(), elapsed_ms: z.number() }),
+  z.object({
+    type: z.literal('collection_done'),
+    collection: z.string(),
+    elapsed_ms: z.number(),
+    memory: memoryUsageSchema.nullish(),
+  }),
   z.object({ type: z.literal('collection_error'), collection: z.string(), message: z.string() }),
   z.object({ type: z.literal('done'), elapsed_ms: z.number() }),
   z.object({ type: z.literal('error'), message: z.string() }),
@@ -87,3 +104,4 @@ export type CollectionList = z.infer<typeof collectionListSchema>
 export type CacheStats = z.infer<typeof cacheStatsSchema>
 export type SearchEvent = z.infer<typeof searchEventSchema>
 export type CompareEvent = z.infer<typeof compareEventSchema>
+export type MemoryUsage = z.infer<typeof memoryUsageSchema>

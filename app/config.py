@@ -63,6 +63,16 @@ CHUNK_QUEUE_CAPACITY = 1024
 # workers are plenty to keep up.
 INSERT_WORKERS = 4
 
+# Qdrant builds the HNSW search index for each segment as it fills up and
+# rebuilds it whenever segments merge (collection status YELLOW), competing
+# with a big ingest for CPU and disk. With this on, ingest_directory() pauses
+# indexing of the chunks collection and builds the index once at the end.
+# Until then, searches on that collection fall back to a slower full scan.
+# Set INGEST_PAUSE_INDEXING=0 to index while ingesting instead.
+INGEST_PAUSE_INDEXING = os.getenv("INGEST_PAUSE_INDEXING", "1") != "0"
+# Qdrant's default: a segment holding more vector data than this (KB) gets an HNSW index.
+QDRANT_INDEXING_THRESHOLD_KB = 20000
+
 # Append-only log of patent filenames fully committed to Qdrant
 # (metadata + every chunk). ingest_directory() reads it on startup to
 # skip already-completed patents, so stopping and re-running the same

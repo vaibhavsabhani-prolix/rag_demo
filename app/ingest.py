@@ -51,8 +51,10 @@ from app.chunker import PatentChunker
 from app.config import (
     BATCH_SIZE,
     CHUNK_QUEUE_CAPACITY,
+    CHUNKS_COLLECTION_NAME,
     EMBED_BATCH_SIZE,
     EMBED_CONCURRENT_REQUESTS,
+    INGEST_PAUSE_INDEXING,
     INGEST_PREFETCH,
     INGEST_PROGRESS_FILE,
     INSERT_REPORT_EVERY,
@@ -61,7 +63,7 @@ from app.config import (
 )
 from app.embedder import Embedder
 from app.parser import PatentParser
-from app.progress import IngestProgress
+from app.progress import IngestProgress, track_indexing
 from app.qdrant_db import QdrantDB
 
 _DONE = object()
@@ -303,9 +305,56 @@ def _insert_worker(
 
 
 def ingest_directory(directory: str):
-    embedder = Embedder()
     db = QdrantDB()
     db.create_collections()
+
+    if not INGEST_PAUSE_INDEXING:
+        _ingest(directory, db)
+        return
+
+    # Index once at the end instead of over and over while points arrive.
+    # Runs on Ctrl+C too; after a crash, the next run resumes indexing when it ends.
+    db.pause_indexing()
+    print("Qdrant indexing paused for the ingest.")
+    try:
+        _ingest(directory, db)
+    finally:
+        db.resume_indexing()
+        print("Qdrant indexing resumed.")
+
+    wait_for_index(db)
+
+
+def wait_for_index(db: QdrantDB):
+    """
+    Show a progress bar while Qdrant builds the chunks collection's search
+    index. Ctrl+C only stops watching; Qdrant keeps building.
+    """
+    print(f"\nBuilding the search index for '{CHUNKS_COLLECTION_NAME}'...")
+    start = time.time()
+    try:
+        track_indexing(db.index_status)
+    except KeyboardInterrupt:
+        print(
+            "\nStopped watching. Qdrant keeps building the index in the background;"
+            " watch it again with: PYTHONPATH=. python -m app.scripts.build_index"
+        )
+        return
+
+    _, indexed, points = db.index_status()
+    minutes, seconds = divmod(int(time.time() - start), 60)
+    print("=" * 60)
+    print("SEARCH INDEX READY")
+    print("=" * 60)
+    print(f"Collection      : {CHUNKS_COLLECTION_NAME} (GREEN)")
+    print(f"Points          : {points}")
+    print(f"Indexed Vectors : {indexed}")
+    print(f"Build Time      : {minutes}m {seconds:02d}s")
+    print("=" * 60)
+
+
+def _ingest(directory: str, db: QdrantDB):
+    embedder = Embedder()
 
     all_files = _scan_patent_files(directory)
     progress_path = Path(INGEST_PROGRESS_FILE)

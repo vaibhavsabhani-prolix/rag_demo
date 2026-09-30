@@ -3,15 +3,14 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { Alert, Button, Checkbox, SearchIcon, Spinner, TextField } from '@/components/ui'
 import { useCollections } from '@/hooks/queries'
-import { useCompare } from '@/hooks/useCompare'
+import type { CompareController } from '@/hooks/useCompare'
 import { formatCompact } from '@/lib/format'
 import { searchFormSchema } from '@/schemas/search'
 import { MAX_COMPARED, useSeries } from './series'
 
 const compareFormSchema = searchFormSchema.pick({ query: true, useCache: true })
 
-export function CompareForm() {
-  const compare = useCompare()
+export function CompareForm({ compare }: { compare: CompareController }) {
   const collections = useCollections()
   // Tracks what was unticked, so collections added later are included by default.
   const [excluded, setExcluded] = useState<string[]>([])
@@ -33,13 +32,14 @@ export function CompareForm() {
   const toggle = (name: string, checked: boolean) =>
     setExcluded((prev) => (checked ? prev.filter((n) => n !== name) : [...prev, name]))
 
-  const onSubmit = handleSubmit(({ query, useCache }) => {
-    if (selected.length === 0 || tooMany) return
-    compare.mutate({ query, useCache, collections: selected })
-  })
+  const submit = (oneByOne: boolean) =>
+    handleSubmit(({ query, useCache }) => {
+      if (selected.length === 0 || tooMany) return
+      compare.start({ query, useCache, collections: selected, oneByOne })
+    })
 
   return (
-    <form onSubmit={onSubmit} noValidate className="space-y-3">
+    <form onSubmit={submit(false)} noValidate className="space-y-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
         <TextField
           {...register('query')}
@@ -56,9 +56,27 @@ export function CompareForm() {
             Stop
           </Button>
         ) : (
-          <Button type="submit" size="lg" disabled={selected.length === 0 || tooMany} className="sm:w-36">
-            Compare
-          </Button>
+          <div className="flex gap-3">
+            <Button
+              type="submit"
+              size="lg"
+              disabled={selected.length === 0 || tooMany}
+              className="flex-1 sm:w-36"
+              title="Run every selected collection in a row"
+            >
+              Compare all
+            </Button>
+            <Button
+              variant="secondary"
+              size="lg"
+              disabled={selected.length === 0 || tooMany}
+              onClick={submit(true)}
+              className="flex-1 sm:w-36"
+              title="Run the first collection now, then choose which to run next"
+            >
+              One by one
+            </Button>
+          </div>
         )}
       </div>
 

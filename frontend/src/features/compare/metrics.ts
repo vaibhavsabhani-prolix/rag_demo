@@ -1,5 +1,5 @@
 /** Numbers compared across collections, derived from each collection's SearchRun. */
-import { formatMs } from '@/lib/format'
+import { formatBytes, formatMs } from '@/lib/format'
 import { summarizePatent } from '@/lib/patent'
 import type { PhaseNumber } from '@/schemas/pipeline'
 import type { SearchRun } from '@/store/searchSlice'
@@ -16,6 +16,12 @@ export interface CollectionMetrics {
   phaseMs: Partial<Record<PhaseNumber, number>>
   /** Phases 2–7. */
   totalMs?: number
+  /** Extra memory (bytes) each step needed at its peak, over what the process held when it began. */
+  phaseMemory: Partial<Record<PhaseNumber, number>>
+  /** Extra memory (bytes) at the peak of Phases 2–7. */
+  peakMemory?: number
+  /** The API process's whole resident memory (bytes) at that peak. */
+  peakRss?: number
   // Patents at each step
   candidates?: number
   afterFilter?: number
@@ -36,9 +42,11 @@ export interface CollectionMetrics {
 export function collectionMetrics(name: string, run: SearchRun): CollectionMetrics {
   const { phases } = run
   const phaseMs: Partial<Record<PhaseNumber, number>> = {}
+  const phaseMemory: Partial<Record<PhaseNumber, number>> = {}
   for (const id of COLLECTION_PHASES) {
     const entry = phases[id]
     if (entry) phaseMs[id] = entry.elapsedMs
+    if (entry?.memory) phaseMemory[id] = entry.memory.peak_bytes - entry.memory.start_bytes
   }
 
   const results = phases[7]?.data.results ?? []
@@ -50,6 +58,9 @@ export function collectionMetrics(name: string, run: SearchRun): CollectionMetri
     run,
     phaseMs,
     totalMs: run.totalMs,
+    phaseMemory,
+    peakMemory: run.memory && run.memory.peak_bytes - run.memory.start_bytes,
+    peakRss: run.memory?.peak_bytes,
     candidates: phases[2]?.data.candidates.length,
     afterFilter: phases[3]?.data.total_after,
     verified: phases[5]?.data.total_evaluated,
@@ -144,6 +155,19 @@ export function keyFindings(metrics: CollectionMetrics[]): Finding[] {
       label: 'Fastest',
       value: fastest.names.join(' & '),
       detail: `${formatMs(fastest.value)} for steps 2–7${faster}`,
+    })
+  }
+
+  const lightest = best(done, (m) => m.peakMemory, false)
+  if (lightest) {
+    const less =
+      lightest.worst.value > lightest.value
+        ? ` · ${formatBytes(lightest.worst.value - lightest.value)} less than ${lightest.worst.name}`
+        : ''
+    findings.push({
+      label: 'Least memory',
+      value: lightest.names.join(' & '),
+      detail: `+${formatBytes(lightest.value)} at the peak of steps 2–7${less}`,
     })
   }
 

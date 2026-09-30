@@ -16,6 +16,9 @@ SmartETAColumn provides accurate time-remaining estimates using a
 rolling window of recent completion timestamps, avoiding the
 inaccuracies that Rich's built-in TimeRemainingColumn shows when
 totals change mid-task.
+
+track_indexing() shows one more bar after the ingest: Qdrant building
+the search index, until the collection is GREEN.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from __future__ import annotations
 import collections
 import time
 from threading import Lock
+from typing import Callable
 
 from rich.progress import (
     BarColumn,
@@ -156,6 +160,23 @@ class SmartETAColumn(ProgressColumn):
         return f"{minutes}:{secs:02d}"
 
 
+def _columns() -> list[ProgressColumn]:
+    """The column layout every bar here shares."""
+    return [
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description:<20}"),
+        BarColumn(bar_width=None),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TextColumn("-"),
+        RateColumn(),
+        TextColumn("- elapsed"),
+        TimeElapsedColumn(),
+        TextColumn("- eta"),
+        SmartETAColumn(),
+    ]
+
+
 # ==============================================================
 # IngestProgress — wraps the 5-bar display
 # ==============================================================
@@ -193,20 +214,7 @@ class IngestProgress:
         self._total_files = total_files
         self._lock = Lock()
 
-        self._progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description:<20}"),
-            BarColumn(bar_width=None),
-            TaskProgressColumn(),
-            MofNCompleteColumn(),
-            TextColumn("-"),
-            RateColumn(),
-            TextColumn("- elapsed"),
-            TimeElapsedColumn(),
-            TextColumn("- eta"),
-            SmartETAColumn(),
-            disable=quiet,
-        )
+        self._progress = Progress(*_columns(), disable=quiet)
 
         # Task IDs — assigned in __enter__.
         self._scan_task = None
@@ -308,3 +316,40 @@ class IngestProgress:
                 markup=False,
                 highlight=False,
             )
+
+
+# ==============================================================
+# Search index build (after the ingest)
+# ==============================================================
+
+
+def track_indexing(
+    poll: Callable[[], tuple[str, int, int]],
+    interval_s: float = 2.0,
+    quiet: bool = False,
+) -> None:
+    """
+    Show a bar of indexed vectors out of all points while Qdrant builds the
+    search index, and return once the collection is GREEN. *poll* returns
+    (status, indexed_vectors, points).
+
+    GREEN only counts on two polls in a row: right after indexing resumes,
+    Qdrant can report GREEN for a moment before its optimizer starts. Small
+    segments under the indexing threshold stay unindexed (they're scanned in
+    full), so the bar is filled up once GREEN rather than by the count.
+
+    Raises RuntimeError if the collection turns RED (an optimizer error).
+    """
+    with Progress(*_columns(), disable=quiet) as progress:
+        task = progress.add_task("Building Index", total=None)
+        greens = 0
+        while True:
+            status, indexed, points = poll()
+            if status == "red":
+                raise RuntimeError("Qdrant reports the collection RED (optimizer error); check the Qdrant logs.")
+            greens = greens + 1 if status == "green" else 0
+            if greens >= 2:
+                progress.update(task, total=points, completed=points)
+                return
+            progress.update(task, total=points, completed=min(indexed, points))
+            time.sleep(interval_s)

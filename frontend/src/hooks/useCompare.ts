@@ -1,13 +1,16 @@
 /**
  * Runs one query against several collections as a React Query mutation and
  * streams every phase result into the compare slice as it arrives.
+ *
+ * Call it once per page and share the result: `stop` only aborts requests
+ * started through the same instance.
  */
 import { useMutation } from '@tanstack/react-query'
 import { useRef } from 'react'
 import { z } from 'zod'
 import { api, ApiError } from '@/lib/api'
 import { phaseSchemas, type PhaseNumber } from '@/schemas/pipeline'
-import { useAppDispatch } from '@/store'
+import { useAppDispatch, useAppSelector } from '@/store'
 import {
   collectionFailed,
   collectionStarted,
@@ -17,10 +20,21 @@ import {
   compareStarted,
   compareStreamOpened,
   compareSucceeded,
+  runsRequested,
   type ComparePhasePayload,
 } from '@/store/compareSlice'
+import { selectCompare } from '@/store/selectors'
 
 export interface CompareValues {
+  query: string
+  collections: string[]
+  useCache: boolean
+  /** Run only the first collection now; the others wait to be run one at a time. */
+  oneByOne?: boolean
+}
+
+/** What one request streams: some collections of the current comparison. */
+interface RunValues {
   query: string
   collections: string[]
   useCache: boolean
@@ -28,16 +42,17 @@ export interface CompareValues {
 
 export function useCompare() {
   const dispatch = useAppDispatch()
+  const { query, useCache } = useAppSelector(selectCompare)
   const abortRef = useRef<AbortController | null>(null)
 
   const mutation = useMutation({
-    mutationFn: async ({ query, collections, useCache }: CompareValues) => {
-      // Starting a new comparison cancels the one still streaming.
+    mutationFn: async ({ query, collections, useCache }: RunValues) => {
+      // Starting a new request cancels the one still streaming.
       abortRef.current?.abort()
       const controller = new AbortController()
       abortRef.current = controller
 
-      dispatch(compareStarted({ query, collections }))
+      dispatch(runsRequested(collections))
       let finished = false
 
       try {
@@ -58,6 +73,7 @@ export function useCompare() {
                     name: event.name,
                     elapsedMs: event.elapsed_ms,
                     data,
+                    memory: event.memory ?? undefined,
                   } as ComparePhasePayload),
                 )
                 break
@@ -66,7 +82,13 @@ export function useCompare() {
                 dispatch(collectionStarted(event.collection))
                 break
               case 'collection_done':
-                dispatch(collectionSucceeded({ collection: event.collection, elapsedMs: event.elapsed_ms }))
+                dispatch(
+                  collectionSucceeded({
+                    collection: event.collection,
+                    elapsedMs: event.elapsed_ms,
+                    memory: event.memory ?? undefined,
+                  }),
+                )
                 break
               case 'collection_error':
                 dispatch(collectionFailed({ collection: event.collection, message: event.message }))
@@ -83,7 +105,7 @@ export function useCompare() {
         )
       } catch (error) {
         if (!controller.signal.aborted) throw error
-        // Replaced by a newer comparison, which owns the state now.
+        // Replaced by a newer request, which owns the state now.
         if (abortRef.current !== controller) return
         throw new ApiError('Stopped.')
       }
@@ -97,8 +119,19 @@ export function useCompare() {
     },
   })
 
-  /** Stop the running comparison; the server skips the collections not started yet. */
+  /** Start a new comparison: every collection in a row, or just the first when `oneByOne`. */
+  const start = ({ query, collections, useCache, oneByOne = false }: CompareValues) => {
+    dispatch(compareStarted({ query, collections, useCache }))
+    mutation.mutate({ query, useCache, collections: oneByOne ? collections.slice(0, 1) : collections })
+  }
+
+  /** Run (or rerun) some collections of the current comparison, keeping the others' results. */
+  const run = (collections: string[]) => mutation.mutate({ query, useCache, collections })
+
+  /** Stop the running request; the server skips the collections not started yet. */
   const stop = () => abortRef.current?.abort()
 
-  return { ...mutation, stop }
+  return { isPending: mutation.isPending, start, run, stop }
 }
+
+export type CompareController = ReturnType<typeof useCompare>

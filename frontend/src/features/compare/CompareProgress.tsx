@@ -1,5 +1,6 @@
 import clsx from 'clsx'
-import { Badge } from '@/components/ui'
+import { Badge, Button } from '@/components/ui'
+import type { CompareController } from '@/hooks/useCompare'
 import { formatMs } from '@/lib/format'
 import { PHASES } from '@/schemas/pipeline'
 import type { CompareState } from '@/store/compareSlice'
@@ -7,23 +8,44 @@ import type { SearchRun } from '@/store/searchSlice'
 import type { Series } from './charts'
 import { COLLECTION_PHASES } from './metrics'
 
-/** Where every collection is: queued, which step it's on, done or failed. */
-export function CompareProgress({ state, series }: { state: CompareState; series: Series[] }) {
-  const parse = Object.values(state.runs)[0]?.phases[1]
+/**
+ * Where every collection is: queued, which step it's on, done or failed. Between
+ * requests, each collection can be run (again) on its own.
+ */
+export function CompareProgress({
+  state,
+  series,
+  compare,
+}: {
+  state: CompareState
+  series: Series[]
+  compare: CompareController
+}) {
+  const parse = Object.values(state.runs).find((r) => r.phases[1])?.phases[1]
+  const idle = !compare.isPending
+  const done = state.collections.filter((name) => state.runs[name]?.status === 'success').length
+  const next = state.collections.find((name) => state.runs[name]?.status !== 'success')
 
   return (
     <div className="space-y-3 rounded-xl border border-slate-200 bg-surface p-4">
       <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
         <span className="font-medium text-slate-700">Progress</span>
-        <span className="text-slate-500">
+        <span className="flex flex-wrap items-center gap-3 text-slate-500">
           {state.status === 'running' && 'Collections run one at a time so their timings are comparable…'}
-          {state.status === 'success' && `All done in ${formatMs(state.totalMs)}`}
-          {state.status === 'error' && 'Stopped'}
+          {state.status !== 'running' &&
+            (state.totalMs !== undefined && done === state.collections.length
+              ? `All done in ${formatMs(state.totalMs)}`
+              : `${done} of ${state.collections.length} collections done`)}
+          {idle && next && (
+            <Button size="sm" onClick={() => compare.run([next])}>
+              Run next · {next}
+            </Button>
+          )}
         </span>
       </div>
 
       <p className="text-sm text-slate-500">
-        Query understanding (shared, runs once):{' '}
+        Query understanding (shared by the collections in each request):{' '}
         {parse ? (
           <span className="text-slate-700">
             {formatMs(parse.elapsedMs)}
@@ -43,7 +65,7 @@ export function CompareProgress({ state, series }: { state: CompareState; series
           return (
             <li
               key={s.name}
-              className="grid grid-cols-[6.5rem_minmax(0,1fr)] items-center gap-3 sm:grid-cols-[9rem_minmax(0,1fr)_12rem]"
+              className="grid grid-cols-[6.5rem_minmax(0,1fr)_auto] items-center gap-3 sm:grid-cols-[9rem_minmax(0,1fr)_12rem_6.5rem]"
             >
               <span className="flex items-center gap-2 text-sm font-medium text-slate-700">
                 <span className="size-2.5 shrink-0 rounded-sm" style={{ backgroundColor: s.color }} aria-hidden />
@@ -53,6 +75,15 @@ export function CompareProgress({ state, series }: { state: CompareState; series
               <span className="col-span-2 text-sm text-slate-500 sm:col-span-1 sm:text-right">
                 <RunStatus run={run} />
               </span>
+              <Button
+                variant={run.status === 'success' ? 'ghost' : 'secondary'}
+                size="sm"
+                disabled={!idle}
+                onClick={() => compare.run([s.name])}
+                className="col-start-3 row-start-1 sm:col-start-auto sm:row-start-auto"
+              >
+                {run.status === 'success' ? 'Run again' : 'Run'}
+              </Button>
             </li>
           )
         })}
