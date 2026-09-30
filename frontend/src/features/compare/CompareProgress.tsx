@@ -47,10 +47,7 @@ export function CompareProgress({
       <p className="text-sm text-slate-500">
         Query understanding (shared by the collections in each request):{' '}
         {parse ? (
-          <span className="text-slate-700">
-            {formatMs(parse.elapsedMs)}
-            {state.cacheHit && ' · cache hit'}
-          </span>
+          <span className="text-slate-700">{formatMs(parse.elapsedMs)}</span>
         ) : state.status === 'running' ? (
           'running…'
         ) : (

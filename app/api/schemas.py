@@ -24,7 +24,6 @@ class CompareRequest(BaseModel):
     query: str = Field(..., min_length=3, max_length=2000)
     # Collection names to compare, run in this order; every collection if omitted or empty.
     collections: Optional[List[str]] = Field(None, max_length=16)
-    use_cache: bool = True
 
 
 class CacheStats(BaseModel):
@@ -58,7 +57,8 @@ class CollectionList(BaseModel):
 
 class HistoryTopResult(BaseModel):
     patent_id: str
-    final_score: float
+    # None for a metadata-only query, which isn't scored (see FinalPatentResult.final_score).
+    final_score: Optional[float] = None
     title: str = ""
 
 

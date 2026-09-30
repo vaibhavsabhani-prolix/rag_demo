@@ -75,15 +75,20 @@ class FinalPatentResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     patent_id: str = Field(..., description="Unique patent identifier.")
-    final_score: float = Field(
-        default=0.0,
+    final_score: Optional[float] = Field(
+        default=None,
         ge=0.0,
         le=10.0,
-        description="Final patent relevance score on 0.0 to 10.0 scale (rounded to 2 decimal places)."
+        description=(
+            "Final patent relevance score on 0.0 to 10.0 scale (rounded to 2 decimal places). "
+            "None for a metadata-only query: relationship/requirement/retrieval signals are all "
+            "trivially 1.0 (nothing semantic to verify or rank against), so a computed score "
+            "would be meaningless rather than reflect genuine relevance."
+        )
     )
-    score_breakdown: ScoreBreakdown = Field(
-        default_factory=ScoreBreakdown,
-        description="Detailed score component breakdown for explainability."
+    score_breakdown: Optional[ScoreBreakdown] = Field(
+        default=None,
+        description="Detailed score component breakdown for explainability. None when final_score is None."
     )
     metadata: Dict[str, Any] = Field(
         default_factory=dict,

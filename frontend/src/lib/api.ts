@@ -119,7 +119,7 @@ export const api = {
 
   /** Run one query against several collections, calling `onEvent` for every event. */
   streamCompare: (
-    body: { query: string; collections: string[]; use_cache: boolean },
+    body: { query: string; collections: string[] },
     onEvent: (event: CompareEvent) => void,
     signal?: AbortSignal,
   ) => streamNdjson('/compare', body, compareEventSchema, onEvent, signal),

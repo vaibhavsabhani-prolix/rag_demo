@@ -8,7 +8,7 @@ import { formatCompact } from '@/lib/format'
 import { searchFormSchema } from '@/schemas/search'
 import { MAX_COMPARED, useSeries } from './series'
 
-const compareFormSchema = searchFormSchema.pick({ query: true, useCache: true })
+const compareFormSchema = searchFormSchema.pick({ query: true })
 
 export function CompareForm({ compare }: { compare: CompareController }) {
   const collections = useCollections()
@@ -20,7 +20,7 @@ export function CompareForm({ compare }: { compare: CompareController }) {
     formState: { errors },
   } = useForm({
     resolver: zodResolver(compareFormSchema),
-    defaultValues: { query: '', useCache: true },
+    defaultValues: { query: '' },
   })
 
   const all = collections.data?.collections ?? []
@@ -33,9 +33,9 @@ export function CompareForm({ compare }: { compare: CompareController }) {
     setExcluded((prev) => (checked ? prev.filter((n) => n !== name) : [...prev, name]))
 
   const submit = (oneByOne: boolean) =>
-    handleSubmit(({ query, useCache }) => {
+    handleSubmit(({ query }) => {
       if (selected.length === 0 || tooMany) return
-      compare.start({ query, useCache, collections: selected, oneByOne })
+      compare.start({ query, collections: selected, oneByOne })
     })
 
   return (
@@ -82,27 +82,24 @@ export function CompareForm({ compare }: { compare: CompareController }) {
 
       {collections.error && <Alert tone="danger">{collections.error.message}</Alert>}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <fieldset className="flex flex-wrap items-center gap-x-4 gap-y-2" disabled={running}>
-          <legend className="sr-only">Collections to compare</legend>
-          <span className="text-sm text-slate-400">Collections:</span>
-          {collections.isPending && <Spinner className="size-4 text-slate-400" />}
-          {collections.data && all.length === 0 && (
-            <span className="text-sm text-slate-500">No searchable collection in Qdrant.</span>
-          )}
-          {all.map((c, i) => (
-            <span key={c.name} className="inline-flex items-center gap-1.5">
-              <span className="size-2.5 rounded-sm" style={{ backgroundColor: series[i].color }} aria-hidden />
-              <Checkbox
-                label={`${c.name} · ${formatCompact(c.chunk_count)} chunks`}
-                checked={!excluded.includes(c.name)}
-                onChange={(e) => toggle(c.name, e.target.checked)}
-              />
-            </span>
-          ))}
-        </fieldset>
-        <Checkbox {...register('useCache')} label="Use query cache" disabled={running} />
-      </div>
+      <fieldset className="flex flex-wrap items-center gap-x-4 gap-y-2" disabled={running}>
+        <legend className="sr-only">Collections to compare</legend>
+        <span className="text-sm text-slate-400">Collections:</span>
+        {collections.isPending && <Spinner className="size-4 text-slate-400" />}
+        {collections.data && all.length === 0 && (
+          <span className="text-sm text-slate-500">No searchable collection in Qdrant.</span>
+        )}
+        {all.map((c, i) => (
+          <span key={c.name} className="inline-flex items-center gap-1.5">
+            <span className="size-2.5 rounded-sm" style={{ backgroundColor: series[i].color }} aria-hidden />
+            <Checkbox
+              label={`${c.name} · ${formatCompact(c.chunk_count)} chunks`}
+              checked={!excluded.includes(c.name)}
+              onChange={(e) => toggle(c.name, e.target.checked)}
+            />
+          </span>
+        ))}
+      </fieldset>
 
       {tooMany && <p className="text-sm text-rose-600">Select at most {MAX_COMPARED} collections.</p>}
       {collections.data && all.length > 0 && selected.length === 0 && (

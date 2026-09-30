@@ -137,11 +137,20 @@ class FinalScorer:
     def score_and_rank(
         self,
         rerank_batch: RerankBatchResult,
+        is_metadata_only: bool = False,
     ) -> FinalSearchResult:
         """
         Evaluate all candidate patents from Phase 6, compute final scores,
         filter by FINAL_SCORE_THRESHOLD, and sort descending. All qualifying
         patents are returned (no fixed result count cap).
+
+        *is_metadata_only* is True when the query is exclusively a metadata
+        constraint (e.g. "patents by Samsung filed in 2020") with no semantic
+        content. Relationship/requirement coverage and retrieval score are
+        then trivially 1.0 (nothing to verify or rank against) and evidence
+        wasn't chosen for relevance, so a computed score would just be noise
+        dressed up as a number. Every matching patent is returned unscored
+        and unranked instead, in the order Phase 6 delivered them.
         """
         t_start = time.perf_counter()
 
@@ -163,12 +172,14 @@ class FinalScorer:
                 timings={"scoring_ms": 0.0, "filter_sort_ms": 0.0, "total_ms": round(total_time_ms, 3)},
             )
 
-        # 1. Compute scores for all candidates
+        # 1. Compute scores for all candidates (skipped for a metadata-only query)
         t_scoring_start = time.perf_counter()
         scored_patents: List[FinalPatentResult] = []
 
         for rpat in candidates:
-            final_score, breakdown = self.calculate_patent_score(rpat)
+            final_score, breakdown = (
+                (None, None) if is_metadata_only else self.calculate_patent_score(rpat)
+            )
             scored_patents.append(
                 FinalPatentResult(
                     patent_id=rpat.patent_id,
@@ -191,16 +202,21 @@ class FinalScorer:
 
         scoring_time_ms = (time.perf_counter() - t_scoring_start) * 1000
 
-        # 2. Filter by threshold (score >= FINAL_SCORE_THRESHOLD) and sort descending
+        # 2. Metadata-only: every match qualifies, in Phase 6's order - there's no
+        #    score to threshold or sort by. Otherwise filter by FINAL_SCORE_THRESHOLD
+        #    and sort descending.
         t_filter_start = time.perf_counter()
-        qualifying = [p for p in scored_patents if p.final_score >= self.score_threshold]
-        qualifying.sort(key=lambda p: p.final_score, reverse=True)
-        top_results = qualifying
+        if is_metadata_only:
+            top_results = scored_patents
+        else:
+            qualifying = [p for p in scored_patents if p.final_score >= self.score_threshold]
+            qualifying.sort(key=lambda p: p.final_score, reverse=True)
+            top_results = qualifying
 
         filter_sort_time_ms = (time.perf_counter() - t_filter_start) * 1000
         total_time_ms = (time.perf_counter() - t_start) * 1000
 
-        passed_count = len(qualifying)
+        passed_count = len(top_results)
         rejected_count = len(scored_patents) - passed_count
 
         return FinalSearchResult(

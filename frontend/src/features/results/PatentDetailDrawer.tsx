@@ -30,14 +30,22 @@ export function PatentDetailDrawer({ run }: { run: SearchRun }) {
           <ScoreBadge score={patent.final_score} />
         </div>
 
-        <Section title="Score breakdown">
-          <div className="space-y-3">
-            <ScoreBar label="Relationships" value={sb.relationship_weighted} max={maxFor('relationship')} tone="success" />
-            <ScoreBar label="Requirements" value={sb.requirement_weighted} max={maxFor('requirement')} tone="info" />
-            <ScoreBar label="Cross-encoder rerank" value={sb.reranker_weighted} max={maxFor('reranker')} tone="brand" />
-            <ScoreBar label="Vector retrieval" value={sb.retrieval_weighted} max={maxFor('retrieval')} tone="warning" />
-          </div>
-        </Section>
+        {sb ? (
+          <Section title="Score breakdown">
+            <div className="space-y-3">
+              <ScoreBar label="Relationships" value={sb.relationship_weighted} max={maxFor('relationship')} tone="success" />
+              <ScoreBar label="Requirements" value={sb.requirement_weighted} max={maxFor('requirement')} tone="info" />
+              <ScoreBar label="Cross-encoder rerank" value={sb.reranker_weighted} max={maxFor('reranker')} tone="brand" />
+              <ScoreBar label="Vector retrieval" value={sb.retrieval_weighted} max={maxFor('retrieval')} tone="warning" />
+            </div>
+          </Section>
+        ) : (
+          <Section title="Score breakdown">
+            <p className="text-sm text-slate-500">
+              Not scored: this query is a metadata filter only, with nothing semantic to rank by.
+            </p>
+          </Section>
+        )}
 
         <Section title={`Relationships (${patent.supported_count} supported)`}>
           <RelationshipList items={patent.relationships} />

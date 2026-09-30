@@ -32,12 +32,24 @@ export function ResultsView({ run }: { run: SearchRun }) {
   }
 
   const { results, total_candidates_evaluated, rejected_count, threshold_used } = final.data
+  // A metadata-only query has nothing semantic to score or threshold (see app/scoring/scorer.py).
+  const isMetadataOnly = results.length > 0 && results.every((r) => r.final_score === null)
 
   return (
     <div className="space-y-4">
       <p className="text-sm text-slate-500">
-        <strong className="text-slate-900">{results.length}</strong> patent{results.length === 1 ? '' : 's'} scored ≥{' '}
-        {threshold_used} out of {total_candidates_evaluated} evaluated ({rejected_count} below threshold).
+        {isMetadataOnly ? (
+          <>
+            <strong className="text-slate-900">{results.length}</strong> patent{results.length === 1 ? '' : 's'}{' '}
+            matched this metadata filter out of {total_candidates_evaluated} evaluated (not scored).
+          </>
+        ) : (
+          <>
+            <strong className="text-slate-900">{results.length}</strong> patent{results.length === 1 ? '' : 's'}{' '}
+            scored ≥ {threshold_used} out of {total_candidates_evaluated} evaluated ({rejected_count} below
+            threshold).
+          </>
+        )}
       </p>
 
       {results.length === 0 ? (

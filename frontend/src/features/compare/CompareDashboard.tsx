@@ -347,8 +347,8 @@ function Overlap({ metrics, series }: { metrics: CollectionMetrics[]; series: Se
         const f = r.found[m.name]
         return f ? (
           <span className="inline-flex items-center gap-1.5">
-            <span className="size-2 rounded-full" style={{ backgroundColor: series[i].color }} aria-hidden />#{f.rank} ·{' '}
-            {f.score.toFixed(2)}
+            <span className="size-2 rounded-full" style={{ backgroundColor: series[i].color }} aria-hidden />#{f.rank}
+            {f.score !== null && <> · {f.score.toFixed(2)}</>}
           </span>
         ) : (
           <span className="text-slate-400">—</span>
@@ -415,11 +415,16 @@ function MetricsTable({
   parseMs?: number
 }) {
   const rows: MetricRow[] = [
+    { label: 'Chunk size (max tokens)', value: (m) => orDash(m.chunkTokens, formatCount) },
+    { label: 'Total patents in collection', value: (m) => orDash(m.collectionPatents, formatCount) },
+    { label: 'Total chunks / vectors in collection', value: (m) => orDash(m.collectionChunks, formatCount) },
     { label: 'Total time (steps 2–7)', value: (m) => orDash(m.totalMs, formatMs) },
     ...COLLECTION_PHASES.map<MetricRow>((id) => ({
       label: `  ${PHASES.find((p) => p.id === id)!.title}`,
       value: (m) => orDash(m.phaseMs[id], formatMs),
     })),
+    { key: 'embedding-ms', label: '  Embedding (within retrieval)', value: (m) => orDash(m.embeddingMs, formatMs) },
+    { key: 'qdrant-ms', label: '  Qdrant search (within retrieval)', value: (m) => orDash(m.qdrantMs, formatMs) },
     { label: 'Peak extra memory (steps 2–7)', value: (m) => orDash(m.peakMemory, formatBytes) },
     ...COLLECTION_PHASES.map<MetricRow>((id) => ({
       key: `memory-${id}`,
@@ -434,6 +439,9 @@ function MetricsTable({
     { label: 'Below threshold', value: (m) => orDash(m.rejected, formatCount) },
     { label: 'Top final score', value: (m) => orDash(m.topScore, formatScore2) },
     { label: 'Mean final score', value: (m) => orDash(m.meanScore, formatScore2) },
+    { label: 'Top-1 reranker score', value: (m) => orDash(m.topRerankerScore, (s) => s.toFixed(3)) },
+    { label: 'Mean reranker score', value: (m) => orDash(m.meanRerankerScore, (s) => s.toFixed(3)) },
+    { label: 'Min reranker score', value: (m) => orDash(m.minRerankerScore, (s) => s.toFixed(3)) },
     { label: 'Best candidate similarity', value: (m) => orDash(m.topSimilarities[0]?.score, (s) => s.toFixed(3)) },
     { label: 'Vector chunk hits', value: (m) => orDash(m.chunkHits, formatCount) },
     { label: 'Evidence chunks', value: (m) => orDash(m.evidenceChunks, formatCount) },

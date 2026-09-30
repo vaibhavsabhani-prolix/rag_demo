@@ -144,7 +144,9 @@ class SearchPipeline:
 
         # Phase 7 — Final Patent Scoring & Result Selection
         t0 = time.perf_counter()
-        final_result = self.scorer.score_and_rank(rerank_result)
+        final_result = self.scorer.score_and_rank(
+            rerank_result, is_metadata_only=parsed_query.is_metadata_only
+        )
         self._emit(on_phase_complete, 7, final_result, (time.perf_counter() - t0) * 1000)
 
         print(
@@ -152,6 +154,7 @@ class SearchPipeline:
             f"collection={collection.name} -> {len(final_result.results)} qualifying patent(s)"
         )
         for r in final_result.results:
-            print(f"[FinalResult]   {r.patent_id}  score={r.final_score:.2f}")
+            score = "unscored" if r.final_score is None else f"{r.final_score:.2f}"
+            print(f"[FinalResult]   {r.patent_id}  score={score}")
 
         return final_result

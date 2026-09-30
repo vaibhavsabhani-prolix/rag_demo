@@ -5,6 +5,7 @@ import { CompareProgress } from '@/features/compare/CompareProgress'
 import { collectionMetrics } from '@/features/compare/metrics'
 import { useSeries } from '@/features/compare/series'
 import { useCompare } from '@/hooks/useCompare'
+import { useCollections } from '@/hooks/queries'
 import { useAppSelector } from '@/store'
 import { selectCompare } from '@/store/selectors'
 
@@ -12,7 +13,9 @@ export function ComparePage() {
   const state = useAppSelector(selectCompare)
   const compare = useCompare()
   const series = useSeries(state.collections)
-  const metrics = state.collections.map((name) => collectionMetrics(name, state.runs[name]))
+  const collections = useCollections()
+  const collectionByName = Object.fromEntries((collections.data?.collections ?? []).map((c) => [c.name, c]))
+  const metrics = state.collections.map((name) => collectionMetrics(name, state.runs[name], collectionByName[name]))
 
   return (
     <div className="space-y-6">

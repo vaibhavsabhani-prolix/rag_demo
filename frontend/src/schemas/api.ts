@@ -75,7 +75,6 @@ export const compareEventSchema = z.discriminatedUnion('type', [
     type: z.literal('start'),
     query: z.string(),
     collections: z.array(z.string()),
-    cache_hit: z.boolean(),
   }),
   z.object({
     type: z.literal('phase'),

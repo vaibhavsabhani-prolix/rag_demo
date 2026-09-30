@@ -1,6 +1,7 @@
 /** Numbers compared across collections, derived from each collection's SearchRun. */
 import { formatBytes, formatMs } from '@/lib/format'
 import { summarizePatent } from '@/lib/patent'
+import type { SearchCollection } from '@/schemas/api'
 import type { PhaseNumber } from '@/schemas/pipeline'
 import type { SearchRun } from '@/store/searchSlice'
 
@@ -22,6 +23,13 @@ export interface CollectionMetrics {
   peakMemory?: number
   /** The API process's whole resident memory (bytes) at that peak. */
   peakRss?: number
+  // Collection info (static, from GET /api/collections - not from this query)
+  /** Every patent in the collection, not just this query's matches. */
+  collectionPatents?: number
+  /** Every chunk/vector in the collection, not just this query's matches. */
+  collectionChunks?: number
+  /** Max tokens per chunk, parsed from the collection name (e.g. "512", "4096") when it's numeric. */
+  chunkTokens?: number
   // Patents at each step
   candidates?: number
   afterFilter?: number
@@ -32,14 +40,21 @@ export interface CollectionMetrics {
   chunkHits?: number
   evidenceChunks?: number
   chunksReranked?: number
+  // Phase 2 candidate retrieval latency breakdown
+  embeddingMs?: number
+  qdrantMs?: number
   // Scores
   finalScores: { patentId: string; score: number }[]
   topScore?: number
   meanScore?: number
   topSimilarities: { patentId: string; score: number }[]
+  // Cross-encoder reranker scores (Phase 6/7), across final results
+  topRerankerScore?: number
+  meanRerankerScore?: number
+  minRerankerScore?: number
 }
 
-export function collectionMetrics(name: string, run: SearchRun): CollectionMetrics {
+export function collectionMetrics(name: string, run: SearchRun, info?: SearchCollection): CollectionMetrics {
   const { phases } = run
   const phaseMs: Partial<Record<PhaseNumber, number>> = {}
   const phaseMemory: Partial<Record<PhaseNumber, number>> = {}
@@ -50,8 +65,13 @@ export function collectionMetrics(name: string, run: SearchRun): CollectionMetri
   }
 
   const results = phases[7]?.data.results ?? []
-  const finalScores = results.map((r) => ({ patentId: r.patent_id, score: r.final_score }))
+  // Excludes metadata-only results, which have no final_score to chart or rank by.
+  const finalScores = results.flatMap((r) =>
+    r.final_score === null ? [] : [{ patentId: r.patent_id, score: r.final_score }],
+  )
   const scores = finalScores.map((s) => s.score)
+  const rerankerScores = results.map((r) => r.best_reranker_score)
+  const chunkTokens = Number(name)
 
   return {
     name,
@@ -61,6 +81,9 @@ export function collectionMetrics(name: string, run: SearchRun): CollectionMetri
     phaseMemory,
     peakMemory: run.memory && run.memory.peak_bytes - run.memory.start_bytes,
     peakRss: run.memory?.peak_bytes,
+    collectionPatents: info?.patent_count,
+    collectionChunks: info?.chunk_count,
+    chunkTokens: Number.isFinite(chunkTokens) && chunkTokens > 0 ? chunkTokens : undefined,
     candidates: phases[2]?.data.candidates.length,
     afterFilter: phases[3]?.data.total_after,
     verified: phases[5]?.data.total_evaluated,
@@ -69,12 +92,19 @@ export function collectionMetrics(name: string, run: SearchRun): CollectionMetri
     chunkHits: phases[2]?.data.total_chunk_hits,
     evidenceChunks: phases[4]?.data.total_evidence_chunks,
     chunksReranked: phases[6]?.data.total_chunks_reranked,
+    embeddingMs: phases[2]?.data.timings.embedding_ms,
+    qdrantMs: phases[2]?.data.timings.qdrant_retrieval_ms,
     finalScores,
     topScore: scores.length ? Math.max(...scores) : undefined,
     meanScore: scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : undefined,
     topSimilarities: (phases[2]?.data.candidates ?? [])
       .slice(0, TOP_CANDIDATES)
       .map((c) => ({ patentId: c.patent_id, score: c.retrieval_score })),
+    topRerankerScore: rerankerScores.length ? Math.max(...rerankerScores) : undefined,
+    meanRerankerScore: rerankerScores.length
+      ? rerankerScores.reduce((a, b) => a + b, 0) / rerankerScores.length
+      : undefined,
+    minRerankerScore: rerankerScores.length ? Math.min(...rerankerScores) : undefined,
   }
 }
 
@@ -82,8 +112,8 @@ export interface OverlapRow {
   patentId: string
   /** Title, or the assignee when the metadata has no title. */
   title: string
-  /** Collection name -> rank (1-based) and score in that collection's results. */
-  found: Record<string, { rank: number; score: number }>
+  /** Collection name -> rank (1-based) and score (null for a metadata-only query) in that collection's results. */
+  found: Record<string, { rank: number; score: number | null }>
 }
 
 /** Every patent in any collection's final results, found-by-most first. */
@@ -101,7 +131,13 @@ export function resultOverlap(metrics: CollectionMetrics[]): OverlapRow[] {
       row.found[m.name] = { rank: i + 1, score: r.final_score }
     })
   }
-  const best = (row: OverlapRow) => Math.max(...Object.values(row.found).map((f) => f.score))
+  // Falls back to found-by-most only when every score is null (metadata-only results).
+  const best = (row: OverlapRow) => {
+    const scores = Object.values(row.found)
+      .map((f) => f.score)
+      .filter((s): s is number => s !== null)
+    return scores.length ? Math.max(...scores) : -Infinity
+  }
   return [...rows.values()].sort(
     (a, b) => Object.keys(b.found).length - Object.keys(a.found).length || best(b) - best(a),
   )

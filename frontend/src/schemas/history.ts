@@ -3,7 +3,8 @@ import { z } from 'zod'
 
 export const historyTopResultSchema = z.object({
   patent_id: z.string(),
-  final_score: z.number(),
+  // null for a metadata-only query, which isn't scored.
+  final_score: z.number().nullable(),
   title: z.string(),
 })
 

@@ -1,3 +1,7 @@
+# ngrok http 5173 --basic-auth "prolix:prolix@123"
+
+
+
 # Patent Semantic Search System
 
 A production-ready Patent Retrieval & Semantic Search system built with **Python**, **Qdrant Vector DB**, the **Qwen3 Embedding Model**, an **LLM-based Query Understanding layer**, **metadata filtering**, a **cross-encoder reranker**, and an **Answer Evidence Extraction & Highlighting engine**.

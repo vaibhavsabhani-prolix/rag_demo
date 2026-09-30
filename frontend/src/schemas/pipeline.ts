@@ -225,8 +225,9 @@ export const scoreBreakdownSchema = z.object({
 
 export const finalPatentSchema = z.object({
   patent_id: z.string(),
-  final_score: z.number(),
-  score_breakdown: scoreBreakdownSchema,
+  // Both null for a metadata-only query: nothing semantic to score or rank by.
+  final_score: z.number().nullable(),
+  score_breakdown: scoreBreakdownSchema.nullable(),
   metadata,
   relationship_coverage: z.number(),
   requirement_coverage: z.number(),

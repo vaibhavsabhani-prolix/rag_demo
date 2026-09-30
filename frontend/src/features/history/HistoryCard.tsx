@@ -52,7 +52,8 @@ export function HistoryCard({ item }: { item: HistoryItem }) {
           </span>
           {item.top_results.map((r) => (
             <Badge key={r.patent_id} tone={finalScoreTone(r.final_score)} className="font-mono">
-              {r.patent_id} · {r.final_score.toFixed(2)}
+              {r.patent_id}
+              {r.final_score !== null && ` · ${r.final_score.toFixed(2)}`}
             </Badge>
           ))}
         </div>

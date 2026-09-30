@@ -19,8 +19,8 @@ CHUNKS_COLLECTION_PREFIX = "patent_chunks_"
 PATENTS_COLLECTION_PREFIX = "patents_metadata_"
 
 # The collection pair that ingestion writes to. Search preselects it when it exists.
-CHUNKS_COLLECTION_NAME = "patent_chunks_512"
-PATENTS_COLLECTION_NAME = "patents_metadata_512"
+CHUNKS_COLLECTION_NAME = "patent_chunks_4096"
+PATENTS_COLLECTION_NAME = "patents_metadata_4096"
 
 # Remote embedding server
 EMBEDDING_REMOTE_BASE_URL = "http://192.168.2.213:8002/v1"
@@ -47,15 +47,15 @@ RERANK_CONCURRENT_REQUESTS = 6
 RERANKER_MAX_CONTEXT_TOKENS = 4096
 RERANKER_TOKEN_SAFETY_MARGIN = 16
 
-MAX_CHUNK_TOKENS = 512
+MAX_CHUNK_TOKENS = 4096
 
 EMBED_TOKEN_SAFETY_MARGIN = 8
 BATCH_SIZE = 512
-EMBED_BATCH_SIZE = 64
+EMBED_BATCH_SIZE = 32
 # The embedding GPU saturates at ~4 in-flight requests (measured:
 # 94 chunks/s at 1, 114 at 4, still 114 at 16) - more only queues
 # server-side.
-EMBED_CONCURRENT_REQUESTS = 4
+EMBED_CONCURRENT_REQUESTS = 5
 INSERT_REPORT_EVERY = 100
 INGEST_PREFETCH = 512
 CHUNK_QUEUE_CAPACITY = 1024
@@ -77,7 +77,7 @@ QDRANT_INDEXING_THRESHOLD_KB = 20000
 # (metadata + every chunk). ingest_directory() reads it on startup to
 # skip already-completed patents, so stopping and re-running the same
 # command resumes instead of reprocessing from the start.
-INGEST_PROGRESS_FILE = "data/ingest_progress_512.log"
+INGEST_PROGRESS_FILE = "data/ingest_progress_4096.log"
 
 MAX_HEADING_LENGTH = 100
 MAX_HEADING_WORDS = 12
@@ -110,7 +110,10 @@ EVIDENCE_NEIGHBOR_CHUNKS = 1
 EVIDENCE_GLOBAL_TOP_K_CHUNKS = 1000
 
 # Phase 5 Relationship Verification configuration
-VERIFICATION_MAX_CANDIDATES = 25
+# None verifies every Phase 4 candidate (no cap on final results); a number caps
+# verification - and therefore Phase 6/7 and the final result count - to that
+# many top candidates, trading completeness for a faster Phase 5.
+VERIFICATION_MAX_CANDIDATES = None
 # Minimum cross-encoder relevance score required to mark a relationship/requirement as
 # SUPPORTED. Was 0.05, which is far too permissive for a BGE cross-encoder — near-zero
 # scores would still pass, letting patents that only share generic terms (e.g. "method",

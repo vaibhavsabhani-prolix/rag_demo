@@ -1,7 +1,9 @@
 /** Maps pipeline values to the shared colour tones used by Badge / ScoreBar. */
 export type Tone = 'neutral' | 'brand' | 'success' | 'warning' | 'danger' | 'info'
 
-export function finalScoreTone(score: number): Tone {
+/** null for a metadata-only query's results, which aren't scored. */
+export function finalScoreTone(score: number | null): Tone {
+  if (score === null) return 'neutral'
   if (score >= 8.5) return 'success'
   if (score >= 7.5) return 'info'
   return 'brand'

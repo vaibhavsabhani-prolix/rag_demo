@@ -24,7 +24,7 @@ The search stream emits one JSON object per line:
 /api/compare parses the query once, then runs Phases 2-7 per collection, one
 collection at a time so their timings are comparable. Its stream:
 
-    {"type": "start", "query": ..., "collections": [...], "cache_hit": bool}
+    {"type": "start", "query": ..., "collections": [...]}
     {"type": "phase", "collection": null, "phase": 1, ...}      shared by all collections
     {"type": "collection_start", "collection": ...}
     {"type": "phase", "collection": ..., "phase": 2..7, ..., "memory": {"start_bytes", "peak_bytes"} | null}
@@ -329,7 +329,6 @@ def _stream_compare(req: CompareRequest, collections: list[SearchCollection]) ->
     is reported and the rest still run.
     """
     query = req.query.strip()
-    cache_hit = req.use_cache and pipeline.engine.cache.get(query) is not None
     events: "queue.Queue[dict | None]" = queue.Queue()
     # Set when the client goes away, so the remaining collections are skipped.
     cancelled = threading.Event()
@@ -354,7 +353,7 @@ def _stream_compare(req: CompareRequest, collections: list[SearchCollection]) ->
         t0 = time.perf_counter()
         try:
             t1 = time.perf_counter()
-            parsed_query = pipeline.engine.parse(query, use_cache=req.use_cache)
+            parsed_query = pipeline.engine.parse(query, use_cache=False)
             phase_callback(None)(1, PHASE_NAMES[1], parsed_query, (time.perf_counter() - t1) * 1000)
 
             for collection in collections:
@@ -389,7 +388,6 @@ def _stream_compare(req: CompareRequest, collections: list[SearchCollection]) ->
         "type": "start",
         "query": query,
         "collections": [c.name for c in collections],
-        "cache_hit": cache_hit,
     })
     threading.Thread(target=worker, daemon=True).start()
     try:

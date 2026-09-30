@@ -118,7 +118,7 @@ class RelationshipVerifier:
         model: Optional[str] = None,
         api_key: Optional[str] = None,
         timeout: Optional[float] = None,
-        max_candidates: int = VERIFICATION_MAX_CANDIDATES,
+        max_candidates: Optional[int] = VERIFICATION_MAX_CANDIDATES,
         batch_size: int = RERANK_BATCH_SIZE,
         concurrent_requests: int = RERANK_CONCURRENT_REQUESTS,
     ):
@@ -180,8 +180,10 @@ class RelationshipVerifier:
         """
         t_start = time.perf_counter()
 
-        limit = max_candidates or self.max_candidates
-        target_candidates = evidence_result.patent_evidence_list[:limit]
+        limit = max_candidates if max_candidates is not None else self.max_candidates
+        target_candidates = (
+            evidence_result.patent_evidence_list if limit is None else evidence_result.patent_evidence_list[:limit]
+        )
 
         if not target_candidates:
             total_time_ms = (time.perf_counter() - t_start) * 1000

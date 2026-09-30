@@ -11,10 +11,8 @@ import type { PhaseEntry, PhaseReceivedPayload, SearchRun, SearchStatus } from '
 
 export interface CompareState {
   query: string
-  useCache: boolean
   /** Of the latest request. */
   status: SearchStatus
-  cacheHit: boolean
   /** Collection names, in the order they run. */
   collections: string[]
   /** Collections the latest request runs. */
@@ -33,9 +31,7 @@ export interface CompareState {
 
 const initialState: CompareState = {
   query: '',
-  useCache: true,
   status: 'idle',
-  cacheHit: false,
   collections: [],
   active: [],
   runs: {},
@@ -56,10 +52,10 @@ const compareSlice = createSlice({
   initialState,
   reducers: {
     /** A new comparison: every collection waits until a request runs it. */
-    compareStarted(_, action: PayloadAction<{ query: string; collections: string[]; useCache: boolean }>) {
-      const { query, collections, useCache } = action.payload
+    compareStarted(_, action: PayloadAction<{ query: string; collections: string[] }>) {
+      const { query, collections } = action.payload
       const runs = Object.fromEntries(collections.map((c) => [c, newRun(query, c)]))
-      return { ...initialState, query, useCache, collections, runs }
+      return { ...initialState, query, collections, runs }
     },
     /** A request for these collections is starting; earlier results for them are cleared. */
     runsRequested(state, action: PayloadAction<string[]>) {
@@ -70,10 +66,6 @@ const compareSlice = createSlice({
       state.totalMs = undefined
       if (active.length === 1) state.focus = active[0]
       for (const name of active) state.runs[name] = newRun(state.query, name)
-    },
-    compareStreamOpened(state, action: PayloadAction<{ cacheHit: boolean }>) {
-      state.cacheHit = action.payload.cacheHit
-      for (const name of state.active) state.runs[name].cacheHit = action.payload.cacheHit
     },
     comparePhaseReceived(state, action: PayloadAction<ComparePhasePayload>) {
       const { collection, phase, ...entry } = action.payload
@@ -130,7 +122,6 @@ const compareSlice = createSlice({
 export const {
   compareStarted,
   runsRequested,
-  compareStreamOpened,
   comparePhaseReceived,
   collectionStarted,
   collectionSucceeded,
