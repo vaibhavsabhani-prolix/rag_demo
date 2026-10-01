@@ -14,12 +14,18 @@ instead of once per chunk, which matters at 180M-patent scale where a
 single patent can produce dozens of chunks.
 """
 
+import json
+import logging
 import re
 import uuid
 
+import requests
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
     OptimizersConfigDiff,
     PointStruct,
     VectorParams,
@@ -40,6 +46,8 @@ from app.config import (
 
 from app.models.collection import SearchCollection
 from app.models.patent_chunk import PatentChunk
+
+logger = logging.getLogger(__name__)
 
 # Points in the "patents" collection are keyed by patent_id, but Qdrant
 # point IDs must be an unsigned int or a UUID. This namespace makes the
@@ -392,6 +400,109 @@ class QdrantDB:
             )
 
         return pairs
+
+    def get_collection_memory(self, collection_name: str) -> dict:
+        """
+        Real disk/RAM usage for *collection_name*, from Qdrant's
+        GET /collections/{name}/memory endpoint. Not wrapped by qdrant-client,
+        so called directly over HTTP. Returns zeros if the call fails (e.g. an
+        older Qdrant build without this route).
+        """
+        try:
+            resp = requests.get(
+                f"http://{QDRANT_HOST}:{QDRANT_PORT}/collections/{collection_name}/memory",
+                timeout=QDRANT_TIMEOUT,
+            )
+            resp.raise_for_status()
+            total = resp.json()["result"]["total"]
+            return {
+                "disk_bytes": total.get("disk_bytes", 0) or 0,
+                "ram_bytes": total.get("ram_bytes", 0) or 0,
+            }
+        except Exception as exc:
+            logger.warning("Could not read memory usage for collection %s: %s", collection_name, exc)
+            return {"disk_bytes": 0, "ram_bytes": 0}
+
+    def find_common_patent_ids(
+        self,
+        collections: list[SearchCollection],
+        limit: int = 2,
+        scan_limit: int = 50,
+    ) -> list[str]:
+        """
+        Patent IDs present in every given collection's patents metadata
+        collection, so the same patent's chunk footprint can be compared
+        across chunk-size variants (e.g. 512 / 2048 / 4096).
+
+        Scrolls a page of candidates from the first collection, then checks
+        each against the rest by deterministic point ID lookup (cheap -
+        no scrolling) until *limit* common patent IDs are found.
+        """
+        if not collections:
+            return []
+
+        first, *rest = collections
+        results, _ = self.client.scroll(
+            collection_name=first.patents_collection,
+            limit=scan_limit,
+            with_payload=True,
+        )
+        candidate_ids = [
+            pt.payload.get("patent_id")
+            for pt in results
+            if pt.payload and pt.payload.get("patent_id")
+        ]
+
+        common: list[str] = []
+        for pid in candidate_ids:
+            if all(self.get_patents_metadata([pid], c.patents_collection) for c in rest):
+                common.append(pid)
+            if len(common) >= limit:
+                break
+        return common
+
+    def get_patent_chunk_storage(self, patent_id: str, chunks_collection: str) -> dict:
+        """
+        Chunk count and an estimated storage footprint for *patent_id*'s own
+        chunks in *chunks_collection*.
+
+        Vector bytes are exact (one float32 per vector dimension, per
+        chunk). Payload bytes are the actual JSON-serialized payload size
+        (dominated by chunk text, which is why 512-token chunking produces
+        more total vector overhead than 4096 for the same patent, even
+        though the underlying text is identical). This is a raw-data
+        estimate, not Qdrant's true on-disk size - see get_collection_memory
+        for the real, collection-level disk/RAM usage, which also includes
+        HNSW graph, WAL and segment overhead this estimate leaves out.
+        """
+        chunk_count = 0
+        payload_bytes = 0
+        next_offset = None
+        patent_filter = Filter(must=[FieldCondition(key="patent_id", match=MatchValue(value=patent_id))])
+
+        while True:
+            points, next_offset = self.client.scroll(
+                collection_name=chunks_collection,
+                scroll_filter=patent_filter,
+                limit=1000,
+                offset=next_offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for pt in points:
+                chunk_count += 1
+                if pt.payload:
+                    payload_bytes += len(json.dumps(pt.payload, default=str).encode("utf-8"))
+            if next_offset is None:
+                break
+
+        vector_bytes = chunk_count * VECTOR_SIZE * 4
+        return {
+            "chunk_count": chunk_count,
+            "vector_bytes": vector_bytes,
+            "payload_bytes": payload_bytes,
+            "estimated_total_bytes": vector_bytes + payload_bytes,
+        }
 
     # ==============================================================
     # Stats

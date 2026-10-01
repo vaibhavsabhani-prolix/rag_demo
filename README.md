@@ -1,12 +1,8 @@
-# ngrok http 5173 --basic-auth "prolix:prolix@123"
-
-
-
 # Patent Semantic Search System
 
-A production-ready Patent Retrieval & Semantic Search system built with **Python**, **Qdrant Vector DB**, the **Qwen3 Embedding Model**, an **LLM-based Query Understanding layer**, **metadata filtering**, a **cross-encoder reranker**, and an **Answer Evidence Extraction & Highlighting engine**.
+A production-ready Patent Retrieval & Semantic Search system built with **Python**, **Qdrant Vector DB**, a **remote Qwen3 embedding server**, an **LLM-based Query Understanding layer**, **multi-view dynamic retrieval**, **metadata filtering**, a **cross-encoder relationship/requirement verification stage**, a **BGE cross-encoder reranker**, and **weighted multi-signal final scoring with query-match highlighting**.
 
-The pipeline handles end-to-end processing of complex technical patent documents: from raw document parsing and multi-stage semantic chunking, through validation, vector embedding, and batch indexing — to natural-language query understanding, answer-target-preserving semantic retrieval for questions, patent-grouped vector search, post-retrieval metadata filtering, cross-encoder reranking, evidence selection, and patent-level result aggregation. A React + FastAPI web app and CLI tools are included for search and index inspection.
+The pipeline handles end-to-end processing of complex technical patent documents: from raw document parsing and token-window chunking, through validation, remote vector embedding, and concurrent batch indexing — to natural-language query understanding, multi-view semantic candidate retrieval, metadata filtering, bounded evidence retrieval, cross-encoder relationship/requirement verification, BGE reranking with highlighting, and deterministic multi-signal final scoring. A React + FastAPI web app (with search history in PostgreSQL) and CLI tools are included for search, collection comparison, and index inspection.
 
 ---
 
@@ -14,55 +10,34 @@ The pipeline handles end-to-end processing of complex technical patent documents
 
 ```mermaid
 flowchart TD
-    subgraph Ingestion_Pipeline ["1. Ingestion & Indexing Pipeline"]
+    subgraph Ingestion_Pipeline ["1. Ingestion & Indexing Pipeline (app/ingest.py)"]
         A["Raw Patent Files (.txt + .json)"] --> B["Patent Parser (app/parser.py)"]
         B --> C["Patent Document Object"]
-        C --> D["Section Detector (app/chunking/section_detector.py)"]
-        D --> E["Semantic Unit Splitter (app/chunking/semantic_unit_splitter.py)"]
-        E --> F["Token-Aware Chunk Builder (app/chunking/chunk_builder.py)"]
-        F --> G["Chunk Validator (app/chunking/chunk_validator.py)"]
-        G --> H["Embedding Engine (Qwen3-Embedding-0.6B)"]
-        H --> I1["patent_chunks collection (vectors + chunk payload)"]
-        C --> I2["patents collection (metadata only, no vectors)"]
+        C --> D["Section Detector (app/chunking/section_detector.py)\nmatches lines against a known-heading whitelist"]
+        D --> E["Token Window Chunker (app/chunking/token_window_chunker.py)\ntokenizes each section once, cuts MAX_CHUNK_TOKENS windows,\nadjusts boundaries to paragraph/sentence/word/char"]
+        E --> F["Chunk Validator (app/chunking/chunk_validator.py)\nrejects empty/whitespace/low-info/degenerate-overlap chunks"]
+        F --> G["Embedder (app/embedder.py)\nremote vLLM embedding server, batched + concurrent HTTP"]
+        G --> H1["patent_chunks_&lt;name&gt; collection (vectors + chunk payload)"]
+        C --> H2["patents_metadata_&lt;name&gt; collection (metadata only, no vectors)"]
     end
 
-    subgraph Search_Pipeline ["2. Query Understanding & Search Pipeline"]
-        J["User Search Query"] --> K["Query Understanding LLM (app/query_understanding/)"]
-        K --> K1["ParsedQuery: semantic_query + metadata_filters +\nis_question + question_intent + dynamic requirements"]
-        
-        K1 -->|"is_metadata_only: filters, no topic"| MO1["Filter whole patents collection\n(QdrantDB.filter_patent_ids)"]
-        MO1 --> MO2["Fetch every chunk of matching patents\n(QdrantDB.get_chunks_for_patent_ids) - unbounded, no rerank"]
-        MO2 --> P
-        
-        K1 -->|"Topic Query (is_question=false)"| L1["semantic_query = core topic\n(e.g., 'material property determination')"]
-        K1 -->|"Question Query (is_question=true)"| L2["semantic_query = answer-target-preserving retrieval query\n(e.g., 'properties determined based on identified material')"]
-        
-        L1 --> L["Embed semantic_query ONLY (app/embedder.py)"]
-        L2 --> L
-        
-        L --> M["Qdrant group-by-patent_id search on patent_chunks\n(top PATENT_CANDIDATE_TOP_K patents - identifies WHICH\npatents are candidates, not which of their chunks matter)"]
-        M --> M1["Dedup to 1 best chunk/patent for display only\n(_dedupe_top_chunk_per_patent -> qdrant_results)"]
-        M --> N{"metadata_filters present?"}
-        N -->|"yes"| N1["FilterEngine.matches() per candidate patent_id\n(metadata lookup only, before any chunk text is fetched)"]
-        N -->|"no"| F1
-        N1 --> F1["Fetch EVERY indexed chunk of each surviving\ncandidate patent (QdrantDB.get_chunks_for_patent_ids -\nunbounded, not just the handful vector search surfaced)"]
-        F1 --> RV["Relevance Verification (app/relevance_verifier.py)\nA candidate must literally name the query's concept\n(ParsedQuery.required_phrases) in its title, abstract,\nor the chunks vector search matched - no model call.\nRejected patents never reach the reranker below"]
-        RV --> O["Cross-Encoder Reranker (remote or local, app/reranker.py)\nScores EVERY chunk of every surviving patent individually;\na patent's score = MAX across its own chunks -\nno hand-tuned weights, no combined-text blob"]
-        O --> O1["Exclusion hard-filter: drop a patent only if its OWN\nwinning (highest-scoring) chunk names an excluded term"]
-        O1 --> O2["Rank by score (VERIFIED_RELEVANCE_THRESHOLD = 0.0:\nthe gate decides membership, the score only orders;\nPATENT_RELEVANCE_THRESHOLD applies only when\nverification could not run)"]
-        O2 --> FB{"nothing matched?"}
-        FB -->|"yes, and broadening is honest"| FB1["Broader Search (app/relevance_verifier.py verify_broader)\nSame chunks, relaxed wording (fallback_phrases),\naccepted in the patent's TITLE only - labelled BROADER,\nnever mixed into exact matches"]
-        FB -->|"no"| ES
-        FB1 --> ES
+    subgraph Search_Pipeline ["2. Seven-Phase Search Pipeline (app/semantic_search.py SearchPipeline)"]
+        J["User Search Query"] --> P1["Phase 1 - Query Understanding\n(app/query_understanding/engine.py)\n-> ParsedQuery: semantic_query, concepts, relationships,\nattributes, requirements, constraints, exclusions,\nmetadata_filters, is_metadata_only"]
 
-        ES{"is_question?"}
+        P1 -->|"is_metadata_only"| MO["CandidateRetriever._retrieve_metadata_only\nscrolls patents_metadata_* collection,\nPython-verifies filters, NO vector search"]
+        P1 -->|"semantic query"| P2["Phase 2 - Candidate Retrieval\n(app/retrieval/retriever.py)\n3 dynamic views (original / semantic / structured)\nembedded once each, metadata pre-filter narrows the\nQdrant search (falls back to unrestricted on 0 matches),\nquery_points per view (RETRIEVAL_TOP_K_PER_VIEW each),\ndeduped + grouped by patent_id, bounded to\nPATENT_CANDIDATE_TOP_K patents by best chunk score"]
+        MO --> P3
+        P2 --> P3["Phase 3 - Metadata Filtering\n(app/retrieval/metadata_filter.py)\nstrict AND over parsed_query.metadata_filters,\ndate/code/text-aware comparison, per-filter diagnostics"]
 
-        ES -->|"yes"| ES1["Evidence Selector & Answer Extractor (app/evidence_selector.py)\nExtracts answer, verbatim evidence, confidence, and character spans"]
-        ES -->|"no"| P["Patent Aggregation (app/semantic_search.py)"]
-        ES1 --> P
-        
-        P --> Q["PatentSearchResult list, top FINAL_TOP_K\n(question queries: a patent with a genuine\nanswer leads, otherwise sorted by relevance score)"]
-        Q --> R["React UI (frontend/) + FastAPI (app/api/) / CLI"]
+        P3 --> P4["Phase 4 - Bounded Evidence Retrieval\n(app/retrieval/evidence_retriever.py)\ndeterministic evidence query (semantic_query +\nrelationships + requirements + concepts), ONE vector\nsearch restricted to surviving patent_ids\n(EVIDENCE_GLOBAL_TOP_K_CHUNKS global cap, not\nper-patent) + EVIDENCE_NEIGHBOR_CHUNKS neighbors\nfetched in one batched scroll"]
+
+        P4 --> P5["Phase 5 - Relationship & Requirement Verification\n(app/verification/verifier.py)\nBGE cross-encoder scores every relationship/requirement\nhypothesis against every evidence chunk + deterministic\nword-proximity check; produces per-patent coverage\nratios - nothing is dropped here"]
+
+        P5 --> P6["Phase 6 - BGE Cross-Encoder Reranking\n(app/reranking/reranker.py)\none deterministic reranking query, token-budgeted chunks\nscored in batched HTTP calls; patent score = MAX across\nits own chunks; sentences scored in the same batch for\nquery-match highlighting (app/highlighting/)"]
+
+        P6 --> P7["Phase 7 - Final Scoring & Result Selection\n(app/scoring/scorer.py)\nweighted composite: 0.45*relationship_coverage +\n0.25*requirement_coverage + 0.20*best_reranker_score +\n0.10*retrieval_score, 0-10 scale; filtered by\nFINAL_SCORE_THRESHOLD, sorted descending\n(metadata-only: unscored, unranked, all returned)"]
+
+        P7 --> R["React UI (frontend/) + FastAPI (app/api/main.py)\nstreams one NDJSON event per phase / CLI"]
     end
 ```
 
@@ -80,233 +55,179 @@ flowchart TD
 
 ---
 
-### Stage 2: Section Detection & Semantic Chunking (`app/chunker.py` + `app/chunking/*`)
+### Stage 2: Section Detection & Token-Window Chunking (`app/chunker.py` + `app/chunking/*`)
 Patents require strict structural isolation — chunks must never mix contents across document sections.
 
 * **Step 2.1 - Section Detector (`section_detector.py`)**:
-  * Scans document text line-by-line using heading heuristics (all-caps line, colon-terminated titles, short line length bounds).
-  * Identifies standard patent sections (e.g., `ABSTRACT`, `BACKGROUND OF THE INVENTION`, `SUMMARY`, `DETAILED DESCRIPTION`, `CLAIMS`).
+  * Verifies each candidate heading line against a known-heading whitelist (`KNOWN_SECTION_HEADINGS` in `app/chunking/known_headings.py`), bounded by `MAX_HEADING_LENGTH`, `MAX_HEADING_WORDS`, and `ALLCAPS_MIN_ALPHA` — not generic all-caps/colon heuristics.
   * Yields isolated `Section` objects. Each section is processed as an independent stream.
 
-* **Step 2.2 - Hierarchical Semantic Unit Splitter (`semantic_unit_splitter.py`)**:
-  * Splits section content hierarchically: **Paragraphs → Sentences → Word Fragments**.
-  * Measures precise token lengths using `TokenCounter` backed by the HuggingFace `Qwen3-Embedding` tokenizer with an LRU cache (`TOKEN_COUNT_CACHE_SIZE = 4096`).
-
-* **Step 2.3 - Token-Aware Chunk Builder (`chunk_builder.py`)**:
-  * Merges semantic units greedily until reaching `MAX_CHUNK_TOKENS` (default: 512 tokens).
-  * Section boundaries are strictly enforced — no chunk spans multiple sections.
+* **Step 2.2 - Token Window Chunker (`token_window_chunker.py`)**:
+  * Tokenizes each section's content **once** (`TokenCounter`, HuggingFace tokenizer with an LRU cache) to get token IDs and character offsets.
+  * Cuts target windows bounded by `MAX_CHUNK_TOKENS` (default: 512), then locally adjusts each boundary backward to the nearest safe textual boundary in priority order: paragraph break → sentence boundary (multilingual, abbreviation-aware) → word boundary → clean UTF-8 character boundary.
+  * Slices the original text using the tokenizer's own character offsets and reports exact token counts without re-tokenizing.
 
 ---
 
 ### Stage 3: Chunk Quality Validation & Filtering (`app/chunking/chunk_validator.py`)
-To prevent indexing low-quality vector noise into Qdrant, every chunk passes through rigorous validation rules:
+To prevent indexing low-quality vector noise into Qdrant, every chunk passes through validation. Core checks (empty / whitespace-only / duplicate) always run; the rest are config-driven and all currently enabled:
 
-1. **Whitespace Normalization**: Collapses redundant tabs, double spaces, and newline padding.
-2. **Heading-Only Rejection**: Filters out isolated headings without body content (e.g., `DETAILED DESCRIPTION OF PREFERRED EMBODIMENTS`).
-3. **Low-Information Filtering**: Calculates the ratio of alphabetic characters to total characters. Rejects chunks falling below `VALIDATOR_LOW_INFO_THRESHOLD` (0.30) to eliminate table artifacts, binary noise, and separator lines.
-4. **Degenerate Overlap Loop Prevention**: Tracks unique token ratios against previous chunks to reject near-duplicate chunks.
+1. **Whitespace Normalization** (`VALIDATOR_NORMALIZE_WHITESPACE`): Collapses redundant tabs, double spaces, and newline padding.
+2. **Heading-Only Rejection** (`VALIDATOR_REJECT_HEADING_ONLY`): Filters out isolated headings without body content, up to `VALIDATOR_HEADING_ONLY_MAX_WORDS` words.
+3. **Low-Information Filtering** (`VALIDATOR_REJECT_LOW_INFO`): Rejects chunks whose alphabetic-character ratio falls below `VALIDATOR_LOW_INFO_THRESHOLD` (0.30), eliminating table artifacts, binary noise, and separator lines.
+4. **Degenerate Overlap Prevention** (`VALIDATOR_REJECT_DEGENERATE_OVERLAP`): Rejects near-duplicate chunks whose unique-token ratio against the previous chunk falls below `VALIDATOR_DEGENERATE_OVERLAP_THRESHOLD` (0.9).
+
+The validator never rejects a chunk purely for being small — every section's content is legitimate and must be preserved.
 
 ---
 
 ### Stage 4: Vector Embedding Generation (`app/embedder.py`)
-* **Model**: `Qwen/Qwen3-Embedding-0.6B` via `sentence-transformers`.
+* **Model**: `Qwen/Qwen3-Embedding-0.6B`, served by a **remote vLLM server** behind an OpenAI-compatible `/embeddings` endpoint (`EMBEDDING_REMOTE_BASE_URL`) — not run in-process.
 * **Output Dimension**: 1024-dimensional dense vectors (`VECTOR_SIZE = 1024`).
-* **Normalization**: L2 normalization (`normalize_embeddings=True`) applied to all chunk and query vectors for accurate cosine similarity calculation.
-* **Process**: Each validated `PatentChunk` is passed to `Embedder.embed()`, populating its `.vector` attribute.
+* **Throughput**: `EMBED_BATCH_SIZE` texts per HTTP request (large batches amortize round-trip latency and keep the remote GPU busy); `EMBED_CONCURRENT_REQUESTS` requests in flight at once via a thread pool, so the next batch is already in transit while the current one computes; a persistent `requests.Session` reuses TCP connections.
 
 ---
 
 ### Stage 5: Vector DB Indexing & Storage (`app/qdrant_db.py` & `app/ingest.py`)
 * **Vector Store**: **Qdrant** running via Docker on port `6333`.
-* **Two Collections**:
-  * `patent_chunks` — one point per chunk, with its embedding vector and full chunk payload. Searched.
-  * `patents` — one point per patent, metadata only, no vectors. Looked up by `patent_id` for display and metadata filtering; never searched by vector.
+* **Collection Discovery**: search collections are discovered by naming convention — every `patent_chunks_<name>` with a matching `patents_metadata_<name>` is listed as a searchable collection `<name>` in the UI (`QdrantDB.list_search_collections`). Ingestion writes to the pair named by `CHUNKS_COLLECTION_NAME` / `PATENTS_COLLECTION_NAME` (currently the `512` suffix, i.e. `MAX_CHUNK_TOKENS`).
+  * `patent_chunks_<name>` — one point per chunk, with its embedding vector and full chunk payload. Searched.
+  * `patents_metadata_<name>` — one point per patent, metadata only, no vectors. Looked up by `patent_id` for display and metadata filtering; never searched by vector.
 * **Distance Metric**: Cosine Similarity.
-* **Batch Ingestion**:
-  * `app/ingest.py` calls `QdrantDB.create_collections()` on startup (idempotent — no-ops if they already exist), so a fresh Qdrant instance gets both collections created automatically on first run; no manual setup step is required.
-  * It then orchestrates ingestion of patent files from `PATENT_DIRECTORY` (`app/config.py`, currently `"television"`).
-  * Accumulates embedded chunks in batches of `BATCH_SIZE = 512` and upserts via `QdrantDB.insert_batch()`.
-  * Upserts patent metadata alongside each chunk batch via `QdrantDB.upsert_patent_metadata_batch()`.
-* **Ingestion Throughput**: the stage order is parse → metadata → chunk → embed → insert, but the work is scheduled to keep the embedding model busy, since embedding dominates total ingest time:
-  * Each patent's chunks are embedded in **one batched forward pass** (`Embedder.embed_batch`, `EMBED_BATCH_SIZE` chunks per pass) rather than one `model.encode()` call per chunk.
-  * A prefetch thread parses and chunks up to `INGEST_PREFETCH` patents ahead, so file I/O and tokenization overlap with embedding instead of alternating with it.
-  * Mid-run chunk/metadata upserts are sent with `wait=False` so Qdrant indexes one batch while the next is being embedded; the final flush uses `wait=True`, so the completion totals reflect committed data.
-* **Per-Patent Progress**: two lines per patent bracket the expensive stage.
-  * `<patent_id> | split into N chunks - embedding` prints as soon as chunking finishes, so a patent about to occupy the embedder for hours announces its size up front.
-  * `<patent_id> | embedded N chunks | inserted N chunks` prints *after* the Qdrant write, so a patent is only announced as inserted once its chunks are actually stored.
-  * A running summary (patents, chunks, failures, elapsed, patents/sec) prints every 500 patents.
-* **Progress Display** (`rich.progress`, built in `_build_progress()`): two bars — `Indexing Patents` and `Embedding Chunks` — each with spinner, percentage, count, throughput, elapsed and ETA.
-  * The patent bar advances only when a patent is **fully finished** (in a `finally`, so failures still count). Advancing on dequeue would show a patent as done before any of its chunks were embedded — badly misleading with a prefetch queue, and outright useless for a single-file run.
-  * The chunk bar's total is not knowable up front, so it starts indeterminate and grows as each patent reports what it split into. `Embedder.embed_batch(..., on_progress=...)` advances it after every batch, which is the only movement visible while one very large patent is embedding.
-  * Per-patent lines are printed with `progress.console.print(...)`, which Rich renders *above* the live bar without corrupting it. `markup=False, highlight=False` keeps a patent ID or an exception message containing square brackets from being parsed as Rich markup.
-  * Rich detects a redirected stdout on its own and skips the live redraw, so an ingest piped to a log file stays readable instead of collecting thousands of control characters.
-  * `RateColumn` is a small custom column — Rich ships speed columns for byte transfers, not items. It shows `N/s` at or above 1/s and inverts to `Ns each` below it, which is the range this pipeline actually runs in.
-* **Multilingual Chunking** (`app/chunking/semantic_unit_splitter.py`): the corpus spans English, French, Spanish, German, Chinese, Japanese and Korean, which a Latin-only splitter cannot handle.
-  * **CJK terminators**: Chinese and Japanese end sentences with `。！？｡` and write *no space* afterwards, so a rule of "`[.!?]` followed by whitespace" finds **zero** boundaries in them. The boundary regex has a separate CJK branch that splits immediately after the terminator. French, Spanish, German and Korean all use `[.!?]` plus spaces and take the Latin path unchanged.
-  * **Character-level fallback**: Chinese and Japanese do not delimit words with spaces, so `str.split()` can return a single "word" of unbounded length — previously emitted as one oversized chunk. Every fallback now bottoms out in `_split_by_characters()`, the only split guaranteed to make progress on a script with no whitespace. It sizes each slice from the text's own observed characters-per-token ratio, so it adapts per script instead of assuming one.
-  * **Boundaries are matched, not consumed**: sentences are cut with `finditer` on `match.end()` rather than `re.split()`, so a terminator and any closing quote or bracket (`."` / `。」`) stay attached to the sentence they end instead of being dropped from the text.
-  * **Abbreviation screening now actually fires**: the negative lookbehinds sit immediately before the terminator, where they see `Dr` and `Fig`. Anchored *after* the dot — as they were — they inspected `r.` and `g.` and never matched, so `Dr. Smith`, `Sr. García` and `Nr. 5` were all being split mid-abbreviation.
-  * **Guarantee**: every unit returned is at most `MAX_CHUNK_TOKENS`. Word packing budgets with per-word estimates, so each fragment is re-measured on its joined text and re-split if the estimate came up short.
-  * **Oversized-paragraph screen**: a paragraph longer than `max_tokens * CERTAINLY_OVERSIZED_CHARS_PER_TOKEN` is treated as oversized without being tokenized. Tokenizing a multi-megabyte paragraph only to learn it is too big cost far more than the split it triggers.
-
-* **Chunk Payload Attributes**:
-  * `patent_id`, `section`, `text`, `chunk_id`, `section_chunk_index`, `document_chunk_index`, `total_chunks`, `token_count`, `word_count`.
+* **Concurrent Ingestion Pipeline** (`app/ingest.py`) — five stages, each with its own worker pool, connected by bounded queues so a slow stage backs up the one feeding it rather than stalling the whole run:
+  1. Parallel parsing/chunking workers parse + chunk patent files into a patent-level `parsed_queue`.
+  2. A chunk dispatcher buffers raw chunks — the first `CHUNK_QUEUE_CAPACITY` chunks accumulate before the first embedding window is cut, then one window is cut every time `>= EMBED_BATCH_SIZE` chunks are buffered.
+  3. `EMBED_CONCURRENT_REQUESTS` long-lived embedding workers each embed one window and loop straight back for the next ready one.
+  4. A vector dispatcher buffers embedded windows and cuts an insertion batch once `BATCH_SIZE` chunks are on hand.
+  5. `INSERT_WORKERS` insert workers each upsert one batch (chunk vectors + patent metadata) to Qdrant and checkpoint the patents just committed.
+  * `INGEST_PROGRESS_FILE` is an append-only log of fully-committed patent filenames; re-running the same ingest command resumes instead of reprocessing from the start.
+  * `INGEST_PAUSE_INDEXING` (default on): pauses HNSW index building on the chunks collection during ingest and builds it once at the end (`app/scripts/build_index.py` can resume this if an ingest crashed mid-run), since Qdrant otherwise rebuilds the index on every segment merge, competing with ingest for CPU/disk.
+* **Chunk Payload Attributes**: `patent_id`, `section`, `text`, `chunk_id`, `document_chunk_index`, `token_count`, `word_count` (see `app/models/patent_chunk.py`).
 
 ---
 
-### Stage 6: Query Understanding & Question Processing (`app/query_understanding/`)
-Before anything is embedded, the raw natural-language query is processed by the Query Understanding LLM (remote endpoint with local fallback). It classifies the query type and extracts structured representations into a `ParsedQuery`:
+### Stage 6: Query Understanding (`app/query_understanding/engine.py`, Search Phase 1)
+A remote LLM (`QUERY_LLM_REMOTE_BASE_URL` / `QUERY_LLM_REMOTE_MODEL`) parses the raw natural-language query into a structured `ParsedQuery` (`app/models/parsed_query.py`), with an LRU result cache (`QUERY_CACHE_SIZE`) keyed on the query text:
 
-1. **Query Intent Classification (`is_question`)**:
-   * **Topic Search (`is_question = false`)**: User wants to find patents about a topic or technology (e.g., *"material-aware 3D scanning"*, *"methods for determining material properties"*).
-   * **Question / Answer-Seeking Query (`is_question = true`)**: User seeks specific factual information from patent text (e.g., *"What types of image capture devices can be used in the system?"*, *"How is material determined based on detected features?"*).
+* `original_query`, `semantic_query` — the raw query and an intent-preserving natural-language rewrite.
+* `concepts` — distinct technical concepts/entities extracted from the query.
+* `relationships` — directed `SemanticRelationship(subject, relation, object, context)` triples.
+* `attributes` — `ConceptAttribute(concept, name, value)` properties modifying a concept.
+* `requirements` / `constraints` / `exclusions` — free-text functional requirements, numerical/physical constraints, and negative requirements (note: `exclusions` is parsed but not yet consumed anywhere in the search path).
+* `metadata_filters` — structured `MetadataFilter(field, operator, value, raw_field)` constraints mapped to the field allowlist (`app/query_understanding/field_mapping.py`).
+* `is_metadata_only` — true only when the query is exclusively metadata constraints with zero semantic/technical content; routes Phase 2 to the metadata-only fast path.
 
-2. **Adaptive Semantic Query Generation (`semantic_query`)**:
-   * **Rule 4A (Topic Search)**: Strips recognized metadata filter phrases and outputs the clean invention/technology topic.
-   * **Rule 4B (Question Search)**: Generates an answer-target-preserving retrieval query:
-     $$\text{semantic\_query} = \text{requested\_answer\_target} + \text{target\_entity} + \text{important\_relationship}$$
-     * Preserves the exact answer target (*types of devices*, *properties*, *methods*, *reasons*, *components*, *differences*) and qualifying context (*used in the system*, *based on detected features*).
-     * Prevents over-summarization (does **not** reduce *"What types of image capture devices can be used in the system?"* to *"image capture devices"* or *"image capture system"*).
-     * Avoids over-expansion and hallucinated keyword dumps.
-
-3. **Metadata Filters (`metadata_filters`)**:
-   * Extracts structured `(field, operator, value)` constraints mapped strictly to the allowlist (e.g. `CAN_EN`, `AAPS`, `PY`, `PRC`). Filters are preserved separately from `semantic_query` even in question queries.
-
-4. **Dynamic Requirements Structure & Question Intent**:
-   * For topic searches: extracts `concepts`, `goals`, `constraints`, `optimization`, `exclusions`, and `relationships`. Only `exclusions` feeds the reranker (its hard-filter, see Stage 9) - the rest are used to highlight matched query terms in the displayed result text (`app/evidence_selector.py`).
-   * For questions: populates `question_intent` with `target`, `expected_answer_type`, and `answer_criteria`.
+A truncated/malformed LLM completion is recovered by `_repair_truncated_json`, which walks the output tracking bracket/string nesting and closes it at the last cleanly-ended value instead of discarding the whole response — every `ParsedQuery` field has a safe empty default, so a partial object still validates.
 
 ---
 
-### Stage 6B: Metadata-Only Fast Path (`SemanticSearch._search_by_metadata_only`)
-Taken whenever `parsed.is_metadata_only` is `True` (e.g. *"applications filed in 2008 by Wyeth"*):
+### Stage 7: Candidate Retrieval (`app/retrieval/retriever.py` + `app/retrieval/views.py`, Search Phase 2)
 
-1. `QdrantDB.filter_patent_ids()` scrolls the entire `patents` collection and returns every `patent_id` matching all `metadata_filters`.
-2. `QdrantDB.get_chunks_for_patent_ids()` fetches every chunk belonging to those patents from `patent_chunks` without vector search or reranking.
-3. Chunks slot directly into aggregation with a placeholder score of `10.0` (max of the reranker's 0-10 scale) - a confirmed metadata match, not an actual relevance judgment, since there's no topic text to score against.
+**Metadata-only branch** (`is_metadata_only=True`): `_retrieve_metadata_only` builds a Qdrant filter, scrolls the `patents_metadata_*` collection, verifies every candidate against `parsed_query.metadata_filters` in Python (`_fetch_matching_patents`), and truncates to `PATENT_CANDIDATE_TOP_K` — no embedding call and no vector search at all.
 
----
-
-### Stage 7: Semantic Vector Search (`app/semantic_search.py` + `app/qdrant_db.py`)
-1. `Embedder.embed_query(parsed.semantic_query)` embeds the retrieval-optimized `semantic_query`.
-2. `QdrantDB.search()` executes a **group-by-`patent_id`** vector search against `patent_chunks`, retrieving the top `PATENT_CANDIDATE_TOP_K` (default: 50) candidate patents, each contributing up to `CANDIDATE_CHUNKS_PER_PATENT` (default: 3) chunks. This step decides **which patents** are candidates (a cheap embedding-similarity signal) - it is NOT the chunk set reranking sees (see Stage 8b).
-3. Two internal views are created:
-   * `candidate_chunks`: used only to derive the candidate `patent_id` list and the display view below.
-   * `qdrant_results`: a deduplicated display-only view (top chunk per patent) for candidate inspection - shown in the UI as "Qdrant Vector Search Candidates". It does not reflect the fuller chunk set reranking actually checks.
+**Semantic branch**:
+1. `build_retrieval_views` deterministically builds up to three query views with no LLM call: `original` (raw query), `semantic` (the Query Understanding rewrite), and `structured` (a compact synthesis of concepts, relationships, attributes, and requirements).
+2. Each distinct view text is embedded once in a single batched call.
+3. If `metadata_filters` are present, matching patent IDs are fetched first and used to restrict the Qdrant vector search via `MatchAny(patent_id in [...])`. If that pre-filter matches **zero** patents (which is as likely to be an extraction/mapping gap as a genuine no-match), the search falls back to unrestricted and lets Phase 3 enforce the filters on whatever candidates come back.
+4. Each view runs its own `query_points` call against `patent_chunks_*` with `limit=RETRIEVAL_TOP_K_PER_VIEW` (default 500).
+5. Chunks are deduplicated by point ID across views (merging `matched_views` and keeping the max score), grouped by `patent_id`, and each patent's `retrieval_score` is its single best chunk's score. Candidates are sorted by that score and bounded to `PATENT_CANDIDATE_TOP_K` (default 300).
+6. Surviving candidates' patent metadata is batch-fetched from `patents_metadata_*` for display and downstream filtering.
 
 ---
 
-### Stage 8a: Metadata Filtering, on Candidate Patent IDs (`app/filter_engine.py`)
-Runs BEFORE any chunk text is fetched. If `metadata_filters` exist:
-* Metadata for the candidate `patent_id`s from Stage 7 is batch-fetched from the `patents` collection.
-* `FilterEngine.matches()` checks every metadata constraint against each candidate patent.
-* Non-matching patent_ids are dropped - so a patent's full chunk set (Stage 8b) is only ever pulled for patents that already pass this.
+### Stage 8: Metadata Filtering (`app/retrieval/metadata_filter.py`, Search Phase 3)
+Deterministic, strict-AND enforcement of `parsed_query.metadata_filters` against each candidate's metadata (`matches_all_metadata_filters`), with per-filter pass/fail diagnostics surfaced to the UI:
+
+* **Field-type-aware comparison**: dates/years (`_compare_dates`, mixed year-vs-full-date granularity handled explicitly), classification/jurisdiction codes (`_compare_code`, exact/prefix/substring), and general text (`_compare_text`, equality or substring).
+* **Missing metadata**: a filter on a field the patent doesn't have fails the patent (passes only for a `!=` operator).
+* **Unknown fields**: a field with no resolvable payload key never vetoes a patent — this prevents an unmapped field from silently dropping an otherwise-matching result.
+* A query with no `metadata_filters` passes every candidate through unchanged.
 
 ---
 
-### Stage 8b: Full Chunk Retrieval (`QdrantDB.get_chunks_for_patent_ids`)
-For each surviving candidate patent_id, fetches **every** chunk it has in `patent_chunks` - unbounded, not just the `CANDIDATE_CHUNKS_PER_PATENT` chunks the initial vector search happened to surface. Patents in this corpus range from 1 to over 2,000 chunks, so this is the step that lets reranking judge a patent by its strongest evidence out of everything it discloses, not a similarity-biased subset.
+### Stage 9: Bounded Evidence Retrieval (`app/retrieval/evidence_retriever.py`, Search Phase 4)
+For the patents that survived Phase 3, gathers the chunk text needed for verification and reranking — **not** an unbounded per-patent fetch:
+
+1. `build_evidence_query` deterministically combines `semantic_query`, `relationships`, `requirements`, and `concepts` into one compact query text (no LLM call).
+2. Phase 2's already-held chunk text is seeded into the evidence pool first.
+3. One additional vector search embeds that evidence query and runs `query_points` restricted to the surviving patent IDs (`MatchAny`), with `limit=EVIDENCE_GLOBAL_TOP_K_CHUNKS` (default 1000) — a **global** cap shared across the whole candidate batch, not a per-patent cap.
+4. For every chunk now on hand, up to `EVIDENCE_NEIGHBOR_CHUNKS` (default 1) adjacent chunk indices on each side are fetched in a single batched Qdrant scroll, scored at `0.95 ×` the nearest anchor chunk's score, and merged in.
+5. Chunks are deduplicated per patent and ordered (direct matches before neighbors, by score); every matched chunk and its neighbors are kept — there is no per-patent truncation at this stage.
 
 ---
 
-### Stage 8c: Relevance Verification (`app/relevance_verifier.py`)
-The precision gate, and the answer to *"why did searching for an **LED TV** return an **LCD** TV?"* — placed here, before reranking, so the expensive stage never scores a patent that is going to be thrown out.
+### Stage 10: Relationship & Requirement Verification (`app/verification/verifier.py`, Search Phase 5)
+A fast (sub-second), GPU-accelerated **soft coverage** check — it scores how well each candidate's evidence supports the query's structure, but it does not drop candidates:
 
-A cross-encoder scores how **similar** two texts are. That is not the same question as *"is this the thing I asked for"*, and on patent text the two come apart:
-
-* `CN206212157U`, title *"Multi -functional LCD TV"*, scored **9.3/10** for **"LED TV"** — a liquid crystal television that carries an LED lamp on its case for night lighting. It contains "LED", it contains "TV", **in the same sentences**, so no word-level or proximity rule rejects it. What it never says is *"LED television"*.
-* **"car"** returned patents about *vehicles* in general, and a motorcycle.
-
-So the check is on the **compound phrase**, not the query's words:
-
-1. **Where the phrases come from** — `ParsedQuery.required_phrases`, produced by the Query Understanding call that **already runs once per query** (prompt.py RULE 6). This stage makes **no LLM call of its own**. Groups of interchangeable surface forms, one group per essential concept, **all** required:
-   * `"LED TV"` → `[["LED TV", "LED television", "light emitting diode television", ...]]`
-   * `"car"` → `[["car", "automobile", "passenger car", "sedan", ...]]`
-   * A qualifier always stays welded to the thing it qualifies — `["LED"], ["TV"]` as separate groups is exactly the bug.
-2. **A deterministic backstop for the group** — the prompt forbids a broader category inside a group, and a sampled run put `"vehicle"` in the group for `"car"` anyway, which silently passes every vehicle patent. So Query Understanding is also asked the question from the other side (`broader_terms`: *what categories does this concept belong to?*) and anything in both answers is struck out before matching. Two guards keep that from backfiring: a phrase the **user typed** is never struck (one run named "car" itself as broader than "car"), and a group emptied by the backstop keeps its original phrases.
-3. **Where a phrase has to appear** — a 200-page description mentions everything in passing, so a mention there proves nothing. The primary scope is what the patent says it **is** (title, abstract) plus what made it a candidate (the chunks vector search matched):
-   * **MATCH** — every group named in that scope. Kept.
-   * **RELATED** — every group named somewhere in the patent, but not in that scope. Dropped unless `VERIFICATION_KEEP_RELATED`.
-   * **NO_MATCH** — some group never named at all. Dropped.
-4. **Matching is exact but forgiving of spelling** — case, hyphens and whitespace are folded (`"LED-TV"`, `"LED  TV"`, `"led tv"`), a trailing plural is tolerated, and boundaries use `[0-9a-z]` lookarounds rather than `\b` so `"car"` never matches inside *"carriage"* while a CJK phrase still matches between CJK characters.
-5. **What it costs, and what it saves** — string matching over the candidate set, a few hundred milliseconds; against that, the reranker only ever sees the survivors. For **"LED TV"** that is **0 chunks scored instead of 2342**, and the whole query drops from ~18.6 s to ~3.8 s.
-6. **It degrades, never swallows.** If the stage cannot run — disabled, or no phrases from Query Understanding (an LLM outage leaves them empty) — it reports `ran=False`, returns its input untouched, and the stricter `PATENT_RELEVANCE_THRESHOLD` decides exactly as before.
-
-7. **When nothing matches at all** — a strict compound phrase is right for `"LED TV"` but wrong for `"water container"`: nothing in this corpus is *described* as a water container, though it is full of bottles. So Query Understanding also supplies `fallback_phrases` (the concept with its qualifier dropped), used **only** when the exact wording matched nothing, and accepted **only in the patent's title** — what it says it *is*. Those results are labelled `BROADER` and never mixed into exact matches. Crucially, the LLM leaves `fallback_phrases` **empty** when broadening would name a different product: `"LED TV"` relaxed to `"television"` returns the LCD sets this stage exists to reject, so that query still honestly returns nothing.
-
-Every verdict, kept or dropped, is shown with its reason in the UI's **Relevance Verification** panel and in the CLI diagnostics — a rejected patent leaves no other trace, so without that panel a query whose top hit was thrown out would look identical to a query that found nothing. A patent the gate kept that a later stage dropped records its score and says so.
+1. For each `relationship` (`subject relation object [context]`) and each free-text `requirement`, a hypothesis string is built.
+2. Every hypothesis is scored against every evidence chunk of every candidate in batched calls to the remote BGE cross-encoder (`/rerank` endpoint, shared with Phase 6's reranker server).
+3. **Relationship support**: `SUPPORTED` if a deterministic word-proximity check finds the subject's and object's terms co-occurring within `max_word_distance` (40) words of each other in some chunk (`check_span_proximity`), **or** the best cross-encoder score across the candidate's chunks is ≥ `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD` (0.35).
+4. **Requirement support**: `SUPPORTED` if the best of (cross-encoder score, `0.5 ×` word-overlap ratio) across the candidate's chunks is ≥ `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD` (0.35).
+5. Per-patent `relationship_coverage` / `requirement_coverage` are the fraction of relationships/requirements marked supported (1.0 if the query has none of that kind, or is metadata-only). These ratios feed Phase 7's score; **no candidate is excluded here**, however low its coverage.
 
 ---
 
-### Stage 9: Cross-Encoder Reranking (`app/reranker.py`)
-Scores every candidate **chunk individually**, then assigns each patent the MAX of its own chunks' scores.
-
-> **The chunk text is sent bare.** It used to be prefixed with `Section: <name>\n` for structural context. Measured against the live model that prefix was catastrophic for short chunks — a title is often four words, so the boilerplate was most of what the cross-encoder saw: `"car"` vs the title **"Automobile"** scored **3.0/10 with the prefix, 10.0/10 without**; `"bottle"` vs **"Bottle"** went **4.3 → 10.0**. On long chunks it changed almost nothing. Removing it made the patent titled *Automobile* the top result for *car*, where it belongs.
-
-1. Every chunk fetched in Stage 8b is scored against `semantic_query` in **one batched cross-encoder call** (remote reranking server with local `CrossEncoder` fallback), producing a **0-10 relevance score** per chunk.
-2. A patent's score is the **MAX** across all of its own chunks' scores - it's judged by its single strongest disclosed passage, not an average, not a top-K cut, and not a combined-text blob (a patent can have thousands of chunks, so combining them would exceed any usable model input length). The chunk that earned that max is the patent's best-evidence chunk, stashed on `chunk.payload["_chunk_relevance"]`.
-3. **Exclusion hard-filter**: if the query carries exclusion terms (e.g. *"without indium tin oxide"*), a patent is dropped only if its **own winning chunk** - the specific evidence that earned it its score - literally names an excluded term. Only that one chunk is checked, not the patent's whole chunk set: Query Understanding's exclusion extraction is itself an LLM call and can occasionally infer a term the user never asked to exclude, and a long patent will often mention an ordinary, unrelated term like that somewhere irrelevant - checking every chunk would let a hallucinated exclusion wrongly sink an otherwise correct match.
-4. **The score ranks; it does not filter.** `VERIFIED_RELEVANCE_THRESHOLD` is `0.0`: once Stage 8c has confirmed a patent literally names what was asked for, the cross-encoder only orders the survivors. That is measured, not a preference — this model rewards literal overlap and punishes synonyms, exactly what the gate accepts: it scores the title *"350ml Water bottle."* **0.0/10** against *"drinking water jerrycan"*. A signal that returns 0.0 for a right answer cannot be a filter at any threshold; every value tried (7.0, 5.0, 3.0) deleted correct answers. `PATENT_RELEVANCE_THRESHOLD` (`7.0`) still applies when Stage 8c could not run, since then nothing else vets topicality.
-5. **Exclusions** match on word boundaries, not substrings — excluding `"cap"` used to strike out any chunk containing *"escaping"* or *"capacitor"*.
+### Stage 11: BGE Cross-Encoder Reranking & Highlighting (`app/reranking/reranker.py` + `app/highlighting/`, Search Phase 6)
+1. `build_rerank_query` deterministically builds one reranking query from `semantic_query` (or `original_query`), `relationships`, and `requirements` — no LLM call, no new embeddings.
+2. Each evidence chunk is formatted (`Section: <name>\n\n<text>`) and truncated to a token budget (`RERANKER_MAX_CONTEXT_TOKENS` minus the query's tokens minus `RERANKER_TOKEN_SAFETY_MARGIN`), sliced at exact tokenizer offsets so truncation never splits a token.
+3. All chunks across all verified candidates are scored against the reranking query in one set of batched HTTP calls (`RERANK_BATCH_SIZE` docs per request, up to `RERANK_CONCURRENT_REQUESTS` in flight) to the remote BGE reranker (`BAAI/bge-reranker-v2-m3`). A failed batch scores 0.0 rather than aborting the search.
+4. **Query-match highlighting**: each chunk's sentences (split multilingually, short fragments like "FIG. 1" skipped) are scored in the **same** batched requests as the chunks, and sentences scoring above `HIGHLIGHT_SENTENCE_THRESHOLD` (strong above `HIGHLIGHT_SENTENCE_STRONG_THRESHOLD`) are marked. Separately, the query's own content words (stemmed, CJK-aware) are matched as literal term spans. Both are character-offset spans the UI highlights directly on the chunk text.
+5. A patent's `best_reranker_score` is the **MAX** across its own chunks' scores (not an average); `avg_reranker_score` is also kept. Phase 5's verification results are carried through unchanged.
 
 ---
 
-### Stage 10: Answer Evidence Selection & Span Highlighting (`app/evidence_selector.py`)
-For question queries (`parsed.is_question = True`), candidate chunks pass through the `EvidenceSelector`:
+### Stage 12: Final Scoring & Result Selection (`app/scoring/scorer.py`, Search Phase 7)
+Pure in-memory, deterministic — zero LLM/reranker/embedding/Qdrant calls. For each candidate, four 0–1 component scores are combined into one 0–10 final score:
 
-1. **Answer & Evidence Extraction**:
-   * Analyzes top reranked chunks against `parsed.question_intent`.
-   * Extracts a concise **answer summary** and verbatim **supporting evidence sentences**.
-   * Employs remote LLM extraction with an automated deterministic fallback algorithm based on target directness and core term coverage.
-2. **Exact Character Span Resolution**:
-   * `locate_span_in_text()` calculates precise character offsets `[start_char, end_char]` inside the original chunk text.
-3. **HTML Highlighting**:
-   * `highlight_spans()` wraps matched evidence in `<mark>` tags for UI presentation.
-4. Attaches `answer`, `answer_evidence`, `answer_span`, `answer_score`, and `highlighted_text` to the chunk payload.
+```
+final_score = 10 × ( 0.45 × relationship_score
+                    + 0.25 × requirement_score
+                    + 0.20 × reranker_score
+                    + 0.10 × retrieval_score )
+```
 
----
-
-### Stage 11: Patent-Level Aggregation (`app/semantic_search.py`)
-* `SemanticSearch._aggregate_by_patent()` groups reranked chunks by `patent_id`.
-* **Patent Score**: the MAX-of-its-chunks relevance score from Stage 9 (identical across a patent's own chunks, since it's the same max); `best_chunk` is the specific chunk whose own score (`RankedChunk.chunk_relevance_score`) produced that max - the same model that decided relevance also decides which passage to display, not a separate heuristic.
-* **Sorting**: question queries put a patent with a genuine extracted answer first, ahead of any patent without one (regardless of relevance score); topic queries sort by relevance score alone.
-* Preserves question answers and highlighted evidence in `PatentSearchResult`.
-* Results are truncated to `FINAL_TOP_K` (default: 10) patents.
+* `relationship_score` = Phase 5's `relationship_coverage`, forced to `0.0` if any relationship was explicitly `CONTRADICTED`.
+* `requirement_score` = Phase 5's `requirement_coverage`.
+* `reranker_score` = Phase 6's `best_reranker_score`, clamped to [0, 1].
+* `retrieval_score` = Phase 2's `candidate_score` (retrieval similarity), clamped to [0, 1].
+* The four weights (`FINAL_WEIGHT_*`) must sum to 1.0 (validated at `FinalScorer` construction).
+* A patent qualifies only if `final_score >= FINAL_SCORE_THRESHOLD` (default 7.0); qualifying patents are returned sorted descending, with **no fixed top-K cap**.
+* **Metadata-only queries** skip scoring entirely: there is no topic to verify or rank against, so every matching patent is returned unscored and unranked, in the order Phase 6 delivered them, rather than dressing up a meaningless number.
 
 ---
 
 ## 🛠️ Project Configuration & Tunables (`app/config.py`)
 
-All system thresholds are centrally managed in `app/config.py`:
-
 | Component | Setting | Default Value | Description |
 | :--- | :--- | :--- | :--- |
 | **Qdrant** | `QDRANT_HOST` / `PORT` | `localhost:6333` | Qdrant vector database connection |
-| | `CHUNKS_COLLECTION_NAME` | `"patent_chunks"` | Searchable chunk collection (vectors + payload) |
-| | `PATENTS_COLLECTION_NAME` | `"patents"` | Patent metadata collection (no vectors) |
-| **Embedding** | `EMBEDDING_MODEL` | `"Qwen/Qwen3-Embedding-0.6B"` | SentenceTransformer embedding model |
+| | `CHUNKS_COLLECTION_PREFIX` / `PATENTS_COLLECTION_PREFIX` | `"patent_chunks_"` / `"patents_metadata_"` | Naming convention search uses to discover collections |
+| | `CHUNKS_COLLECTION_NAME` / `PATENTS_COLLECTION_NAME` | `"patent_chunks_512"` / `"patents_metadata_512"` | The collection pair ingestion writes to |
+| **Embedding** | `EMBEDDING_REMOTE_BASE_URL` / `_MODEL` | — | Remote vLLM embedding server & `Qwen/Qwen3-Embedding-0.6B` |
 | | `VECTOR_SIZE` | `1024` | Vector dimensionality |
 | **Chunking** | `MAX_CHUNK_TOKENS` | `512` | Token capacity limit per chunk |
-| | `MIN_CHUNK_TOKENS` / `MIN_CHUNK_WORDS` | `20` / `8` | Minimum size for a valid chunk |
-| | `BATCH_SIZE` | `100` | Points per Qdrant upload batch |
-| **Ingestion** | `EMBED_BATCH_SIZE` | `256` | Chunks per embedding HTTP request — the main ingest throughput lever |
-| | `EMBED_CONCURRENT_REQUESTS` | `8` | Parallel embedding workers/requests in flight at once |
-| | `CHUNK_QUEUE_CAPACITY` | `4096` | Chunks buffered before the first embedding window is cut |
-| | `INSERT_WORKERS` | `8` | Parallel Qdrant insert workers |
-| | `INGEST_PREFETCH` | `512` | Patents parsed/chunked ahead of the embedder by the prefetch thread |
+| **Ingestion** | `EMBED_BATCH_SIZE` / `EMBED_CONCURRENT_REQUESTS` | `128` / `5` | Texts per embedding HTTP request / parallel requests in flight |
+| | `CHUNK_QUEUE_CAPACITY` | `1024` | Chunks buffered before the first embedding window is cut |
+| | `BATCH_SIZE` / `INSERT_WORKERS` | `512` / `4` | Points per Qdrant insertion batch / parallel insert workers |
+| | `INGEST_PROGRESS_FILE` | `"data/ingest_progress_512.log"` | Resume checkpoint log |
 | **Validator** | `VALIDATOR_LOW_INFO_THRESHOLD` | `0.30` | Minimum ratio of alpha characters required |
 | | `VALIDATOR_DEGENERATE_OVERLAP_THRESHOLD` | `0.9` | Minimum unique-content ratio vs. previous chunk |
 | **Query Understanding** | `QUERY_LLM_REMOTE_BASE_URL` / `_MODEL` | — | Remote OpenAI-compatible endpoint & model |
-| **Reranker** | `RERANKER_REMOTE_BASE_URL` / `_MODEL` | — | Remote reranking server URL & model |
-| | `PATENT_CANDIDATE_TOP_K` | `50` | Distinct candidate patents from vector search - each gets EVERY one of its own chunks checked by reranking, so this is the main lever on reranking latency vs. candidate breadth |
-| | `CANDIDATE_CHUNKS_PER_PATENT` | `3` | Chunks per candidate patent from the INITIAL vector-search step only (identifying candidates + the display view) - reranking itself checks a patent's complete chunk set, not this |
-| | `PATENT_RELEVANCE_THRESHOLD` | `7.0` | 0-10 relevance score (the MAX across a patent's own chunks) a patent must meet to be kept as a match - the only reranking threshold |
-| | `FINAL_TOP_K` | `10` | Final reranked patents returned |
-| **Relevance Verification** | `VERIFICATION_ENABLED` | `True` | Master switch — `False` restores the plain `PATENT_RELEVANCE_THRESHOLD` cut with no phrase check |
-| | `VERIFIED_RELEVANCE_THRESHOLD` | `0.0` | Relevance cut for patents that PASSED verification. Zero because the gate decides membership and the score only ranks — raise it only if genuinely off-topic patents appear, and fix the gate first if they do |
-| | `BROADER_RELEVANCE_THRESHOLD` | `0.0` | The same for the broader fallback tier, which is kept honest by its title-only rule rather than by a score |
-| | `VERIFICATION_FALLBACK_ENABLED` | `True` | Search again with relaxed wording when the exact wording matched nothing, labelled as broader matches. `False` returns an honest empty page instead |
-| | `VERIFICATION_KEEP_RELATED` | `False` | Keep patents that name the concept only in passing, ranked below confirmed matches |
+| | `QUERY_CACHE_SIZE` | `1024` | LRU cache size for parsed queries |
+| **Phase 2 Retrieval** | `RETRIEVAL_TOP_K_PER_VIEW` | `500` | Chunks fetched per retrieval view before dedup/grouping |
+| | `PATENT_CANDIDATE_TOP_K` | `300` | Candidate patents kept after Phase 2 grouping |
+| **Phase 4 Evidence** | `EVIDENCE_GLOBAL_TOP_K_CHUNKS` | `1000` | Global (not per-patent) cap on the evidence vector search |
+| | `EVIDENCE_NEIGHBOR_CHUNKS` | `1` | Adjacent chunk indices fetched on each side of a matched chunk |
+| **Phase 5 Verification** | `VERIFICATION_MAX_CANDIDATES` | `None` | Caps candidates verified (and thus Phase 6/7); `None` = verify all |
+| | `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD` | `0.35` | Min cross-encoder score to mark a relationship SUPPORTED |
+| | `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD` | `0.35` | Min effective score to mark a requirement SUPPORTED |
+| **Phase 6 Reranker** | `RERANKER_REMOTE_BASE_URL` / `_MODEL` | — | Remote BGE cross-encoder server & `BAAI/bge-reranker-v2-m3` |
+| | `RERANK_BATCH_SIZE` / `RERANK_CONCURRENT_REQUESTS` | `128` / `6` | Docs per rerank HTTP request / requests in flight |
+| | `RERANKER_MAX_CONTEXT_TOKENS` / `_TOKEN_SAFETY_MARGIN` | `4096` / `16` | Combined query+doc token budget per request |
+| **Phase 7 Scoring** | `FINAL_SCORE_THRESHOLD` | `7.0` | Minimum 0–10 final score to appear in results |
+| | `FINAL_WEIGHT_RELATIONSHIP/REQUIREMENT/RERANKER/RETRIEVAL` | `0.45 / 0.25 / 0.20 / 0.10` | Multi-signal scoring weights (must sum to 1.0) |
+| **Highlighting** | `HIGHLIGHT_SENTENCE_THRESHOLD` / `_STRONG_THRESHOLD` | `0.02` / `0.25` | Cross-encoder sentence score cutoffs for highlighting |
+| | `HIGHLIGHT_MIN_SENTENCE_CHARS` / `_WORDS` | `8` / `4` | Minimum sentence size scored for highlighting |
 | **UI** | `PATENT_VIEW_URL_TEMPLATE` | — | External patent detail page URL template |
 
 ---
@@ -316,44 +237,63 @@ All system thresholds are centrally managed in `app/config.py`:
 ```
 rag_demo/
 ├── app/
-│   ├── chunking/                       # Token-aware chunking subsystem
-│   │   ├── chunk_builder.py            # Greedily constructs token-bounded chunks
+│   ├── chunking/                       # Section detection & token-window chunking
+│   │   ├── section_detector.py         # Known-heading-whitelist section boundary detection
+│   │   ├── known_headings.py           # Whitelist of recognized patent section headings
+│   │   ├── token_window_chunker.py     # Token-bounded window chunker with boundary adjustment
 │   │   ├── chunk_validator.py          # Quality and duplicate filtering
-│   │   ├── section_detector.py         # Heading & patent section boundary detection
-│   │   ├── semantic_unit_splitter.py   # Paragraph/sentence semantic unit splitter
 │   │   └── token_counter.py            # HuggingFace token counter with LRU cache
 │   ├── query_understanding/            # LLM-based natural-language query parsing
-│   │   ├── parser.py                   # QueryUnderstanding: query -> ParsedQuery
-│   │   ├── models.py                   # ParsedQuery, MetadataFilter, Concept, QuestionIntent, etc.
-│   │   ├── prompt.py                   # Query-understanding prompt template (Rules 4A/4B, 7)
+│   │   ├── engine.py                   # QueryUnderstandingEngine: query -> ParsedQuery (+ cache, JSON repair)
+│   │   ├── cache.py                    # LRU query cache
+│   │   ├── prompt.py                   # Query-understanding system prompt
 │   │   ├── field_mapping.py            # Filterable metadata field allowlist
-│   │   ├── metadata_field_codes.py     # Field code reference used in prompts
 │   │   └── normalizer.py               # Country / organization name normalization
-│   ├── models/                         # Dataclasses & schema definitions
-│   │   ├── patent_chunk.py             # PatentChunk dataclass
-│   │   ├── patent_document.py          # Raw parsed PatentDocument dataclass
-│   │   ├── patent_search_result.py     # PatentSearchResult, RankedChunk, AnswerEvidence
-│   │   └── search_result.py            # Shared search result helpers
+│   ├── retrieval/                      # Phases 2-4: candidate + evidence retrieval
+│   │   ├── retriever.py                # CandidateRetriever: multi-view vector search (Phase 2)
+│   │   ├── views.py                    # Deterministic original/semantic/structured view builder
+│   │   ├── filter_builder.py           # Metadata field -> Qdrant filter / payload key resolution
+│   │   ├── metadata_filter.py          # Strict-AND metadata constraint enforcement (Phase 3)
+│   │   └── evidence_retriever.py       # Bounded evidence chunk + neighbor retrieval (Phase 4)
+│   ├── verification/
+│   │   └── verifier.py                 # RelationshipVerifier: cross-encoder + proximity coverage (Phase 5)
+│   ├── reranking/
+│   │   └── reranker.py                 # BGEReranker: cross-encoder reranking + highlighting (Phase 6)
+│   ├── highlighting/
+│   │   └── highlighter.py              # Sentence/term span highlighting used by the reranker
+│   ├── scoring/
+│   │   └── scorer.py                   # FinalScorer: weighted multi-signal scoring (Phase 7)
+│   ├── models/                         # Pydantic dataclasses & schema definitions
+│   │   ├── parsed_query.py             # ParsedQuery, SemanticRelationship, ConceptAttribute, MetadataFilter
+│   │   ├── candidate.py                # CandidateChunk, CandidatePatent, (Filtered)CandidateRetrievalResult
+│   │   ├── evidence.py                 # EvidenceChunk, PatentEvidence, EvidenceRetrievalResult
+│   │   ├── verification.py             # RelationshipVerification, RequirementVerification, VerificationBatchResult
+│   │   ├── reranking.py                # RerankedEvidenceChunk, RerankedPatentResult, ChunkHighlight
+│   │   ├── scoring.py                  # FinalPatentResult, ScoreBreakdown, FinalSearchResult
+│   │   ├── collection.py               # SearchCollection (chunks + patents collection pair)
+│   │   ├── patent_chunk.py             # PatentChunk dataclass (ingestion)
+│   │   └── patent_document.py          # Raw parsed PatentDocument dataclass (ingestion)
 │   ├── api/
-│   │   └── main.py                     # FastAPI server: streams search pipeline results to the React UI
+│   │   ├── main.py                     # FastAPI server: streams the 7-phase pipeline as NDJSON
+│   │   ├── schemas.py                  # Request/response Pydantic models
+│   │   ├── history.py                  # Search history endpoints (PostgreSQL)
+│   │   ├── settings.py                 # UI appearance settings endpoints
+│   │   └── memory.py                   # Process memory sampling for /api/compare
+│   ├── db/                             # PostgreSQL search-history persistence (SQLAlchemy)
 │   ├── scripts/
-│   │   └── show_indexed_patents.py     # Summary table generator for all Qdrant-indexed patents
-│   ├── _tests_/                        # Component & end-to-end test/diagnostic scripts
-│   │   ├── test_semantic_search.py     # End-to-end search pipeline diagnostics
-│   │   ├── test_reranker.py            # Whole-patent reranker & aggregation tests
-│   │   ├── test_query_understanding.py # Query Understanding & field parsing tests
-│   │   └── test_*.py                   # Per-component tests (chunker, qdrant, embedding, etc.)
+│   │   ├── show_indexed_patents.py     # Summary table generator for all Qdrant-indexed patents
+│   │   └── build_index.py              # Resume/watch the Qdrant HNSW index build after ingest
+│   ├── _tests_/                        # Component diagnostic scripts (no pytest required)
 │   ├── config.py                       # Project configuration & hyperparameter tunables
 │   ├── parser.py                       # Reads .txt and .json patent source files
 │   ├── chunker.py                      # Orchestrates the chunking subsystem
-│   ├── embedder.py                     # HuggingFace Qwen embedding wrapper
-│   ├── qdrant_db.py                    # Qdrant client: both collections, search, metadata I/O
-│   ├── ingest.py                       # Ingestion pipeline script
-│   ├── filter_engine.py                # Post-retrieval metadata filter evaluation
-│   ├── reranker.py                     # Remote/local cross-encoder whole-patent reranking
-│   ├── evidence_selector.py            # Answer evidence extraction & exact character span highlighting
-│   └── semantic_search.py              # Patent-level semantic search coordinator
-├── docker-compose.yml                  # Docker setup for Qdrant Vector DB
+│   ├── embedder.py                     # Remote vLLM embedding client
+│   ├── qdrant_db.py                    # Qdrant client: collection discovery, search, metadata I/O
+│   ├── ingest.py                       # Five-stage concurrent ingestion pipeline
+│   └── semantic_search.py              # SearchPipeline: orchestrates Phases 1-7
+├── frontend/                           # Vite + React + TypeScript UI (see frontend/README.md)
+├── docker-compose.yml                  # Qdrant + PostgreSQL + Adminer + API (production-style)
+├── docker-compose.override.yml         # Dev overrides: hot-reload API + Vite dev server
 ├── requirements.txt                    # Python dependencies
 └── README.md                           # Comprehensive documentation
 ```
@@ -383,9 +323,13 @@ To ingest, chunk, embed, and index patents into Qdrant:
 ```bash
 ./venv/bin/python -m app.ingest
 ```
-This automatically creates the `patent_chunks` and `patents` collections on first run. To wipe and recreate both collections from scratch:
+This creates the `patent_chunks_<name>` / `patents_metadata_<name>` collection pair named by `CHUNKS_COLLECTION_NAME` / `PATENTS_COLLECTION_NAME` on first run, and resumes from `INGEST_PROGRESS_FILE` if interrupted. To wipe and recreate both collections from scratch:
 ```bash
 ./venv/bin/python -c "from app.qdrant_db import QdrantDB; QdrantDB().reset_collections()"
+```
+If an ingest is interrupted before the final index build, finish or re-watch it with:
+```bash
+./venv/bin/python -m app.scripts.build_index
 ```
 
 ### 3.1 View All Indexed Patents Summary Table
@@ -399,13 +343,7 @@ For detailed section-by-section breakdown:
 ./venv/bin/python -m app.scripts.show_indexed_patents -v
 ```
 
-### 4. Run Semantic Search Diagnostics
-Run the end-to-end search pipeline diagnostics tool:
-```bash
-./venv/bin/python -m app._tests_.test_semantic_search "Microdrilling"
-```
-
-### 4.1 Run the Web App (React + FastAPI)
+### 4. Run the Web App (React + FastAPI)
 The React frontend (`frontend/`) talks to a FastAPI server (`app/api/main.py`) that runs the
 `SearchPipeline` and streams each phase's result as it completes.
 
@@ -451,32 +389,23 @@ React Query (server calls), Zod (form + API response validation).
 | --- | --- |
 | `src/components/ui/` | Generic reusable UI kit (Button, Card, Drawer, DataTable, Tabs, …) |
 | `src/components/patent/` | Patent-specific reusable pieces (heading, evidence chunk, verification list) |
-| `src/features/` | Screens: search form, pipeline tracker, results, pipeline details, settings |
+| `src/features/` | Screens: search, compare, pipeline, results, history, settings |
 | `src/schemas/` | Zod schemas — mirror the Pydantic models in `app/models/`; types come from `z.infer` |
 | `src/store/` | Redux slices and selectors |
-| `src/hooks/` | React Query hooks, including the streaming `useSearch` |
+| `src/hooks/` | React Query hooks, including the streaming search hook |
 
-### 5. Running Component Verification Tests
-Component tests live under `app/_tests_/` as plain Python scripts (no pytest required):
-* Test query understanding parser and prompt:
-  ```bash
-  ./venv/bin/python -m app._tests_.test_query_understanding
-  ```
-* Test the whole-patent reranker and patent aggregation:
-  ```bash
-  ./venv/bin/python -m app._tests_.test_reranker
-  ```
-* Test chunking, parsing, and embedding:
-  ```bash
-  ./venv/bin/python -m app._tests_.test_chunker
-  ./venv/bin/python -m app._tests_.test_parser
-  ./venv/bin/python -m app._tests_.test_embedding
-  ```
-* Test Qdrant connection and operations:
-  ```bash
-  ./venv/bin/python -m app._tests_.test_connection
-  ./venv/bin/python -m app._tests_.test_qdrant
-  ./venv/bin/python -m app._tests_.test_batch_insert
-  ./venv/bin/python -m app._tests_.test_reset_collection
-  ```
+### 4.1 Comparing Collections
+`POST /api/compare` parses a query once and runs Phases 2–7 against several collections in turn, streaming per-collection phase events plus process-memory usage, so collections (e.g. different `MAX_CHUNK_TOKENS` sizes) can be compared head-to-head. Exposed in the UI's **Compare** page; compare runs are not saved to search history.
 
+### 5. Running Component Verification Scripts
+Diagnostic scripts live under `app/_tests_/` as plain Python scripts (no pytest required):
+```bash
+./venv/bin/python -m app._tests_.test_chunker
+./venv/bin/python -m app._tests_.test_token_window_chunker
+./venv/bin/python -m app._tests_.test_parser
+./venv/bin/python -m app._tests_.test_embedding
+./venv/bin/python -m app._tests_.test_connection
+./venv/bin/python -m app._tests_.test_qdrant
+./venv/bin/python -m app._tests_.test_batch_insert
+./venv/bin/python -m app._tests_.test_reset_collection
+```

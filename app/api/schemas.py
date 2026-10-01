@@ -88,6 +88,59 @@ class HistoryDetail(HistoryItem):
     phases: Dict[str, Any]
 
 
+class CollectionMemoryStats(BaseModel):
+    disk_bytes: int
+    ram_bytes: int
+
+
+class CollectionStorageStats(BaseModel):
+    name: str
+    chunks_collection: str
+    patents_collection: str
+    chunk_count: int
+    patent_count: int
+    # Parsed from the collection name when it's numeric (e.g. "512" -> 512); null otherwise.
+    max_chunk_tokens: Optional[int]
+    chunks_memory: CollectionMemoryStats
+    patents_memory: CollectionMemoryStats
+    total_disk_bytes: int
+    total_ram_bytes: int
+
+
+class SamplePatentCollectionChunks(BaseModel):
+    collection: str
+    chunk_count: int
+    vector_bytes: int
+    payload_bytes: int
+    estimated_total_bytes: int
+
+
+class SamplePatentStats(BaseModel):
+    patent_id: str
+    metadata: Dict[str, Any]
+    per_collection: List[SamplePatentCollectionChunks]
+
+
+class CollectionsOverview(BaseModel):
+    vector_size: int
+    collections: List[CollectionStorageStats]
+    # Same 1-2 patents, present in every collection, so their chunk count and
+    # storage footprint can be compared head-to-head across chunk sizes.
+    sample_patents: List[SamplePatentStats]
+
+
+class PatentLookupResult(BaseModel):
+    """On-demand version of SamplePatentStats for a user-supplied patent_id."""
+
+    patent_id: str
+    # False only when the patent_id has no metadata in any searchable collection.
+    found: bool
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    per_collection: List[SamplePatentCollectionChunks] = Field(default_factory=list)
+    # Collection names the patent_id has no metadata in (so wasn't looked up there).
+    missing_collections: List[str] = Field(default_factory=list)
+
+
 class UiSettings(BaseModel):
     """Appearance settings (shared by everyone using this server)."""
 

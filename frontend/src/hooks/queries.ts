@@ -7,6 +7,7 @@ import { DEFAULT_UI_SETTINGS } from '@/schemas/settings'
 export const queryKeys = {
   config: ['config'] as const,
   collections: ['collections'] as const,
+  collectionsOverview: ['collections', 'overview'] as const,
   cacheStats: ['cache-stats'] as const,
   history: ['history'] as const,
   historyList: (params: HistoryParams) => ['history', 'list', params] as const,
@@ -27,6 +28,20 @@ export function useCollections() {
     queryKey: queryKeys.collections,
     queryFn: api.getCollections,
     staleTime: 60_000, // new collections appear only after an ingest
+  })
+}
+
+export function useCollectionsOverview() {
+  return useQuery({
+    queryKey: queryKeys.collectionsOverview,
+    queryFn: api.getCollectionsOverview,
+    staleTime: 60_000, // changes only after an ingest; each call also scrolls/sums chunks server-side
+  })
+}
+
+export function useLookupPatentStorage() {
+  return useMutation({
+    mutationFn: api.getPatentStorage,
   })
 }
 

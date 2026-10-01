@@ -91,3 +91,11 @@ export const ChartIcon = (p: IconProps) => (
     <path d="M4 20h16M7 16v-5M12 16V6M17 16v-8" />
   </Icon>
 )
+
+export const DatabaseIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <ellipse cx="12" cy="5" rx="8" ry="3" />
+    <path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+    <path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" />
+  </Icon>
+)

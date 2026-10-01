@@ -5,6 +5,7 @@ Exposes the 7-phase SearchPipeline to the React frontend:
 
     GET    /api/config   pipeline settings and scoring weights
     GET    /api/collections  Qdrant collections the user can search
+    GET    /api/collections/stats  per-collection storage/RAM usage + sample-patent comparison
     GET    /api/cache    query-understanding LRU cache stats
     DELETE /api/cache    clear the LRU cache
     POST   /api/search   run the pipeline, streaming NDJSON events
@@ -57,6 +58,7 @@ from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.api.collection_stats import router as collection_stats_router
 from app.api.history import router as history_router
 from app.api.memory import MemorySampler, release_free_memory
 from app.api.settings import router as settings_router
@@ -146,6 +148,7 @@ app.add_middleware(
 )
 app.include_router(history_router)
 app.include_router(settings_router)
+app.include_router(collection_stats_router)
 
 
 @app.get("/api/config", response_model=PipelineConfig)

@@ -6,6 +6,7 @@ import { Spinner } from '@/components/ui'
 // Each page is loaded on first visit, keeping the initial bundle small.
 const SearchPage = lazy(() => import('@/pages/SearchPage').then((m) => ({ default: m.SearchPage })))
 const ComparePage = lazy(() => import('@/pages/ComparePage').then((m) => ({ default: m.ComparePage })))
+const CollectionsPage = lazy(() => import('@/pages/CollectionsPage').then((m) => ({ default: m.CollectionsPage })))
 const HistoryPage = lazy(() => import('@/pages/HistoryPage').then((m) => ({ default: m.HistoryPage })))
 const HistoryDetailPage = lazy(() =>
   import('@/pages/HistoryDetailPage').then((m) => ({ default: m.HistoryDetailPage })),
@@ -25,6 +26,7 @@ export default function App() {
         <Route element={<AppLayout />}>
           <Route index element={<SearchPage />} />
           <Route path="compare" element={<ComparePage />} />
+          <Route path="collections" element={<CollectionsPage />} />
           <Route path="history" element={<HistoryPage />} />
           <Route path="history/:id" element={<HistoryDetailPage />} />
           <Route path="*" element={<NotFoundPage />} />

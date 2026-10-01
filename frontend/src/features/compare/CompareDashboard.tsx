@@ -187,6 +187,7 @@ export function CompareDashboard({ state, metrics, series }: CompareDashboardPro
       </div>
 
       <Overlap metrics={metrics} series={series} />
+      <CommonResults metrics={metrics} series={series} />
       <MetricsTable
         metrics={metrics}
         series={series}
@@ -392,6 +393,59 @@ function Overlap({ metrics, series }: { metrics: CollectionMetrics[]; series: Se
           rows={rows}
           rowKey={(r) => r.patentId}
           emptyText="No collection has qualifying results yet."
+        />
+      </CardBody>
+    </Card>
+  )
+}
+
+/** Patents that every selected collection found among its qualifying results. */
+function CommonResults({ metrics, series }: { metrics: CollectionMetrics[]; series: Series[] }) {
+  const rows = resultOverlap(metrics).filter((r) => Object.keys(r.found).length === metrics.length)
+
+  const columns: Column<OverlapRow>[] = [
+    {
+      header: 'Patent',
+      render: (r) => (
+        <div className="min-w-48">
+          <div className="font-mono text-xs text-slate-900">{r.patentId}</div>
+          {r.title && <div className="line-clamp-1 text-xs text-slate-500">{r.title}</div>}
+        </div>
+      ),
+    },
+    ...metrics.map<Column<OverlapRow>>((m, i) => ({
+      header: m.name,
+      align: 'right',
+      render: (r) => {
+        const f = r.found[m.name]
+        return f ? (
+          <span className="inline-flex items-center gap-1.5">
+            <span className="size-2 rounded-full" style={{ backgroundColor: series[i].color }} aria-hidden />#{f.rank}
+            {f.score !== null && <> · {f.score.toFixed(2)}</>}
+          </span>
+        ) : (
+          <span className="text-slate-400">—</span>
+        )
+      },
+    })),
+  ]
+
+  return (
+    <Card>
+      <CardHeader
+        title="Common results"
+        subtitle={
+          metrics.length < 2
+            ? 'Run more than one collection to see patents common to all of them.'
+            : `Qualifying patents found by all ${metrics.length} collections, with rank and final score in each.`
+        }
+      />
+      <CardBody>
+        <DataTable
+          columns={columns}
+          rows={rows}
+          rowKey={(r) => r.patentId}
+          emptyText={metrics.length < 2 ? 'Run more than one collection to compare.' : 'No patent was found by every collection.'}
         />
       </CardBody>
     </Card>

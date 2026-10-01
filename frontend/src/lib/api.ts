@@ -3,7 +3,9 @@ import type { z } from 'zod'
 import {
   cacheStatsSchema,
   collectionListSchema,
+  collectionsOverviewSchema,
   compareEventSchema,
+  patentLookupResultSchema,
   pipelineConfigSchema,
   searchEventSchema,
   type CompareEvent,
@@ -90,6 +92,9 @@ export interface HistoryParams {
 export const api = {
   getConfig: () => request('/config', pipelineConfigSchema),
   getCollections: () => request('/collections', collectionListSchema),
+  getCollectionsOverview: () => request('/collections/stats', collectionsOverviewSchema),
+  getPatentStorage: (patentId: string) =>
+    request(`/collections/patent/${encodeURIComponent(patentId)}`, patentLookupResultSchema),
   getCacheStats: () => request('/cache', cacheStatsSchema),
   clearCache: () => request('/cache', cacheStatsSchema, { method: 'DELETE' }),
 

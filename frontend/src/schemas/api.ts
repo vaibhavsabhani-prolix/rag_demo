@@ -30,6 +30,64 @@ export const collectionListSchema = z.object({
   default: z.string().nullable(),
 })
 
+/** Disk/RAM usage Qdrant reports for one collection (app/api/schemas.py CollectionMemoryStats). */
+export const collectionMemoryStatsSchema = z.object({
+  disk_bytes: z.number(),
+  ram_bytes: z.number(),
+})
+
+/** Storage stats for one chunk-size collection pair (CollectionStorageStats). */
+export const collectionStorageStatsSchema = z.object({
+  name: z.string(),
+  chunks_collection: z.string(),
+  patents_collection: z.string(),
+  chunk_count: z.number(),
+  patent_count: z.number(),
+  max_chunk_tokens: z.number().nullable(),
+  chunks_memory: collectionMemoryStatsSchema,
+  patents_memory: collectionMemoryStatsSchema,
+  total_disk_bytes: z.number(),
+  total_ram_bytes: z.number(),
+})
+
+/** One sample patent's chunk count + estimated storage footprint in one collection. */
+export const samplePatentCollectionChunksSchema = z.object({
+  collection: z.string(),
+  chunk_count: z.number(),
+  vector_bytes: z.number(),
+  payload_bytes: z.number(),
+  estimated_total_bytes: z.number(),
+})
+
+/** A patent present in every collection, compared across chunk sizes (SamplePatentStats). */
+export const samplePatentStatsSchema = z.object({
+  patent_id: z.string(),
+  metadata: z.record(z.string(), z.unknown()),
+  per_collection: z.array(samplePatentCollectionChunksSchema),
+})
+
+/** GET /api/collections/stats response (CollectionsOverview). */
+export const collectionsOverviewSchema = z.object({
+  vector_size: z.number(),
+  collections: z.array(collectionStorageStatsSchema),
+  sample_patents: z.array(samplePatentStatsSchema),
+})
+
+/** GET /api/collections/patent/{patent_id} response (PatentLookupResult). */
+export const patentLookupResultSchema = z.object({
+  patent_id: z.string(),
+  found: z.boolean(),
+  metadata: z.record(z.string(), z.unknown()),
+  per_collection: z.array(samplePatentCollectionChunksSchema),
+  missing_collections: z.array(z.string()),
+})
+
+export type CollectionStorageStats = z.infer<typeof collectionStorageStatsSchema>
+export type SamplePatentCollectionChunks = z.infer<typeof samplePatentCollectionChunksSchema>
+export type SamplePatentStats = z.infer<typeof samplePatentStatsSchema>
+export type PatentLookupResult = z.infer<typeof patentLookupResultSchema>
+export type CollectionsOverview = z.infer<typeof collectionsOverviewSchema>
+
 export const cacheStatsSchema = z.object({
   size: z.number(),
   max_size: z.number(),
