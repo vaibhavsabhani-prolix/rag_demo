@@ -5,11 +5,11 @@ Given metadata-qualified candidate patents (from Phase 3) and ParsedQuery (from 
 retrieves a small, bounded, relevant set of patent chunks (with text) for relationship verification.
 
 Key characteristics:
-- Deterministic evidence query construction from relationships, requirements, concepts, semantic query.
+- Evidence query is the LLM-provided parsed_query.evidence_query from Phase 1 - no
+  construction here.
 - Bounded candidate restriction: Searches only within qualified Phase 3 patent IDs.
-- Single batched query embedding (no LLM, no BGE reranker).
+- Single batched query embedding (no extra LLM call here, no BGE reranker).
 - Zero N+1 Qdrant queries (batched vector search + batched neighbor scroll).
-- Preserves & enriches Phase 2 matched chunks.
 - No per-patent chunk cap - every matched chunk and its neighbors are kept,
   bounded only by EVIDENCE_GLOBAL_TOP_K_CHUNKS across the whole batch.
 - Deduplicates chunks per patent.
@@ -26,7 +26,7 @@ from app.config import (
     EVIDENCE_NEIGHBOR_CHUNKS,
 )
 from app.embedder import Embedder
-from app.models.candidate import CandidateChunk, CandidatePatent
+from app.models.candidate import CandidatePatent
 from app.models.collection import SearchCollection
 from app.models.evidence import (
     EvidenceChunk,
@@ -40,31 +40,10 @@ logger = logging.getLogger(__name__)
 
 
 def build_evidence_query(parsed_query: ParsedQuery) -> str:
-    """
-    Construct a compact, information-dense evidence query from ParsedQuery components.
-    Combines semantic query, directed relationships, requirements, and key technical concepts.
-    No LLM call — deterministic local construction.
-    """
-    parts: List[str] = []
-
-    if parsed_query.semantic_query:
-        parts.append(parsed_query.semantic_query.strip())
-
-    if parsed_query.relationships:
-        rel_strs = [
-            f"{r.subject} {r.relation} {r.object}" + (f" ({r.context})" if r.context else "")
-            for r in parsed_query.relationships
-        ]
-        parts.append("Relationships: " + "; ".join(rel_strs))
-
-    if parsed_query.requirements:
-        parts.append("Requirements: " + "; ".join(parsed_query.requirements))
-
-    if parsed_query.concepts:
-        parts.append("Concepts: " + ", ".join(parsed_query.concepts))
-
-    query_text = " \n".join(parts).strip()
-    return query_text or parsed_query.original_query or ""
+    evidence_query = (parsed_query.evidence_query or "").strip()
+    if evidence_query:
+        return evidence_query
+    return (parsed_query.semantic_query or parsed_query.original_query or "").strip()
 
 
 class EvidenceRetriever:
@@ -115,26 +94,10 @@ class EvidenceRetriever:
             pid: {} for pid in candidate_patent_ids
         }
 
-        # Step 1: Ingest existing Phase 2 chunks for each candidate
-        for cand in candidates:
-            pid = cand.patent_id
-            for ch in cand.chunks:
-                if ch.text:  # If chunk text is already present
-                    evidence_pool[pid][ch.chunk_id] = EvidenceChunk(
-                        patent_id=pid,
-                        chunk_id=ch.chunk_id,
-                        text=ch.text,
-                        retrieval_score=ch.score,
-                        retrieval_source="initial_candidate",
-                        section=ch.section,
-                        document_chunk_index=ch.document_chunk_index,
-                        token_count=ch.token_count,
-                    )
-
         embedding_time_ms = 0.0
         qdrant_time_ms = 0.0
 
-        # Step 2: If not metadata-only, perform vector retrieval restricted to candidate patent IDs
+        # Step 1: If not metadata-only, perform vector retrieval restricted to candidate patent IDs
         if not parsed_query.is_metadata_only and evidence_query_text:
             # Generate embedding in a single call
             t_embed_start = time.perf_counter()
@@ -196,7 +159,7 @@ class EvidenceRetriever:
 
                 qdrant_time_ms = (time.perf_counter() - t_qdrant_start) * 1000
 
-        # Step 3: Identify and fetch bounded neighbor chunks in a single batched query
+        # Step 2: Identify and fetch bounded neighbor chunks in a single batched query
         t_neighbor_start = time.perf_counter()
         needed_neighbors: Dict[str, Set[int]] = {}
 
@@ -242,7 +205,7 @@ class EvidenceRetriever:
 
         neighbor_time_ms = (time.perf_counter() - t_neighbor_start) * 1000
 
-        # Step 4: Deduplicate, sort, and enforce per-patent bounding
+        # Step 3: Deduplicate, sort, and enforce per-patent bounding
         t_dedup_start = time.perf_counter()
         evidence_by_patent: Dict[str, List[EvidenceChunk]] = {}
         patent_evidence_list: List[PatentEvidence] = []
@@ -253,10 +216,10 @@ class EvidenceRetriever:
             pid = cand.patent_id
             raw_chunks = list(evidence_pool.get(pid, {}).values())
 
-            # Sort chunks: direct evidence (initial/query) sorted by score desc, then neighbors.
+            # Sort chunks: direct evidence_query hits by score desc, then neighbors.
             # No per-patent truncation - every matched chunk and its neighbors are kept.
             def _sort_key(c: EvidenceChunk) -> Tuple[int, float]:
-                priority = 0 if c.retrieval_source in ("initial_candidate", "evidence_query") else 1
+                priority = 0 if c.retrieval_source == "evidence_query" else 1
                 return (priority, -c.retrieval_score)
 
             raw_chunks.sort(key=_sort_key)

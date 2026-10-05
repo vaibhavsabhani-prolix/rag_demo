@@ -270,6 +270,8 @@ class QueryNormalizer:
         """
         original_query = query.original_query.strip()
         semantic_query = query.semantic_query.strip() if query.semantic_query else original_query
+        structured_query = query.structured_query.strip() if query.structured_query else semantic_query
+        evidence_query = query.evidence_query.strip() if query.evidence_query else semantic_query
 
         # 1. Deduplicate concepts (case-insensitive, preserving order)
         seen_concepts: Set[str] = set()
@@ -354,6 +356,8 @@ class QueryNormalizer:
         return ParsedQuery(
             original_query=original_query,
             semantic_query=semantic_query,
+            structured_query=structured_query,
+            evidence_query=evidence_query,
             concepts=deduped_concepts,
             relationships=deduped_rels,
             attributes=deduped_attrs,

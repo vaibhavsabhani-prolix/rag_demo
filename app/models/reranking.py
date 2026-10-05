@@ -46,8 +46,8 @@ class RerankedEvidenceChunk(BaseModel):
         description="Vector similarity or retrieval score from Phase 4."
     )
     retrieval_source: str = Field(
-        default="initial_candidate",
-        description="Origin of evidence chunk: 'initial_candidate', 'evidence_query', or 'neighbor'."
+        default="evidence_query",
+        description="Origin of evidence chunk: 'evidence_query' or 'neighbor'."
     )
     section: Optional[str] = Field(default=None, description="Patent section heading.")
     document_chunk_index: Optional[int] = Field(default=None, description="Document-wide chunk index.")

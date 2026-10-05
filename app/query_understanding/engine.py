@@ -479,6 +479,8 @@ class QueryUnderstandingEngine:
         return ParsedQuery(
             original_query=clean_query,
             semantic_query=clean_query,
+            structured_query=clean_query,
+            evidence_query=clean_query,
             concepts=[],
             relationships=[],
             attributes=[],

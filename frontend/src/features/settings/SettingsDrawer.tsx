@@ -112,8 +112,7 @@ function ConfigSection() {
       <Section title="Retrieval limits">
         <KeyValueList
           items={[
-            { label: 'Top K per view', value: config.retrieval_top_k_per_view },
-            { label: 'Candidate limit', value: config.patent_candidate_top_k },
+            { label: 'Candidate limit', value: config.retrieval_top_k },
             { label: 'Neighbor radius', value: `±${config.evidence_neighbor_chunks} chunks` },
             { label: 'Rerank batch size', value: config.rerank_batch_size },
             { label: 'Rerank max tokens', value: config.reranker_max_context_tokens },

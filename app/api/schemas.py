@@ -39,8 +39,7 @@ class PipelineConfig(BaseModel):
     query_llm_base_url: str
     embedding_model: str
     reranker_model: str
-    retrieval_top_k_per_view: int
-    patent_candidate_top_k: int
+    retrieval_top_k: int
     evidence_neighbor_chunks: int
     rerank_batch_size: int
     reranker_max_context_tokens: int

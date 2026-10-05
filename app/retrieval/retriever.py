@@ -2,23 +2,20 @@
 Dynamic Candidate Retriever (Phase 2)
 
 Orchestrates dynamic candidate retrieval from Qdrant:
-1. Builds dynamic semantic and structured retrieval views
+1. Builds the retrieval views (original / semantic / structured)
 2. Generates batched query embeddings
-3. Executes Qdrant vector retrieval with dynamic metadata filters
-4. Combines and deduplicates chunks into candidate patents
+3. Searches each view's chunks in Qdrant
+4. Deduplicates chunks and groups them into candidate patents
 5. Returns a bounded, grouped candidate pool
 """
 
 import time
 import logging
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 
-from qdrant_client.models import FieldCondition, Filter, MatchAny
+from qdrant_client.models import Filter
 
-from app.config import (
-    PATENT_CANDIDATE_TOP_K,
-    RETRIEVAL_TOP_K_PER_VIEW,
-)
+from app.config import RETRIEVAL_TOP_K_CHUNKS
 from app.embedder import Embedder
 from app.models.candidate import (
     CandidateChunk,
@@ -46,20 +43,16 @@ class CandidateRetriever:
         self,
         embedder: Optional[Embedder] = None,
         db: Optional[QdrantDB] = None,
-        top_k_per_view: int = RETRIEVAL_TOP_K_PER_VIEW,
-        candidate_top_k: int = PATENT_CANDIDATE_TOP_K,
+        candidate_top_k: int = RETRIEVAL_TOP_K_CHUNKS,
     ):
         self.embedder = embedder or Embedder()
         self.db = db or QdrantDB()
-        self.top_k_per_view = top_k_per_view
         self.candidate_top_k = candidate_top_k
 
     def retrieve_candidates(
         self, parsed_query: ParsedQuery, collection: SearchCollection
     ) -> CandidateRetrievalResult:
-        """
-        Execute Phase 2 Candidate Retrieval for a ParsedQuery against *collection*.
-        """
+
         t_start = time.perf_counter()
 
         # Branch 1: Metadata-only query (Skip vector search & embedding)
@@ -124,9 +117,7 @@ class CandidateRetriever:
     def _retrieve_semantic_candidates(
         self, parsed_query: ParsedQuery, collection: SearchCollection, t_start: float
     ) -> CandidateRetrievalResult:
-        """
-        Execute multi-view semantic candidate retrieval with dynamic metadata pre-filtering.
-        """
+
         # Step 1: Build dynamic retrieval views
         views = build_retrieval_views(parsed_query)
         if not views:
@@ -139,47 +130,8 @@ class CandidateRetriever:
         text_to_vec = dict(zip(unique_texts, embeddings_list))
         embedding_time_ms = (time.perf_counter() - t_embed_start) * 1000
 
-        # Step 3: Handle metadata filter if present
+        # Step 3: Search each view, collect chunk hits
         t_qdrant_start = time.perf_counter()
-        chunk_filter: Optional[Filter] = None
-
-        if parsed_query.metadata_filters:
-            meta_filter = build_qdrant_filter(parsed_query.metadata_filters)
-            matching_patents = self._fetch_matching_patents(
-                meta_filter, parsed_query.metadata_filters, collection
-            )
-            matching_patent_ids = [p["patent_id"] for p in matching_patents if "patent_id" in p]
-
-            if not matching_patent_ids:
-                # The metadata pre-filter is an optimization (narrow the
-                # vector search to patents we already know match, which is
-                # both faster and more precise than pure semantic top-K
-                # search) - it is NOT meant to be a hard gate. If it finds
-                # zero patents, that's just as likely to be an extraction/
-                # mapping gap (wrong field code, formatting mismatch, an
-                # LLM-invented constraint) as a genuine "no such patent."
-                # Rather than killing the search outright, fall back to an
-                # unrestricted vector search across the whole collection
-                # and let Phase 3's metadata_filter (which runs on whatever
-                # candidates come back) do the real enforcement - the same
-                # place every other candidate already gets checked.
-                print(
-                    f"[Retriever] Metadata pre-filter matched 0 patents for "
-                    f"{len(parsed_query.metadata_filters)} filter(s); falling back to "
-                    f"unrestricted vector search, Phase 3 will still enforce the filters"
-                )
-                chunk_filter = None
-            else:
-                chunk_filter = Filter(
-                    must=[
-                        FieldCondition(
-                            key="patent_id",
-                            match=MatchAny(any=matching_patent_ids),
-                        )
-                    ]
-                )
-
-        # Step 4: Retrieve candidate chunks per view
         raw_results_per_view: List[tuple[str, Any]] = []
         total_raw_hits = 0
 
@@ -191,8 +143,7 @@ class CandidateRetriever:
             search_res = self.db.client.query_points(
                 collection_name=collection.chunks_collection,
                 query=vec,
-                query_filter=chunk_filter,
-                limit=self.top_k_per_view,
+                limit=self.candidate_top_k,
                 with_payload=True,
             )
 
@@ -203,7 +154,7 @@ class CandidateRetriever:
 
         qdrant_time_ms = (time.perf_counter() - t_qdrant_start) * 1000
 
-        # Step 5: Deduplicate and combine chunk candidates
+        # Step 4: Deduplicate and combine chunk candidates
         t_merge_start = time.perf_counter()
         chunk_pool: Dict[str, CandidateChunk] = {}
 
@@ -237,7 +188,7 @@ class CandidateRetriever:
                     token_count=payload.get("token_count"),
                 )
 
-        # Step 6: Group chunks by patent_id
+        # Step 5: Group chunks by patent_id
         patent_chunks_map: Dict[str, List[CandidateChunk]] = {}
         for chunk in chunk_pool.values():
             patent_chunks_map.setdefault(chunk.patent_id, []).append(chunk)
@@ -258,21 +209,20 @@ class CandidateRetriever:
                 )
             )
 
-        # Order by strongest retrieval evidence and bound candidate pool
+        # Order by strongest retrieval evidence
         candidate_patents.sort(key=lambda p: p.retrieval_score, reverse=True)
-        bounded_candidates = candidate_patents[: self.candidate_top_k]
 
-        # Step 7: Enrich with patent metadata
-        top_patent_ids = [p.patent_id for p in bounded_candidates]
+        # Step 6: Enrich with patent metadata
+        top_patent_ids = [p.patent_id for p in candidate_patents]
         meta_dict = self.db.get_patents_metadata(top_patent_ids, collection.patents_collection)
-        for p in bounded_candidates:
+        for p in candidate_patents:
             p.metadata = meta_dict.get(p.patent_id, {})
 
         merge_time_ms = (time.perf_counter() - t_merge_start) * 1000
         total_time_ms = (time.perf_counter() - t_start) * 1000
 
         return CandidateRetrievalResult(
-            candidates=bounded_candidates,
+            candidates=candidate_patents,
             retrieval_views=views,
             total_chunk_hits=total_raw_hits,
             unique_patents=len(candidate_patents),

@@ -6,7 +6,7 @@ semantic intent using the BGE cross-encoder reranker (BAAI/bge-reranker-v2-m3).
 
 Key guarantees:
 - Consumes bounded candidates from Phase 5 and bounded evidence from Phase 4.
-- Deterministic query construction (semantic query + relationships + requirements).
+- Reranking query is the user's original query, used verbatim.
 - Zero LLM calls and zero new embedding generations.
 - Strict 4096-token combined limit enforcement (query + doc + prefix + safety margin <= 4096).
 - Batch processing with bounded concurrency (requests.Session + ThreadPoolExecutor).
@@ -47,31 +47,6 @@ from app.models.reranking import (
 from app.models.verification import PatentVerificationResult, VerificationBatchResult
 
 logger = logging.getLogger(__name__)
-
-
-def build_rerank_query(parsed_query: ParsedQuery) -> str:
-    """
-    Construct a compact, deterministic, information-dense reranking query
-    from ParsedQuery components without any LLM calls or keyword reduction.
-    """
-    parts: List[str] = []
-
-    if parsed_query.semantic_query:
-        parts.append(parsed_query.semantic_query.strip())
-    elif parsed_query.original_query:
-        parts.append(parsed_query.original_query.strip())
-
-    if parsed_query.relationships:
-        rel_strs = [
-            f"{r.subject} {r.relation} {r.object}" + (f" ({r.context})" if r.context else "")
-            for r in parsed_query.relationships
-        ]
-        parts.append("Relationships: " + "; ".join(rel_strs))
-
-    if parsed_query.requirements:
-        parts.append("Requirements: " + "; ".join(parsed_query.requirements))
-
-    return " \n".join(parts).strip()
 
 
 class BGEReranker:
@@ -302,8 +277,8 @@ class BGEReranker:
                 timings={"total_ms": round(total_time_ms, 2)},
             )
 
-        # 1. Deterministically build reranking query
-        reranking_query = build_rerank_query(parsed_query)
+        # 1. Use the user's original query verbatim as the reranking query
+        reranking_query = (parsed_query.original_query or "").strip()
         query_tokens = self.token_counter.count(reranking_query)
 
         # 2. Compute safe document budget (combined query + doc + safety <= max_context_tokens)

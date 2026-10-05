@@ -452,39 +452,36 @@ Rendered as **Phase 4: Bounded Evidence Retrieval**.
 ## Phase 5 — Semantic Relationship & Requirement Verification
 
 **Module:** `app/verification/verifier.py` (`RelationshipVerifier.verify_candidates`)
-**Config:** `VERIFICATION_MAX_CANDIDATES=25`, `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD=0.35`, `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD=0.35`
+**Config:** `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD=0.35`, `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD=0.35`, `VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD=0.5`, `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD=0.5`
 
 This is the **precision gate** — the phase responsible for deciding, patent
 by patent, whether the query's specific relationships and requirements are
 actually backed by evidence text, as opposed to the patent merely sharing
-generic vocabulary with the query.
+generic vocabulary with the query. Unlike earlier phases, Phase 5 actually
+**eliminates** candidates — a patent whose coverage falls below the
+configured threshold never reaches Phase 6/7.
 
-> This is also where a past bug lived: the support threshold used to be a
-> hardcoded `0.05`, which is far too permissive for a BGE cross-encoder —
-> near-zero relevance scores would still count as "supported". That let
-> patents which only share generic words with the query (e.g. "method",
-> "manufacturing") get marked as satisfying a specific relationship (e.g.
-> "produces water") even when the actual subject never appeared in the
-> evidence. Both thresholds are now real config values in `app/config.py`
-> instead of magic numbers, specifically so this can be tuned without
-> touching code.
+> Past bug fixed: the support threshold used to be a hardcoded `0.05`, which
+> is far too permissive for a BGE cross-encoder — near-zero relevance scores
+> would still count as "supported". That let patents which only share
+> generic words with the query (e.g. "method", "manufacturing") get marked
+> as satisfying a specific relationship (e.g. "produces water") even when
+> the actual subject never appeared in the evidence. Both support thresholds
+> are now real config values in `app/config.py` instead of magic numbers.
 
 ```text
 PHASE 5 — RELATIONSHIP & REQUIREMENT VERIFICATION
 
-  Phase 4 Output (candidates + up to 5 evidence chunks each)
+  Phase 4 Output (every surviving candidate, no cap)
                ↓
     is_metadata_only OR no relationships/requirements?
     ┌──────────┴──────────┐
     ↓                     ↓
    Yes                   No
     ↓                     ↓
- Auto-pass          Take up to 25 candidates
- every patent        (VERIFICATION_MAX_CANDIDATES)
- (coverage = 1.0)          ↓
-                    Build one hypothesis string
-                    per relationship
-                    ("subject relation object")
+ Auto-pass           Build one hypothesis string
+ every patent         per relationship
+ (coverage = 1.0)    ("subject relation object")
                           ↓
                     Build one hypothesis string
                     per requirement
@@ -492,11 +489,8 @@ PHASE 5 — RELATIONSHIP & REQUIREMENT VERIFICATION
                     Cross-encoder scores:
                     hypothesis × every evidence chunk
                           ↓
-                    Span-proximity check
-                    (subject & object words within
-                     40 words of each other?)
-                          ↓
-                    score ≥ 0.35  OR  proximity match?
+                    score ≥ 0.35 (relationship) /
+                    max(score, overlap*0.5) ≥ 0.35 (requirement)?
                     ┌──────┴──────┐
                     ↓             ↓
                 SUPPORTED    NOT_SUPPORTED
@@ -504,12 +498,20 @@ PHASE 5 — RELATIONSHIP & REQUIREMENT VERIFICATION
                            ↓
                     relationship_coverage = supported / total
                     requirement_coverage  = supported / total
-    └──────────┬──────────┘
+                           ↓
+                    coverage < COVERAGE_THRESHOLD (0.5)?
+                    ┌──────┴──────┐
+                    ↓             ↓
+                   Yes            No
+                    ↓             ↓
+               ELIMINATED      Keep
+    └──────────┬──────────────────┘
                ↓
   PHASE 5 OUTPUT
 
   VerificationBatchResult
-  (coverage ratios + per-relationship/requirement verdicts)
+  (surviving patents only + coverage ratios +
+   per-relationship/requirement verdicts + eliminated_count)
                ↓
         Send to Phase 6
 ```
@@ -517,7 +519,8 @@ PHASE 5 — RELATIONSHIP & REQUIREMENT VERIFICATION
 Skipped entirely (auto-pass, coverage = 1.0) when the query is metadata-only
 or carries no relationships/requirements — there's nothing to verify.
 
-Otherwise, for up to `VERIFICATION_MAX_CANDIDATES` (25) candidates:
+Otherwise, for **every** Phase 4 candidate (no cap — `VERIFICATION_MAX_CANDIDATES`
+was removed; Phase 5 now processes the full candidate set):
 
 1. **Build one hypothesis string per relationship** — e.g.
    `"manufacturing method produces water (process for making water)"`.
@@ -525,41 +528,24 @@ Otherwise, for up to `VERIFICATION_MAX_CANDIDATES` (25) candidates:
 3. **Batch cross-encoder scoring** — every hypothesis is scored against every
    evidence chunk of every candidate in batched calls to the same BGE
    reranker server used in Phase 6 (`_score_pairs_remote`).
-4. **Deterministic span-proximity check** (`check_span_proximity`) — a
-   cheap, non-ML backstop: do the relationship's subject words and object
-   words literally co-occur within 40 words of each other in a chunk?
-5. **Relationship verdict** — `SUPPORTED` if either the span-proximity check
-   fires, **or** the cross-encoder score clears
+4. **Relationship verdict** — `SUPPORTED` purely if the best cross-encoder
+   score across the candidate's chunks clears
    `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD`; `NOT_SUPPORTED` otherwise.
-6. **Requirement verdict** — similar, but blends the cross-encoder score with
-   a word-overlap ratio (`overlap * 0.5`) as a fallback signal, checked
+   (There is no deterministic word-proximity override anymore — a prior
+   version OR'd in a word-distance heuristic that could fire on coincidence
+   and override a correctly-low cross-encoder score; it has been removed,
+   so support is now a pure semantic judgment.)
+5. **Requirement verdict** — blends the cross-encoder score with a
+   word-overlap ratio (`overlap * 0.5`) as a fallback signal, checked
    against `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD`.
-7. **Coverage ratios** — `relationship_coverage` and `requirement_coverage`
-   are simply `supported / total` for that patent. A patent with an explicit
-   `CONTRADICTED` relationship status is later zeroed out in Phase 7
-   regardless of its raw coverage number.
-
-> **Known sharp edge, tried and reverted:** the unconditional
-> `has_proximity OR score >= threshold` above is a real precision risk.
-> `check_span_proximity` is a crude, whole-chunk word-distance check with no
-> sense of semantic role — it can fire on pure coincidence (e.g. "water" and
-> "storage" both appearing in a multi-thousand-word chunk, in a sentence
-> about an unrelated liquid-level *sensor*, not about water being stored)
-> and completely override a cross-encoder score that had correctly judged
-> the chunk as ~0% relevant. This produced real false positives in testing
-> (an LNG storage tank patent and a cryogenic fluid tank patent both ranking
-> #1/#3 for a "water storage" query). A fix was built and verified this
-> session — requiring the cross-encoder score to clear a low floor
-> (`VERIFICATION_MIN_EVIDENCE_SCORE`) whenever proximity is the deciding
-> factor, dropping the redundant `" in {context}"` clause from the
-> relationship hypothesis (it independently cut cross-encoder scores ~6x on
-> identical, clearly-matching text), and a stricter compound-term grounding
-> check (`all_key_terms_present`) for multi-word objects like "LED display"
-> — but all three were explicitly reverted back to this state. If picking
-> this up again, the removed code lived directly in `is_supported`'s
-> condition and the `rel_hypotheses` construction in
-> `app/verification/verifier.py`; check `git stash list` / recent history
-> before rewriting it from scratch.
+6. **Coverage ratios** — `relationship_coverage` and `requirement_coverage`
+   are simply `supported / total` for that patent.
+7. **Elimination gate** — a patent whose `relationship_coverage` or
+   `requirement_coverage` falls below `VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD`
+   / `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD` (0.5 each) is dropped
+   entirely (`eliminated_count` tracks how many) and never reaches Phase 6.
+   There's no per-patent record of *why* a given patent was eliminated beyond
+   its coverage numbers — only the aggregate count is kept.
 
 These two coverage numbers matter a lot downstream — together they make up
 **70% of the final score** in Phase 7 (`FINAL_WEIGHT_RELATIONSHIP` +
@@ -585,8 +571,7 @@ PHASE 6 — BGE CROSS-ENCODER RERANKING
 
   Phase 5 Output (verified candidates)
                ↓
-  Build ONE reranking query
-  (semantic_query + relationships + requirements)
+  Reranking query = user's original query, verbatim
                ↓
   For every evidence chunk of every candidate:
   truncate to fit 4096-token budget
@@ -610,8 +595,8 @@ PHASE 6 — BGE CROSS-ENCODER RERANKING
         Send to Phase 7
 ```
 
-1. **Build one reranking query string** (`build_rerank_query`) — semantic
-   query + relationships + requirements, deterministically concatenated.
+1. **Set the reranking query** — the user's `original_query`, used verbatim.
+   No synthetic concatenation of relationships/requirements, no LLM call.
 2. **Token-budget every chunk** (`truncate_document_for_budget`) — each
    chunk (with its `Section: X` prefix if it has one) is truncated so
    `query_tokens + doc_tokens + safety_margin` never exceeds the reranker's
@@ -731,15 +716,14 @@ in `app/config.py`:
 - **Too high** → genuinely relevant patents that use different wording than
   the query get marked `NOT_SUPPORTED` and disappear from results entirely.
 
-Even with the threshold well-tuned, `has_proximity OR score >= threshold`
-means the deterministic span-proximity check can single-handedly override a
-cross-encoder score that correctly judged a chunk as irrelevant — see the
-"known sharp edge" callout in the Phase 5 section above for a real example
-and what a fix would look like.
+The relationship support decision is now a pure cross-encoder score check
+(the prior deterministic word-proximity override was removed — see the
+Phase 5 section above), so a `SUPPORTED` verdict always reflects what the
+cross-encoder judged, never a coincidental word co-occurrence overriding it.
 
-Relatedly, the verification layer only checks "do the subject and object
-words show up near each other / does the cross-encoder think this is
-relevant" — it does not verify that a multi-word qualifier (LED, wireless,
+That said, the verification layer only checks "does the cross-encoder think
+this evidence entails the relationship/requirement" — it does not verify
+that a multi-word qualifier (LED, wireless,
 lithium, ...) actually describes the *specific thing* the query asked about,
 as opposed to some other, unrelated component that happens to share one word
 with it. A patent titled "Multi-functional **LCD** TV" with a separate,
@@ -753,13 +737,17 @@ The next lever is `FINAL_SCORE_THRESHOLD` in Phase 7 — it decides how many
 of the qualifying patents actually get shown at all, independent of how they
 were scored.
 
-Finally, `VERIFICATION_MAX_CANDIDATES` (25) means Phase 5/6 only ever look at
-the top 25 candidates by Phase 2's vector-similarity score, even if more than
-25 survive Phase 3's metadata filtering — a patent that's a correct exact
-metadata/keyword match but ranks 30th by raw embedding similarity never gets
-verified or reranked at all, and so can never appear in the final results
-regardless of how well it would have scored. Raising this trades latency
-(each extra candidate costs a reranker call) for that recall.
+Finally, the Phase 5 **elimination gate**
+(`VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD` / `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD`,
+0.5 each) means a patent can pass Phase 2-4 with a strong embedding/metadata
+match and still never reach Phase 6/7 if too few of its relationships or
+requirements clear the support threshold. There's no per-patent record of
+*why* a patent was eliminated — only the aggregate `eliminated_count` on
+`VerificationBatchResult` — so if a known-relevant patent is missing from
+results, check its individual relationship/requirement scores against the
+support threshold before assuming it's a retrieval problem upstream.
+Phase 5 itself has no candidate cap anymore (`VERIFICATION_MAX_CANDIDATES`
+was removed) — every Phase 4 survivor is verified.
 
 ---
 

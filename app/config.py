@@ -99,8 +99,7 @@ TOKEN_COUNT_CACHE_SIZE = 4096
 PATENT_VIEW_URL_TEMPLATE = "https://www.qubeip.com/en/patent-view/{patent_id}"
 
 # Phase 2 Retrieval configuration
-RETRIEVAL_TOP_K_PER_VIEW = 500  
-PATENT_CANDIDATE_TOP_K = 300
+RETRIEVAL_TOP_K_CHUNKS = 300
 
 # Phase 4 Bounded Evidence Retrieval configuration
 # No per-patent chunk cap by design - every matched chunk and its neighbors
@@ -110,10 +109,6 @@ EVIDENCE_NEIGHBOR_CHUNKS = 1
 EVIDENCE_GLOBAL_TOP_K_CHUNKS = 1000
 
 # Phase 5 Relationship Verification configuration
-# None verifies every Phase 4 candidate (no cap on final results); a number caps
-# verification - and therefore Phase 6/7 and the final result count - to that
-# many top candidates, trading completeness for a faster Phase 5.
-VERIFICATION_MAX_CANDIDATES = None
 # Minimum cross-encoder relevance score required to mark a relationship/requirement as
 # SUPPORTED. Was 0.05, which is far too permissive for a BGE cross-encoder — near-zero
 # scores would still pass, letting patents that only share generic terms (e.g. "method",
@@ -123,6 +118,11 @@ VERIFICATION_MAX_CANDIDATES = None
 # relevant patents are being excluded.
 VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD = 0.35
 VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD = 0.35
+# Minimum relationship_coverage / requirement_coverage a candidate must reach to
+# survive Phase 5. A candidate below either cutoff is eliminated here and never
+# reaches Phase 6/7, instead of just being scored lower.
+VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD = 0.5
+VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD = 0.5
 
 # Phase 7 Final Patent Scoring & Result Selection configuration
 # Minimum final patent score required for a patent to appear in final results (0.0 to 10.0 scale).

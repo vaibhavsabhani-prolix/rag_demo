@@ -120,6 +120,10 @@ class VerificationBatchResult(BaseModel):
     fully_supported_count: int = Field(default=0, description="Candidates with 100% relationship coverage.")
     partially_supported_count: int = Field(default=0, description="Candidates with >0% and <100% coverage.")
     unsupported_count: int = Field(default=0, description="Candidates with 0% coverage.")
+    eliminated_count: int = Field(
+        default=0,
+        description="Candidates removed for falling below the relationship/requirement coverage threshold."
+    )
     timings: Dict[str, float] = Field(
         default_factory=dict,
         description="Latency metrics (llm_verification_ms, total_ms, avg_per_patent_ms)."

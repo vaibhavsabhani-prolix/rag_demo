@@ -2,7 +2,7 @@
 
 A production-ready Patent Retrieval & Semantic Search system built with **Python**, **Qdrant Vector DB**, a **remote Qwen3 embedding server**, an **LLM-based Query Understanding layer**, **multi-view dynamic retrieval**, **metadata filtering**, a **cross-encoder relationship/requirement verification stage**, a **BGE cross-encoder reranker**, and **weighted multi-signal final scoring with query-match highlighting**.
 
-The pipeline handles end-to-end processing of complex technical patent documents: from raw document parsing and token-window chunking, through validation, remote vector embedding, and concurrent batch indexing — to natural-language query understanding, multi-view semantic candidate retrieval, metadata filtering, bounded evidence retrieval, cross-encoder relationship/requirement verification, BGE reranking with highlighting, and deterministic multi-signal final scoring. A React + FastAPI web app (with search history in PostgreSQL) and CLI tools are included for search, collection comparison, and index inspection.
+The pipeline handles end-to-end processing of complex technical patent documents: from raw document parsing and token-window chunking, through validation, remote vector embedding, and concurrent batch indexing — to natural-language query understanding, multi-view semantic candidate retrieval, metadata filtering, bounded evidence retrieval, cross-encoder relationship/requirement verification, BGE reranking with highlighting, and deterministic multi-signal final scoring. A React + FastAPI web app (with search history in PostgreSQL) and CLI tools are included for search, collection comparison, per-collection storage/memory inspection, and index inspection.
 
 ---
 
@@ -31,9 +31,9 @@ flowchart TD
 
         P3 --> P4["Phase 4 - Bounded Evidence Retrieval\n(app/retrieval/evidence_retriever.py)\ndeterministic evidence query (semantic_query +\nrelationships + requirements + concepts), ONE vector\nsearch restricted to surviving patent_ids\n(EVIDENCE_GLOBAL_TOP_K_CHUNKS global cap, not\nper-patent) + EVIDENCE_NEIGHBOR_CHUNKS neighbors\nfetched in one batched scroll"]
 
-        P4 --> P5["Phase 5 - Relationship & Requirement Verification\n(app/verification/verifier.py)\nBGE cross-encoder scores every relationship/requirement\nhypothesis against every evidence chunk + deterministic\nword-proximity check; produces per-patent coverage\nratios - nothing is dropped here"]
+        P4 --> P5["Phase 5 - Relationship & Requirement Verification\n(app/verification/verifier.py)\nBGE cross-encoder scores every relationship/requirement\nhypothesis against every evidence chunk; per-patent\ncoverage ratios computed, candidates below the coverage\nthreshold are eliminated before Phase 6"]
 
-        P5 --> P6["Phase 6 - BGE Cross-Encoder Reranking\n(app/reranking/reranker.py)\none deterministic reranking query, token-budgeted chunks\nscored in batched HTTP calls; patent score = MAX across\nits own chunks; sentences scored in the same batch for\nquery-match highlighting (app/highlighting/)"]
+        P5 --> P6["Phase 6 - BGE Cross-Encoder Reranking\n(app/reranking/reranker.py)\nreranking query = user's original query verbatim,\ntoken-budgeted chunks scored in batched HTTP calls;\npatent score = MAX across its own chunks; sentences\nscored in the same batch for query-match highlighting\n(app/highlighting/)"]
 
         P6 --> P7["Phase 7 - Final Scoring & Result Selection\n(app/scoring/scorer.py)\nweighted composite: 0.45*relationship_coverage +\n0.25*requirement_coverage + 0.20*best_reranker_score +\n0.10*retrieval_score, 0-10 scale; filtered by\nFINAL_SCORE_THRESHOLD, sorted descending\n(metadata-only: unscored, unranked, all returned)"]
 
@@ -157,18 +157,20 @@ For the patents that survived Phase 3, gathers the chunk text needed for verific
 ---
 
 ### Stage 10: Relationship & Requirement Verification (`app/verification/verifier.py`, Search Phase 5)
-A fast (sub-second), GPU-accelerated **soft coverage** check — it scores how well each candidate's evidence supports the query's structure, but it does not drop candidates:
+A fast (sub-second), GPU-accelerated **precision gate** — it scores how well each candidate's evidence supports the query's structure, and eliminates candidates that fall short:
 
-1. For each `relationship` (`subject relation object [context]`) and each free-text `requirement`, a hypothesis string is built.
-2. Every hypothesis is scored against every evidence chunk of every candidate in batched calls to the remote BGE cross-encoder (`/rerank` endpoint, shared with Phase 6's reranker server).
-3. **Relationship support**: `SUPPORTED` if a deterministic word-proximity check finds the subject's and object's terms co-occurring within `max_word_distance` (40) words of each other in some chunk (`check_span_proximity`), **or** the best cross-encoder score across the candidate's chunks is ≥ `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD` (0.35).
-4. **Requirement support**: `SUPPORTED` if the best of (cross-encoder score, `0.5 ×` word-overlap ratio) across the candidate's chunks is ≥ `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD` (0.35).
-5. Per-patent `relationship_coverage` / `requirement_coverage` are the fraction of relationships/requirements marked supported (1.0 if the query has none of that kind, or is metadata-only). These ratios feed Phase 7's score; **no candidate is excluded here**, however low its coverage.
+1. Every Phase 4 candidate is verified — there is no cap on how many are processed.
+2. For each `relationship` (`subject relation object [context]`) and each free-text `requirement`, a hypothesis string is built.
+3. Every hypothesis is scored against every evidence chunk of every candidate in batched calls to the remote BGE cross-encoder (`/rerank` endpoint, shared with Phase 6's reranker server).
+4. **Relationship support**: `SUPPORTED` if the best cross-encoder score across the candidate's chunks is ≥ `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD` (0.35) — purely a cross-encoder semantic judgment, with no deterministic word-proximity override.
+5. **Requirement support**: `SUPPORTED` if the best of (cross-encoder score, `0.5 ×` word-overlap ratio) across the candidate's chunks is ≥ `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD` (0.35).
+6. Per-patent `relationship_coverage` / `requirement_coverage` are the fraction of relationships/requirements marked supported (1.0 if the query has none of that kind, or is metadata-only).
+7. **Elimination gate**: a candidate whose `relationship_coverage` or `requirement_coverage` falls below `VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD` / `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD` (0.5 each) is dropped here and never reaches Phase 6/7. Surviving candidates carry their coverage ratios into Phase 7's score.
 
 ---
 
 ### Stage 11: BGE Cross-Encoder Reranking & Highlighting (`app/reranking/reranker.py` + `app/highlighting/`, Search Phase 6)
-1. `build_rerank_query` deterministically builds one reranking query from `semantic_query` (or `original_query`), `relationships`, and `requirements` — no LLM call, no new embeddings.
+1. The reranking query is the user's `original_query`, used verbatim — no synthetic construction, no LLM call, no new embeddings.
 2. Each evidence chunk is formatted (`Section: <name>\n\n<text>`) and truncated to a token budget (`RERANKER_MAX_CONTEXT_TOKENS` minus the query's tokens minus `RERANKER_TOKEN_SAFETY_MARGIN`), sliced at exact tokenizer offsets so truncation never splits a token.
 3. All chunks across all verified candidates are scored against the reranking query in one set of batched HTTP calls (`RERANK_BATCH_SIZE` docs per request, up to `RERANK_CONCURRENT_REQUESTS` in flight) to the remote BGE reranker (`BAAI/bge-reranker-v2-m3`). A failed batch scores 0.0 rather than aborting the search.
 4. **Query-match highlighting**: each chunk's sentences (split multilingually, short fragments like "FIG. 1" skipped) are scored in the **same** batched requests as the chunks, and sentences scoring above `HIGHLIGHT_SENTENCE_THRESHOLD` (strong above `HIGHLIGHT_SENTENCE_STRONG_THRESHOLD`) are marked. Separately, the query's own content words (stemmed, CJK-aware) are matched as literal term spans. Both are character-offset spans the UI highlights directly on the chunk text.
@@ -214,13 +216,14 @@ final_score = 10 × ( 0.45 × relationship_score
 | | `VALIDATOR_DEGENERATE_OVERLAP_THRESHOLD` | `0.9` | Minimum unique-content ratio vs. previous chunk |
 | **Query Understanding** | `QUERY_LLM_REMOTE_BASE_URL` / `_MODEL` | — | Remote OpenAI-compatible endpoint & model |
 | | `QUERY_CACHE_SIZE` | `1024` | LRU cache size for parsed queries |
-| **Phase 2 Retrieval** | `RETRIEVAL_TOP_K_PER_VIEW` | `500` | Chunks fetched per retrieval view before dedup/grouping |
+| **Phase 2 Retrieval** | `RETRIEVAL_TOP_K_PER_VIEW` | `1500` | Chunks fetched per retrieval view before dedup/grouping |
 | | `PATENT_CANDIDATE_TOP_K` | `300` | Candidate patents kept after Phase 2 grouping |
 | **Phase 4 Evidence** | `EVIDENCE_GLOBAL_TOP_K_CHUNKS` | `1000` | Global (not per-patent) cap on the evidence vector search |
 | | `EVIDENCE_NEIGHBOR_CHUNKS` | `1` | Adjacent chunk indices fetched on each side of a matched chunk |
-| **Phase 5 Verification** | `VERIFICATION_MAX_CANDIDATES` | `None` | Caps candidates verified (and thus Phase 6/7); `None` = verify all |
-| | `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD` | `0.35` | Min cross-encoder score to mark a relationship SUPPORTED |
+| **Phase 5 Verification** | `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD` | `0.35` | Min cross-encoder score to mark a relationship SUPPORTED |
 | | `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD` | `0.35` | Min effective score to mark a requirement SUPPORTED |
+| | `VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD` | `0.5` | Min relationship coverage ratio to survive the Phase 5 elimination gate |
+| | `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD` | `0.5` | Min requirement coverage ratio to survive the Phase 5 elimination gate |
 | **Phase 6 Reranker** | `RERANKER_REMOTE_BASE_URL` / `_MODEL` | — | Remote BGE cross-encoder server & `BAAI/bge-reranker-v2-m3` |
 | | `RERANK_BATCH_SIZE` / `RERANK_CONCURRENT_REQUESTS` | `128` / `6` | Docs per rerank HTTP request / requests in flight |
 | | `RERANKER_MAX_CONTEXT_TOKENS` / `_TOKEN_SAFETY_MARGIN` | `4096` / `16` | Combined query+doc token budget per request |
@@ -256,7 +259,7 @@ rag_demo/
 │   │   ├── metadata_filter.py          # Strict-AND metadata constraint enforcement (Phase 3)
 │   │   └── evidence_retriever.py       # Bounded evidence chunk + neighbor retrieval (Phase 4)
 │   ├── verification/
-│   │   └── verifier.py                 # RelationshipVerifier: cross-encoder + proximity coverage (Phase 5)
+│   │   └── verifier.py                 # RelationshipVerifier: cross-encoder coverage + elimination gate (Phase 5)
 │   ├── reranking/
 │   │   └── reranker.py                 # BGEReranker: cross-encoder reranking + highlighting (Phase 6)
 │   ├── highlighting/
@@ -278,7 +281,8 @@ rag_demo/
 │   │   ├── schemas.py                  # Request/response Pydantic models
 │   │   ├── history.py                  # Search history endpoints (PostgreSQL)
 │   │   ├── settings.py                 # UI appearance settings endpoints
-│   │   └── memory.py                   # Process memory sampling for /api/compare
+│   │   ├── memory.py                   # Process memory sampling for /api/compare
+│   │   └── collection_stats.py         # Per-collection storage/memory + sample-patent comparison (/api/collections/*)
 │   ├── db/                             # PostgreSQL search-history persistence (SQLAlchemy)
 │   ├── scripts/
 │   │   ├── show_indexed_patents.py     # Summary table generator for all Qdrant-indexed patents
@@ -389,13 +393,16 @@ React Query (server calls), Zod (form + API response validation).
 | --- | --- |
 | `src/components/ui/` | Generic reusable UI kit (Button, Card, Drawer, DataTable, Tabs, …) |
 | `src/components/patent/` | Patent-specific reusable pieces (heading, evidence chunk, verification list) |
-| `src/features/` | Screens: search, compare, pipeline, results, history, settings |
+| `src/features/` | Screens: search, compare, collections, pipeline, results, history, settings |
 | `src/schemas/` | Zod schemas — mirror the Pydantic models in `app/models/`; types come from `z.infer` |
 | `src/store/` | Redux slices and selectors |
 | `src/hooks/` | React Query hooks, including the streaming search hook |
 
 ### 4.1 Comparing Collections
 `POST /api/compare` parses a query once and runs Phases 2–7 against several collections in turn, streaming per-collection phase events plus process-memory usage, so collections (e.g. different `MAX_CHUNK_TOKENS` sizes) can be compared head-to-head. Exposed in the UI's **Compare** page; compare runs are not saved to search history.
+
+### 4.2 Collections Storage & Memory Overview
+`GET /api/collections/stats` (`app/api/collection_stats.py`) reports, for every searchable collection, its chunk/patent counts plus the disk and RAM Qdrant actually reports for it (`QdrantDB.get_collection_memory`), and runs the same lookup for one or two sample patents (pinned `PINNED_SAMPLE_PATENT_IDS`, falling back to `QdrantDB.find_common_patent_ids`) that are indexed in every collection, so the effect of `MAX_CHUNK_TOKENS` on a single patent's chunk count and storage footprint is visible side by side. `GET /api/collections/patent/{patent_id}` runs that same per-collection breakdown on demand for any patent_id. Exposed in the UI's **Collections** page (`frontend/src/pages/CollectionsPage.tsx`): a storage table per collection, the pinned sample-patent comparison, and a free-form patent lookup.
 
 ### 5. Running Component Verification Scripts
 Diagnostic scripts live under `app/_tests_/` as plain Python scripts (no pytest required):

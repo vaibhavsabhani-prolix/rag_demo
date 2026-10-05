@@ -92,6 +92,14 @@ class ParsedQuery(BaseModel):
         default="",
         description="Complete natural-language representation preserving full user intent for semantic search."
     )
+    structured_query: str = Field(
+        default="",
+        description="Compact synthesis of the query's concepts, relationships, attributes, and requirements, written as a dense retrieval-friendly block rather than prose."
+    )
+    evidence_query: str = Field(
+        default="",
+        description="Compact synthesis of the semantic query, relationships, requirements, and concepts, written to retrieve supporting evidence chunks for verification."
+    )
     concepts: List[str] = Field(
         default_factory=list,
         description="Distinct technical concepts and entities extracted from the query."

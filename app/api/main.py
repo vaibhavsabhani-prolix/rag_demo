@@ -77,14 +77,13 @@ from app.config import (
     FINAL_WEIGHT_REQUIREMENT,
     FINAL_WEIGHT_RERANKER,
     FINAL_WEIGHT_RETRIEVAL,
-    PATENT_CANDIDATE_TOP_K,
     PATENT_VIEW_URL_TEMPLATE,
     QUERY_LLM_REMOTE_BASE_URL,
     QUERY_LLM_REMOTE_MODEL,
     RERANK_BATCH_SIZE,
     RERANKER_MAX_CONTEXT_TOKENS,
     RERANKER_REMOTE_MODEL,
-    RETRIEVAL_TOP_K_PER_VIEW,
+    RETRIEVAL_TOP_K_CHUNKS,
 )
 from app.db import repository
 from app.db.database import init_db
@@ -158,8 +157,7 @@ def get_config() -> PipelineConfig:
         query_llm_base_url=QUERY_LLM_REMOTE_BASE_URL,
         embedding_model="Qwen/Qwen3-Embedding-0.6B",
         reranker_model=RERANKER_REMOTE_MODEL,
-        retrieval_top_k_per_view=RETRIEVAL_TOP_K_PER_VIEW,
-        patent_candidate_top_k=PATENT_CANDIDATE_TOP_K,
+        retrieval_top_k=RETRIEVAL_TOP_K_CHUNKS,
         evidence_neighbor_chunks=EVIDENCE_NEIGHBOR_CHUNKS,
         rerank_batch_size=RERANK_BATCH_SIZE,
         reranker_max_context_tokens=RERANKER_MAX_CONTEXT_TOKENS,

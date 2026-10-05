@@ -24,8 +24,9 @@ from app.config import (
     RERANKER_REMOTE_BASE_URL,
     RERANKER_REMOTE_MODEL,
     RERANKER_REQUEST_TIMEOUT,
-    VERIFICATION_MAX_CANDIDATES,
+    VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD,
     VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD,
+    VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD,
     VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD,
 )
 from app.models.evidence import EvidenceChunk, EvidenceRetrievalResult, PatentEvidence
@@ -61,51 +62,6 @@ def _tokenize_terms(text: str) -> List[str]:
     return [w.lower() for w in re.findall(r"\b[A-Za-z0-9_-]+\b", text) if len(w) > 2]
 
 
-def check_span_proximity(subject: str, object_: str, text: str, max_word_distance: int = 40) -> Tuple[bool, Optional[str]]:
-    """
-    Check if subject terms and object terms co-occur within a bounded word distance in text.
-    Returns (is_cooccurring, matching_snippet).
-    """
-    if not subject or not object_ or not text:
-        return False, None
-
-    subj_words = set(_tokenize_terms(subject))
-    obj_words = set(_tokenize_terms(object_))
-
-    if not subj_words or not obj_words:
-        return False, None
-
-    words = text.split()
-    text_lower = text.lower()
-
-    # Exact phrase substring check
-    if subject.lower() in text_lower and object_.lower() in text_lower:
-        # Find sentence containing both
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        for s in sentences:
-            s_low = s.lower()
-            if any(sw in s_low for sw in subj_words) and any(ow in s_low for ow in obj_words):
-                return True, s.strip()[:150]
-
-    # Sliding window proximity check
-    subj_indices = [i for i, w in enumerate(words) if any(sw in w.lower() for sw in subj_words)]
-    obj_indices = [i for i, w in enumerate(words) if any(ow in w.lower() for ow in obj_words)]
-
-    if not subj_indices or not obj_indices:
-        return False, None
-
-    min_dist = min(abs(si - oi) for si in subj_indices for oi in obj_indices)
-    if min_dist <= max_word_distance:
-        # Extract snippet around match
-        best_si = min(subj_indices, key=lambda si: min(abs(si - oi) for oi in obj_indices))
-        start = max(0, best_si - 10)
-        end = min(len(words), best_si + max_word_distance + 10)
-        snippet = " ".join(words[start:end])
-        return True, snippet[:150]
-
-    return False, None
-
-
 class RelationshipVerifier:
     """
     Phase 5 Fast Semantic Relationship Verification Engine.
@@ -118,17 +74,19 @@ class RelationshipVerifier:
         model: Optional[str] = None,
         api_key: Optional[str] = None,
         timeout: Optional[float] = None,
-        max_candidates: Optional[int] = VERIFICATION_MAX_CANDIDATES,
         batch_size: int = RERANK_BATCH_SIZE,
         concurrent_requests: int = RERANK_CONCURRENT_REQUESTS,
+        relationship_coverage_threshold: float = VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD,
+        requirement_coverage_threshold: float = VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD,
     ):
         self.base_url = (base_url or RERANKER_REMOTE_BASE_URL).rstrip("/")
         self.model = model or RERANKER_REMOTE_MODEL
         self.api_key = api_key or RERANKER_REMOTE_API_KEY
         self.timeout = timeout if timeout is not None else RERANKER_REQUEST_TIMEOUT
-        self.max_candidates = max_candidates
         self.batch_size = batch_size
         self.concurrent_requests = concurrent_requests
+        self.relationship_coverage_threshold = relationship_coverage_threshold
+        self.requirement_coverage_threshold = requirement_coverage_threshold
 
         # Persistent requests session for connection pooling
         self.session = requests.Session()
@@ -172,18 +130,11 @@ class RelationshipVerifier:
         self,
         parsed_query: ParsedQuery,
         evidence_result: EvidenceRetrievalResult,
-        max_candidates: Optional[int] = None,
     ) -> VerificationBatchResult:
-        """
-        Execute high-speed relationship and requirement verification across all candidate patents.
-        Runs in < 300ms using GPU cross-encoder entailment and span proximity.
-        """
+
         t_start = time.perf_counter()
 
-        limit = max_candidates if max_candidates is not None else self.max_candidates
-        target_candidates = (
-            evidence_result.patent_evidence_list if limit is None else evidence_result.patent_evidence_list[:limit]
-        )
+        target_candidates = evidence_result.patent_evidence_list
 
         if not target_candidates:
             total_time_ms = (time.perf_counter() - t_start) * 1000
@@ -249,7 +200,7 @@ class RelationshipVerifier:
         # Score each relationship hypothesis against all chunks
         # rel_scores: (rel_idx, patent_id, chunk_id) -> score
         rel_scores: Dict[Tuple[int, str, int], float] = {}
-        doc_texts = [f"Section: {ch.section}\n\n{ch.text[:1000]}" if ch.section else ch.text[:1000] for _, ch in all_chunks]
+        doc_texts = [f"Section: {ch.section}\n\n{ch.text}" if ch.section else ch.text for _, ch in all_chunks]
 
         if rel_hypotheses and doc_texts:
             for r_idx, hyp_text, _, _, _ in rel_hypotheses:
@@ -267,6 +218,7 @@ class RelationshipVerifier:
 
         # 5. Evaluate each Candidate Patent
         verified_patents: List[PatentVerificationResult] = []
+        eliminated_count = 0
 
         for cand in target_candidates:
             pid = cand.patent_id
@@ -277,8 +229,6 @@ class RelationshipVerifier:
             for r_idx, hyp_text, subj, obj, rel in rel_hypotheses:
                 best_score = 0.0
                 best_cid: Optional[int] = None
-                best_snippet: Optional[str] = None
-                has_proximity = False
 
                 for ch in chunks:
                     sc = rel_scores.get((r_idx, pid, ch.chunk_id), 0.0)
@@ -286,21 +236,13 @@ class RelationshipVerifier:
                         best_score = sc
                         best_cid = ch.chunk_id
 
-                    # Check span proximity
-                    cooccurs, snippet = check_span_proximity(subj, obj, ch.text)
-                    if cooccurs:
-                        has_proximity = True
-                        if best_snippet is None or sc >= best_score:
-                            best_snippet = snippet
-                            best_cid = ch.chunk_id
-
-                # Relationship is supported if proximity matches or cross-encoder score indicates positive entailment
-                is_supported = has_proximity or best_score >= VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD
+                # Relationship is supported purely by cross-encoder entailment score
+                is_supported = best_score >= VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD
                 if is_supported and best_cid is not None:
                     status = "SUPPORTED"
                     confidence = round(max(0.75, min(0.98, best_score * 2.0 if best_score > 0 else 0.85)), 2)
                     cids = [best_cid]
-                    explanation = f"Verified in Chunk #{best_cid}" + (f": \"{best_snippet}\"" if best_snippet else "")
+                    explanation = f"Verified in Chunk #{best_cid}"
                 else:
                     status = "NOT_SUPPORTED"
                     confidence = 0.80
@@ -367,6 +309,15 @@ class RelationshipVerifier:
             rel_cov = calculate_relationship_coverage(rel_verifications)
             req_cov = calculate_requirement_coverage(req_verifications)
 
+            # Eliminate candidates whose coverage falls below the configured
+            # threshold - they never reach Phase 6/7, instead of just scoring low.
+            if (
+                rel_cov < self.relationship_coverage_threshold
+                or req_cov < self.requirement_coverage_threshold
+            ):
+                eliminated_count += 1
+                continue
+
             sup_count = sum(1 for r in rel_verifications if r.supported)
             unsup_count = sum(1 for r in rel_verifications if r.status == "NOT_SUPPORTED")
             contra_count = sum(1 for r in rel_verifications if r.status == "CONTRADICTED")
@@ -401,6 +352,7 @@ class RelationshipVerifier:
             fully_supported_count=fully_sup,
             partially_supported_count=partially_sup,
             unsupported_count=unsup,
+            eliminated_count=eliminated_count,
             timings={
                 "verification_ms": round(total_time_ms, 2),
                 "total_ms": round(total_time_ms, 2),
