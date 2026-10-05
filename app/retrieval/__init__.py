@@ -1,5 +1,5 @@
 """
-Phase 2, Phase 3 & Phase 4: Candidate Retrieval, Metadata Filtering & Evidence Retrieval
+Phase 2 & Phase 3: Candidate Retrieval & Metadata Filtering
 
 Exports:
 - CandidateRetriever: Main candidate retrieval engine
@@ -9,14 +9,8 @@ Exports:
 - filter_candidates: Phase 3 metadata constraint enforcement
 - matches_metadata_filter: Single filter evaluation
 - matches_all_metadata_filters: Multi-filter AND evaluation
-- EvidenceRetriever: Phase 4 bounded evidence retrieval engine
-- build_evidence_query: Dynamic evidence query constructor
 """
 
-from app.retrieval.evidence_retriever import (
-    EvidenceRetriever,
-    build_evidence_query,
-)
 from app.retrieval.filter_builder import (
     build_qdrant_filter,
     match_patent_metadata,
@@ -39,8 +33,6 @@ __all__ = [
     "filter_candidates",
     "matches_metadata_filter",
     "matches_all_metadata_filters",
-    "EvidenceRetriever",
-    "build_evidence_query",
 ]
 
 

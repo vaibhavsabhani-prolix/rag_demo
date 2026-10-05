@@ -7,7 +7,6 @@ export const pipelineConfigSchema = z.object({
   embedding_model: z.string(),
   reranker_model: z.string(),
   retrieval_top_k: z.number(),
-  evidence_neighbor_chunks: z.number(),
   rerank_batch_size: z.number(),
   reranker_max_context_tokens: z.number(),
   final_score_threshold: z.number(),

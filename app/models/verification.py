@@ -1,5 +1,5 @@
 """
-Phase 5 Relationship Verification Data Models
+Phase 4 Relationship Verification Data Models
 
 Structured models for semantic relationship verification, requirement verification,
 evidence citations, and per-patent verification results.
@@ -102,13 +102,13 @@ class PatentVerificationResult(BaseModel):
     )
     candidate_score: float = Field(
         default=0.0,
-        description="Phase 2 / Phase 4 retrieval score."
+        description="Phase 2 retrieval score."
     )
 
 
 class VerificationBatchResult(BaseModel):
     """
-    Complete output produced by Phase 5 Relationship Verification.
+    Complete output produced by Phase 4 Relationship Verification.
     """
     model_config = ConfigDict(extra="ignore")
 

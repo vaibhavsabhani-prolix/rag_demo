@@ -4,7 +4,7 @@ Query Match Highlighting
 Finds the parts of a chunk's text that match the user's query, so the UI can
 show *why* a chunk was retrieved:
 
-- Sentence spans: Phase 6 sends each chunk's sentences to the BGE
+- Sentence spans: Phase 5 sends each chunk's sentences to the BGE
   cross-encoder along with the chunks themselves, in the same batched
   requests, and sentences scoring above a threshold are marked. This catches
   matches by meaning ("condenses atmospheric moisture" for "generates water

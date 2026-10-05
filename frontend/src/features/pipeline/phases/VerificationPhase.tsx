@@ -4,7 +4,7 @@ import { formatMs, formatPercent } from '@/lib/format'
 import { unitScoreTone } from '@/lib/tone'
 import type { PhaseResults } from '@/schemas/pipeline'
 
-export function VerificationPhase({ data }: { data: PhaseResults[5] }) {
+export function VerificationPhase({ data }: { data: PhaseResults[4] }) {
   return (
     <div className="space-y-6">
       <StatGrid>

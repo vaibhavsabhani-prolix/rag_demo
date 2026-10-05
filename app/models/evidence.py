@@ -1,8 +1,9 @@
 """
-Phase 4 Evidence Retrieval Data Models
+Evidence Data Models
 
-Data structures for evidence chunks and patent evidence collections
-produced by Phase 4 Bounded Evidence Retrieval.
+Data structures for evidence chunks and patent evidence collections, built
+directly from Phase 2/3's candidate chunks (no separate retrieval step) and
+consumed by Phase 4 (Verification) and Phase 5 (Reranking).
 """
 
 from typing import Any, Dict, List, Optional
@@ -54,7 +55,8 @@ class PatentEvidence(BaseModel):
 
 class EvidenceRetrievalResult(BaseModel):
     """
-    Complete output produced by Phase 4 Bounded Evidence Retrieval.
+    Evidence chunks grouped by patent, built directly from Phase 2/3's
+    candidate chunks for Phase 4/5 to consume.
     """
     model_config = ConfigDict(extra="ignore")
 
@@ -68,8 +70,3 @@ class EvidenceRetrievalResult(BaseModel):
     )
     total_candidates: int = Field(default=0, description="Total candidate patents evaluated.")
     total_evidence_chunks: int = Field(default=0, description="Total evidence chunks gathered across all candidates.")
-    evidence_query_text: str = Field(default="", description="Constructed dynamic evidence query used for retrieval.")
-    timings: Dict[str, float] = Field(
-        default_factory=dict,
-        description="Latency breakdown in milliseconds (embedding_ms, qdrant_retrieval_ms, neighbor_ms, deduplication_ms, total_ms)."
-    )

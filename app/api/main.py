@@ -1,7 +1,7 @@
 """
 Patent Semantic Search — FastAPI service
 
-Exposes the 7-phase SearchPipeline to the React frontend:
+Exposes the 6-phase SearchPipeline to the React frontend:
 
     GET    /api/config   pipeline settings and scoring weights
     GET    /api/collections  Qdrant collections the user can search
@@ -18,17 +18,17 @@ Every search is saved to PostgreSQL with all of its phase results.
 The search stream emits one JSON object per line:
 
     {"type": "start", "query": ..., "collection": ..., "cache_hit": bool, "search_id": int | null}
-    {"type": "phase", "phase": 1..7, "name": ..., "elapsed_ms": ..., "data": {...}}
+    {"type": "phase", "phase": 1..6, "name": ..., "elapsed_ms": ..., "data": {...}}
     {"type": "done", "elapsed_ms": ...}
     {"type": "error", "message": ...}
 
-/api/compare parses the query once, then runs Phases 2-7 per collection, one
+/api/compare parses the query once, then runs Phases 2-6 per collection, one
 collection at a time so their timings are comparable. Its stream:
 
     {"type": "start", "query": ..., "collections": [...]}
     {"type": "phase", "collection": null, "phase": 1, ...}      shared by all collections
     {"type": "collection_start", "collection": ...}
-    {"type": "phase", "collection": ..., "phase": 2..7, ..., "memory": {"start_bytes", "peak_bytes"} | null}
+    {"type": "phase", "collection": ..., "phase": 2..6, ..., "memory": {"start_bytes", "peak_bytes"} | null}
     {"type": "collection_done", "collection": ..., "elapsed_ms": ...,
      "memory": {"start_bytes", "peak_bytes", "end_bytes"} | null}
       or {"type": "collection_error", "collection": ..., "message": ...}
@@ -71,7 +71,6 @@ from app.api.schemas import (
 )
 from app.config import (
     CHUNKS_COLLECTION_NAME,
-    EVIDENCE_NEIGHBOR_CHUNKS,
     FINAL_SCORE_THRESHOLD,
     FINAL_WEIGHT_RELATIONSHIP,
     FINAL_WEIGHT_REQUIREMENT,
@@ -91,7 +90,6 @@ from app.models.collection import SearchCollection
 from app.qdrant_db import QdrantDB
 from app.query_understanding.engine import QueryUnderstandingEngine
 from app.reranking.reranker import BGEReranker
-from app.retrieval.evidence_retriever import EvidenceRetriever
 from app.retrieval.retriever import CandidateRetriever
 from app.scoring.scorer import FinalScorer
 from app.semantic_search import PHASE_NAMES, SearchPipeline
@@ -104,9 +102,7 @@ FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 # Vite dev server instead of serving the frontend built into the image.
 FRONTEND_DEV_URL = os.getenv("FRONTEND_DEV_URL")
 
-# Fields left out of the stream because they duplicate other fields
-# (Phase 4's evidence_by_patent repeats every chunk in patent_evidence_list).
-STREAM_EXCLUDE = {4: {"evidence_by_patent"}}
+STREAM_EXCLUDE: dict[int, set[str]] = {}
 
 pipeline: SearchPipeline
 db: QdrantDB
@@ -120,7 +116,6 @@ def build_pipeline(db: QdrantDB) -> SearchPipeline:
     return SearchPipeline(
         engine=engine,
         retriever=CandidateRetriever(db=db),
-        evidence_retriever=EvidenceRetriever(db=db),
         verifier=RelationshipVerifier(),
         reranker=reranker,
         scorer=FinalScorer(),
@@ -158,7 +153,6 @@ def get_config() -> PipelineConfig:
         embedding_model="Qwen/Qwen3-Embedding-0.6B",
         reranker_model=RERANKER_REMOTE_MODEL,
         retrieval_top_k=RETRIEVAL_TOP_K_CHUNKS,
-        evidence_neighbor_chunks=EVIDENCE_NEIGHBOR_CHUNKS,
         rerank_batch_size=RERANK_BATCH_SIZE,
         reranker_max_context_tokens=RERANKER_MAX_CONTEXT_TOKENS,
         final_score_threshold=FINAL_SCORE_THRESHOLD,

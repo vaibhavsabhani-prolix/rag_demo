@@ -6,7 +6,7 @@ import type { PhaseNumber } from '@/schemas/pipeline'
 import type { SearchRun } from '@/store/searchSlice'
 
 /** Phases that run once per collection (Phase 1 is shared). */
-export const COLLECTION_PHASES: PhaseNumber[] = [2, 3, 4, 5, 6, 7]
+export const COLLECTION_PHASES: PhaseNumber[] = [2, 3, 4, 5, 6]
 
 /** How many top candidates the similarity chart plots. */
 export const TOP_CANDIDATES = 20
@@ -15,11 +15,11 @@ export interface CollectionMetrics {
   name: string
   run: SearchRun
   phaseMs: Partial<Record<PhaseNumber, number>>
-  /** Phases 2–7. */
+  /** Phases 2–6. */
   totalMs?: number
   /** Extra memory (bytes) each step needed at its peak, over what the process held when it began. */
   phaseMemory: Partial<Record<PhaseNumber, number>>
-  /** Extra memory (bytes) at the peak of Phases 2–7. */
+  /** Extra memory (bytes) at the peak of Phases 2–6. */
   peakMemory?: number
   /** The API process's whole resident memory (bytes) at that peak. */
   peakRss?: number
@@ -38,7 +38,6 @@ export interface CollectionMetrics {
   rejected?: number
   // Chunks at each step
   chunkHits?: number
-  evidenceChunks?: number
   chunksReranked?: number
   // Phase 2 candidate retrieval latency breakdown
   embeddingMs?: number
@@ -48,7 +47,7 @@ export interface CollectionMetrics {
   topScore?: number
   meanScore?: number
   topSimilarities: { patentId: string; score: number }[]
-  // Cross-encoder reranker scores (Phase 6/7), across final results
+  // Cross-encoder reranker scores (Phase 5/6), across final results
   topRerankerScore?: number
   meanRerankerScore?: number
   minRerankerScore?: number
@@ -64,7 +63,7 @@ export function collectionMetrics(name: string, run: SearchRun, info?: SearchCol
     if (entry?.memory) phaseMemory[id] = entry.memory.peak_bytes - entry.memory.start_bytes
   }
 
-  const results = phases[7]?.data.results ?? []
+  const results = phases[6]?.data.results ?? []
   // Excludes metadata-only results, which have no final_score to chart or rank by.
   const finalScores = results.flatMap((r) =>
     r.final_score === null ? [] : [{ patentId: r.patent_id, score: r.final_score }],
@@ -86,12 +85,11 @@ export function collectionMetrics(name: string, run: SearchRun, info?: SearchCol
     chunkTokens: Number.isFinite(chunkTokens) && chunkTokens > 0 ? chunkTokens : undefined,
     candidates: phases[2]?.data.candidates.length,
     afterFilter: phases[3]?.data.total_after,
-    verified: phases[5]?.data.total_evaluated,
-    results: phases[7] ? results.length : undefined,
-    rejected: phases[7]?.data.rejected_count,
+    verified: phases[4]?.data.total_evaluated,
+    results: phases[6] ? results.length : undefined,
+    rejected: phases[6]?.data.rejected_count,
     chunkHits: phases[2]?.data.total_chunk_hits,
-    evidenceChunks: phases[4]?.data.total_evidence_chunks,
-    chunksReranked: phases[6]?.data.total_chunks_reranked,
+    chunksReranked: phases[5]?.data.total_chunks_reranked,
     embeddingMs: phases[2]?.data.timings.embedding_ms,
     qdrantMs: phases[2]?.data.timings.qdrant_retrieval_ms,
     finalScores,
@@ -120,7 +118,7 @@ export interface OverlapRow {
 export function resultOverlap(metrics: CollectionMetrics[]): OverlapRow[] {
   const rows = new Map<string, OverlapRow>()
   for (const m of metrics) {
-    const results = m.run.phases[7]?.data.results ?? []
+    const results = m.run.phases[6]?.data.results ?? []
     results.forEach((r, i) => {
       let row = rows.get(r.patent_id)
       if (!row) {
@@ -190,7 +188,7 @@ export function keyFindings(metrics: CollectionMetrics[]): Finding[] {
     findings.push({
       label: 'Fastest',
       value: fastest.names.join(' & '),
-      detail: `${formatMs(fastest.value)} for steps 2–7${faster}`,
+      detail: `${formatMs(fastest.value)} for steps 2–6${faster}`,
     })
   }
 
@@ -203,7 +201,7 @@ export function keyFindings(metrics: CollectionMetrics[]): Finding[] {
     findings.push({
       label: 'Least memory',
       value: lightest.names.join(' & '),
-      detail: `+${formatBytes(lightest.value)} at the peak of steps 2–7${less}`,
+      detail: `+${formatBytes(lightest.value)} at the peak of steps 2–6${less}`,
     })
   }
 

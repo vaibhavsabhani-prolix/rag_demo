@@ -40,7 +40,6 @@ class PipelineConfig(BaseModel):
     embedding_model: str
     reranker_model: str
     retrieval_top_k: int
-    evidence_neighbor_chunks: int
     rerank_batch_size: int
     reranker_max_context_tokens: int
     final_score_threshold: float

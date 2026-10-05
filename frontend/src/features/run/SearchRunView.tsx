@@ -13,7 +13,7 @@ import { patentSelected, tabChanged, type ResultTab } from '@/store/uiSlice'
 export function SearchRunView({ run }: { run: SearchRun }) {
   const dispatch = useAppDispatch()
   const activeTab = useAppSelector((s) => s.ui.activeTab)
-  const final = run.phases[7]
+  const final = run.phases[6]
   const completedPhases = PHASES.filter((p) => run.phases[p.id]).length
 
   // Close the patent drawer when leaving this run (e.g. switching pages).

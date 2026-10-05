@@ -113,7 +113,6 @@ function ConfigSection() {
         <KeyValueList
           items={[
             { label: 'Candidate limit', value: config.retrieval_top_k },
-            { label: 'Neighbor radius', value: `±${config.evidence_neighbor_chunks} chunks` },
             { label: 'Rerank batch size', value: config.rerank_batch_size },
             { label: 'Rerank max tokens', value: config.reranker_max_context_tokens },
           ]}

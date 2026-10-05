@@ -2,7 +2,7 @@ import { DataTable, Section, Stat, StatGrid } from '@/components/ui'
 import { formatMs, formatPercent } from '@/lib/format'
 import type { PhaseResults } from '@/schemas/pipeline'
 
-export function ScoringPhase({ data }: { data: PhaseResults[7] }) {
+export function ScoringPhase({ data }: { data: PhaseResults[6] }) {
   // A metadata-only query has nothing semantic to score or rank by (see app/scoring/scorer.py).
   const isMetadataOnly = data.results.length > 0 && data.results.every((r) => r.final_score === null)
 

@@ -12,7 +12,7 @@ const NO_WEIGHTS: Record<string, number> = {}
 export function PatentDetailDrawer({ run }: { run: SearchRun }) {
   const dispatch = useAppDispatch()
   const selectedId = useAppSelector((s) => s.ui.selectedPatentId)
-  const final = run.phases[7]?.data
+  const final = run.phases[6]?.data
   const patent = final?.results.find((p) => p.patent_id === selectedId)
   const weights = final?.weights_used ?? NO_WEIGHTS
   const onClose = useCallback(() => dispatch(patentSelected(null)), [dispatch])

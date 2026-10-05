@@ -94,7 +94,8 @@ export const filteredCandidatesSchema = z.object({
   filter_time_ms: z.number(),
 })
 
-// Phase 4 — Evidence (app/models/evidence.py)
+// Evidence chunk shape (app/models/evidence.py) — no longer its own phase;
+// Phase 4/5 build evidence straight from Phase 2/3's candidate chunks.
 export const evidenceChunkSchema = z.object({
   patent_id: z.string(),
   chunk_id: z.number(),
@@ -106,22 +107,7 @@ export const evidenceChunkSchema = z.object({
   token_count: z.number().nullish(),
 })
 
-export const patentEvidenceSchema = z.object({
-  patent_id: z.string(),
-  chunks: z.array(evidenceChunkSchema),
-  metadata,
-  candidate_score: z.number(),
-})
-
-export const evidenceRetrievalSchema = z.object({
-  patent_evidence_list: z.array(patentEvidenceSchema),
-  total_candidates: z.number(),
-  total_evidence_chunks: z.number(),
-  evidence_query_text: z.string(),
-  timings,
-})
-
-// Phase 5 — Verification (app/models/verification.py)
+// Phase 4 — Verification (app/models/verification.py)
 export const relationshipVerificationSchema = z.object({
   relationship_index: z.number(),
   subject: z.string(),
@@ -170,7 +156,7 @@ export const verificationBatchSchema = z.object({
   timings,
 })
 
-// Phase 6 — Reranking (app/models/reranking.py)
+// Phase 5 — Reranking (app/models/reranking.py)
 /** Character spans of a chunk's text that match the query. */
 export const chunkHighlightSchema = z.object({
   /** Sentences the cross-encoder scored as matching the query in meaning. */
@@ -210,7 +196,7 @@ export const rerankBatchSchema = z.object({
   timings,
 })
 
-// Phase 7 — Final scoring (app/models/scoring.py)
+// Phase 6 — Final scoring (app/models/scoring.py)
 export const scoreBreakdownSchema = z.object({
   relationship_score: z.number(),
   requirement_score: z.number(),
@@ -254,10 +240,9 @@ export const phaseSchemas = {
   1: parsedQuerySchema,
   2: candidateRetrievalSchema,
   3: filteredCandidatesSchema,
-  4: evidenceRetrievalSchema,
-  5: verificationBatchSchema,
-  6: rerankBatchSchema,
-  7: finalSearchSchema,
+  4: verificationBatchSchema,
+  5: rerankBatchSchema,
+  6: finalSearchSchema,
 } as const
 
 export type PhaseNumber = keyof typeof phaseSchemas
@@ -267,10 +252,9 @@ export const PHASES: { id: PhaseNumber; title: string; short: string }[] = [
   { id: 1, title: 'Query Understanding', short: 'Understand' },
   { id: 2, title: 'Candidate Retrieval', short: 'Retrieve' },
   { id: 3, title: 'Metadata Filtering', short: 'Filter' },
-  { id: 4, title: 'Evidence Retrieval', short: 'Evidence' },
-  { id: 5, title: 'Relationship Verification', short: 'Verify' },
-  { id: 6, title: 'Cross-Encoder Reranking', short: 'Rerank' },
-  { id: 7, title: 'Final Scoring', short: 'Score' },
+  { id: 4, title: 'Relationship Verification', short: 'Verify' },
+  { id: 5, title: 'Cross-Encoder Reranking', short: 'Rerank' },
+  { id: 6, title: 'Final Scoring', short: 'Score' },
 ]
 
 export type ParsedQuery = z.infer<typeof parsedQuerySchema>

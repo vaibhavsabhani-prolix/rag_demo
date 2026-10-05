@@ -1,5 +1,5 @@
 """
-Query match highlighting for evidence chunks (computed in Phase 6 reranking).
+Query match highlighting for evidence chunks (computed in Phase 5 reranking).
 
 Exports:
 - split_sentences / sentences_to_score: multilingual sentence splitter returning character spans

@@ -1,5 +1,5 @@
 """
-Phase 7: Final Patent Scoring & Result Selection Module
+Phase 6: Final Patent Scoring & Result Selection Module
 """
 
 from app.scoring.scorer import FinalScorer

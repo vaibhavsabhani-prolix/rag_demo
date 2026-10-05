@@ -3,7 +3,6 @@ import { Badge, Collapsible, EmptyState, JsonView, Spinner } from '@/components/
 import { formatMs } from '@/lib/format'
 import { PHASES, type PhaseNumber } from '@/schemas/pipeline'
 import type { SearchRun } from '@/store/searchSlice'
-import { EvidencePhase } from './phases/EvidencePhase'
 import { FilterPhase } from './phases/FilterPhase'
 import { QueryPhase } from './phases/QueryPhase'
 import { RerankPhase } from './phases/RerankPhase'
@@ -16,7 +15,7 @@ export function PipelineView({ run }: { run: SearchRun }) {
   const { status, phases, cacheHit } = run
 
   if (status === 'idle') {
-    return <EmptyState title="No pipeline run yet" description="Run a search to inspect what each of the 7 steps produced." />
+    return <EmptyState title="No pipeline run yet" description="Run a search to inspect what each of the 6 steps produced." />
   }
 
   const renderPhase = (id: PhaseNumber): ReactNode => {
@@ -28,13 +27,11 @@ export function PipelineView({ run }: { run: SearchRun }) {
       case 3:
         return phases[3] && <FilterPhase data={phases[3].data} />
       case 4:
-        return phases[4] && <EvidencePhase data={phases[4].data} reranked={phases[6]?.data} />
+        return phases[4] && <VerificationPhase data={phases[4].data} />
       case 5:
-        return phases[5] && <VerificationPhase data={phases[5].data} />
+        return phases[5] && <RerankPhase data={phases[5].data} />
       case 6:
-        return phases[6] && <RerankPhase data={phases[6].data} />
-      case 7:
-        return phases[7] && <ScoringPhase data={phases[7].data} />
+        return phases[6] && <ScoringPhase data={phases[6].data} />
     }
   }
 

@@ -1,5 +1,5 @@
 """
-Phase 5 Relationship Verification Prompts
+Phase 4 Relationship Verification Prompts
 
 Compact, strict, structured prompt templates for semantic verification of
 patent evidence against requested relationships and requirements.

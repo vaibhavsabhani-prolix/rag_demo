@@ -192,6 +192,27 @@ class QueryNormalizer:
             "range": "between",
         }
 
+    # LST ("Legal Status: Filed/Granted/Ceased") and ALD ("Legal State:
+    # Alive/Dead") are both commonly called "legal status" in natural
+    # language and share the "legal status"/"legal state" aliases above, but
+    # they are disjoint fields in the dataset with disjoint value domains.
+    # A field/value mismatch here (e.g. field resolved to LST, value is
+    # "Alive") isn't a formatting issue - it's the wrong field entirely, and
+    # the Qdrant filter can never match any patent as a result.
+    _ALIVE_DEAD_VALUES = {"alive", "dead"}
+    _FILED_GRANTED_CEASED_VALUES = {"filed", "granted", "ceased"}
+
+    def _correct_legal_status_field(self, field: str, value: Any) -> str:
+        """Re-resolve LST/ALD confusion using the value's own domain."""
+        if field not in ("LST", "ALD"):
+            return field
+        val_lower = value.strip().lower() if isinstance(value, str) else None
+        if val_lower in self._ALIVE_DEAD_VALUES:
+            return "ALD"
+        if val_lower in self._FILED_GRANTED_CEASED_VALUES:
+            return "LST"
+        return field
+
     def resolve_metadata_field(self, raw_field: str) -> Tuple[str, Optional[str]]:
         """
         Resolve a field string to a canonical field code from METADATA_FIELD_CODES.
@@ -332,6 +353,7 @@ class QueryNormalizer:
             canonical_field, raw_field = self.resolve_metadata_field(f.field or f.raw_field or "")
             op = self.normalize_operator(f.operator)
             val = self.normalize_value(canonical_field, f.value)
+            canonical_field = self._correct_legal_status_field(canonical_field, val)
             f_key = (canonical_field, op, str(val).lower())
             if f_key not in seen_filters:
                 seen_filters.add(f_key)

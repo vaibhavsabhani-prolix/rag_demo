@@ -1,20 +1,21 @@
 """
-Phase 6: BGE Cross-Encoder Reranking Engine
+Phase 5: BGE Cross-Encoder Reranking Engine
 
 Evaluates and scores candidate patent evidence chunks against the user's complete
 semantic intent using the BGE cross-encoder reranker (BAAI/bge-reranker-v2-m3).
 
 Key guarantees:
-- Consumes bounded candidates from Phase 5 and bounded evidence from Phase 4.
+- Consumes verified candidates from Phase 4, whose evidence chunks came
+  straight from Phase 2/3's candidate retrieval (no separate evidence phase).
 - Reranking query is the user's original query, used verbatim.
 - Zero LLM calls and zero new embedding generations.
 - Strict 4096-token combined limit enforcement (query + doc + prefix + safety margin <= 4096).
 - Batch processing with bounded concurrency (requests.Session + ThreadPoolExecutor).
-- Full preservation of Phase 5 relationship & requirement verification outcomes.
+- Full preservation of Phase 4 relationship & requirement verification outcomes.
 - Chunk-level scoring and patent-level intermediate aggregation (best_reranker_score).
 - Query-match highlighting: each chunk's sentences are scored in the same batched
   requests, and matching sentences/words are attached to the chunk (see app/highlighting).
-- Zero final ranking weights calculated (reserved for Phase 7).
+- Zero final ranking weights calculated (reserved for Phase 6).
 - Resilient error handling (failures do not crash search).
 """
 
@@ -51,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 class BGEReranker:
     """
-    Phase 6 BGE Cross-Encoder Reranking Engine.
+    Phase 5 BGE Cross-Encoder Reranking Engine.
     """
 
     def __init__(
@@ -260,7 +261,7 @@ class BGEReranker:
         evidence_result: EvidenceRetrievalResult,
     ) -> RerankBatchResult:
         """
-        Execute Phase 6 BGE Reranking across all verified candidates and their bounded evidence chunks.
+        Execute Phase 5 BGE Reranking across all verified candidates and their bounded evidence chunks.
         """
         t_start = time.perf_counter()
 
@@ -339,7 +340,7 @@ class BGEReranker:
         }
         term_pattern = extract_term_patterns(parsed_query.original_query or "", parsed_query.concepts)
 
-        # 5. Assemble RerankedPatentResult preserving all Phase 5 verifications
+        # 5. Assemble RerankedPatentResult preserving all Phase 4 verifications
         reranked_patents: List[RerankedPatentResult] = []
 
         for vpat in verified_patents:

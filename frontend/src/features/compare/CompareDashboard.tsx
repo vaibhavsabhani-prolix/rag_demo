@@ -34,7 +34,7 @@ interface CompareDashboardProps {
 /** Charts and tables comparing each collection's run of the same query. */
 export function CompareDashboard({ state, metrics, series }: CompareDashboardProps) {
   const byName = Object.fromEntries(metrics.map((m) => [m.name, m]))
-  const threshold = metrics.find((m) => m.run.phases[7])?.run.phases[7]?.data.threshold_used ?? 7
+  const threshold = metrics.find((m) => m.run.phases[6])?.run.phases[6]?.data.threshold_used ?? 7
   const findings = keyFindings(metrics)
   const multi = series.length > 1
 
@@ -160,7 +160,6 @@ export function CompareDashboard({ state, metrics, series }: CompareDashboardPro
           <GroupedBarChart
             categories={[
               { label: 'Vector hits', values: perSeries((m) => m.chunkHits) },
-              { label: 'Evidence', values: perSeries((m) => m.evidenceChunks) },
               { label: 'Reranked', values: perSeries((m) => m.chunksReranked) },
             ]}
             series={series}
@@ -498,7 +497,6 @@ function MetricsTable({
     { label: 'Min reranker score', value: (m) => orDash(m.minRerankerScore, (s) => s.toFixed(3)) },
     { label: 'Best candidate similarity', value: (m) => orDash(m.topSimilarities[0]?.score, (s) => s.toFixed(3)) },
     { label: 'Vector chunk hits', value: (m) => orDash(m.chunkHits, formatCount) },
-    { label: 'Evidence chunks', value: (m) => orDash(m.evidenceChunks, formatCount) },
     { label: 'Chunks reranked', value: (m) => orDash(m.chunksReranked, formatCount) },
   ]
 
@@ -548,7 +546,7 @@ function DrillDown({ state, series }: { state: CompareState; series: Series[] })
           items={series.map((s) => ({
             id: s.name,
             label: s.name,
-            count: state.runs[s.name]?.phases[7]?.data.results.length,
+            count: state.runs[s.name]?.phases[6]?.data.results.length,
           }))}
         />
       </div>

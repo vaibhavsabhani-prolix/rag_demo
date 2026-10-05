@@ -2,7 +2,7 @@
 
 A production-ready Patent Retrieval & Semantic Search system built with **Python**, **Qdrant Vector DB**, a **remote Qwen3 embedding server**, an **LLM-based Query Understanding layer**, **multi-view dynamic retrieval**, **metadata filtering**, a **cross-encoder relationship/requirement verification stage**, a **BGE cross-encoder reranker**, and **weighted multi-signal final scoring with query-match highlighting**.
 
-The pipeline handles end-to-end processing of complex technical patent documents: from raw document parsing and token-window chunking, through validation, remote vector embedding, and concurrent batch indexing — to natural-language query understanding, multi-view semantic candidate retrieval, metadata filtering, bounded evidence retrieval, cross-encoder relationship/requirement verification, BGE reranking with highlighting, and deterministic multi-signal final scoring. A React + FastAPI web app (with search history in PostgreSQL) and CLI tools are included for search, collection comparison, per-collection storage/memory inspection, and index inspection.
+The pipeline handles end-to-end processing of complex technical patent documents: from raw document parsing and token-window chunking, through validation, remote vector embedding, and concurrent batch indexing — to natural-language query understanding, multi-view semantic candidate retrieval, metadata filtering, cross-encoder relationship/requirement verification (reusing Phase 2/3's already-retrieved chunks, no separate evidence-retrieval step), BGE reranking with highlighting, and deterministic multi-signal final scoring. A React + FastAPI web app (with search history in PostgreSQL) and CLI tools are included for search, collection comparison, per-collection storage/memory inspection, and index inspection.
 
 ---
 
@@ -21,23 +21,21 @@ flowchart TD
         C --> H2["patents_metadata_&lt;name&gt; collection (metadata only, no vectors)"]
     end
 
-    subgraph Search_Pipeline ["2. Seven-Phase Search Pipeline (app/semantic_search.py SearchPipeline)"]
+    subgraph Search_Pipeline ["2. Six-Phase Search Pipeline (app/semantic_search.py SearchPipeline)"]
         J["User Search Query"] --> P1["Phase 1 - Query Understanding\n(app/query_understanding/engine.py)\n-> ParsedQuery: semantic_query, concepts, relationships,\nattributes, requirements, constraints, exclusions,\nmetadata_filters, is_metadata_only"]
 
         P1 -->|"is_metadata_only"| MO["CandidateRetriever._retrieve_metadata_only\nscrolls patents_metadata_* collection,\nPython-verifies filters, NO vector search"]
-        P1 -->|"semantic query"| P2["Phase 2 - Candidate Retrieval\n(app/retrieval/retriever.py)\n3 dynamic views (original / semantic / structured)\nembedded once each, metadata pre-filter narrows the\nQdrant search (falls back to unrestricted on 0 matches),\nquery_points per view (RETRIEVAL_TOP_K_PER_VIEW each),\ndeduped + grouped by patent_id, bounded to\nPATENT_CANDIDATE_TOP_K patents by best chunk score"]
+        P1 -->|"semantic query"| P2["Phase 2 - Candidate Retrieval\n(app/retrieval/retriever.py)\n3 dynamic views (original / semantic / structured)\nembedded once each, metadata pre-filter narrows the\nQdrant search (falls back to unrestricted on 0 matches),\nquery_points per view (RETRIEVAL_TOP_K_CHUNKS each,\nfull chunk text kept), deduped + grouped by patent_id\n(semantic branch is NOT truncated to a patent count cap)"]
         MO --> P3
         P2 --> P3["Phase 3 - Metadata Filtering\n(app/retrieval/metadata_filter.py)\nstrict AND over parsed_query.metadata_filters,\ndate/code/text-aware comparison, per-filter diagnostics"]
 
-        P3 --> P4["Phase 4 - Bounded Evidence Retrieval\n(app/retrieval/evidence_retriever.py)\ndeterministic evidence query (semantic_query +\nrelationships + requirements + concepts), ONE vector\nsearch restricted to surviving patent_ids\n(EVIDENCE_GLOBAL_TOP_K_CHUNKS global cap, not\nper-patent) + EVIDENCE_NEIGHBOR_CHUNKS neighbors\nfetched in one batched scroll"]
+        P3 --> P4["Phase 4 - Relationship & Requirement Verification\n(app/verification/verifier.py)\nEvidence chunks reused directly from Phase 2/3 candidates\n(no separate retrieval step); BGE cross-encoder scores every\nrelationship/requirement hypothesis against every chunk;\nper-patent coverage ratios computed, candidates below the\ncoverage threshold are eliminated before Phase 5"]
 
-        P4 --> P5["Phase 5 - Relationship & Requirement Verification\n(app/verification/verifier.py)\nBGE cross-encoder scores every relationship/requirement\nhypothesis against every evidence chunk; per-patent\ncoverage ratios computed, candidates below the coverage\nthreshold are eliminated before Phase 6"]
+        P4 --> P5["Phase 5 - BGE Cross-Encoder Reranking\n(app/reranking/reranker.py)\nreranking query = user's original query verbatim,\ntoken-budgeted chunks scored in batched HTTP calls;\npatent score = MAX across its own chunks; sentences\nscored in the same batch for query-match highlighting\n(app/highlighting/)"]
 
-        P5 --> P6["Phase 6 - BGE Cross-Encoder Reranking\n(app/reranking/reranker.py)\nreranking query = user's original query verbatim,\ntoken-budgeted chunks scored in batched HTTP calls;\npatent score = MAX across its own chunks; sentences\nscored in the same batch for query-match highlighting\n(app/highlighting/)"]
+        P5 --> P6["Phase 6 - Final Scoring & Result Selection\n(app/scoring/scorer.py)\nweighted composite: 0.45*relationship_coverage +\n0.25*requirement_coverage + 0.20*best_reranker_score +\n0.10*retrieval_score, 0-10 scale; filtered by\nFINAL_SCORE_THRESHOLD, sorted descending\n(metadata-only: unscored, unranked, all returned)"]
 
-        P6 --> P7["Phase 7 - Final Scoring & Result Selection\n(app/scoring/scorer.py)\nweighted composite: 0.45*relationship_coverage +\n0.25*requirement_coverage + 0.20*best_reranker_score +\n0.10*retrieval_score, 0-10 scale; filtered by\nFINAL_SCORE_THRESHOLD, sorted descending\n(metadata-only: unscored, unranked, all returned)"]
-
-        P7 --> R["React UI (frontend/) + FastAPI (app/api/main.py)\nstreams one NDJSON event per phase / CLI"]
+        P6 --> R["React UI (frontend/) + FastAPI (app/api/main.py)\nstreams one NDJSON event per phase / CLI"]
     end
 ```
 
@@ -123,14 +121,14 @@ A truncated/malformed LLM completion is recovered by `_repair_truncated_json`, w
 
 ### Stage 7: Candidate Retrieval (`app/retrieval/retriever.py` + `app/retrieval/views.py`, Search Phase 2)
 
-**Metadata-only branch** (`is_metadata_only=True`): `_retrieve_metadata_only` builds a Qdrant filter, scrolls the `patents_metadata_*` collection, verifies every candidate against `parsed_query.metadata_filters` in Python (`_fetch_matching_patents`), and truncates to `PATENT_CANDIDATE_TOP_K` — no embedding call and no vector search at all.
+**Metadata-only branch** (`is_metadata_only=True`): `_retrieve_metadata_only` builds a Qdrant filter, scrolls the `patents_metadata_*` collection, verifies every candidate against `parsed_query.metadata_filters` in Python (`_fetch_matching_patents`), and truncates to `candidate_top_k` (`RETRIEVAL_TOP_K_CHUNKS`) — no embedding call and no vector search at all.
 
 **Semantic branch**:
 1. `build_retrieval_views` deterministically builds up to three query views with no LLM call: `original` (raw query), `semantic` (the Query Understanding rewrite), and `structured` (a compact synthesis of concepts, relationships, attributes, and requirements).
 2. Each distinct view text is embedded once in a single batched call.
 3. If `metadata_filters` are present, matching patent IDs are fetched first and used to restrict the Qdrant vector search via `MatchAny(patent_id in [...])`. If that pre-filter matches **zero** patents (which is as likely to be an extraction/mapping gap as a genuine no-match), the search falls back to unrestricted and lets Phase 3 enforce the filters on whatever candidates come back.
-4. Each view runs its own `query_points` call against `patent_chunks_*` with `limit=RETRIEVAL_TOP_K_PER_VIEW` (default 500).
-5. Chunks are deduplicated by point ID across views (merging `matched_views` and keeping the max score), grouped by `patent_id`, and each patent's `retrieval_score` is its single best chunk's score. Candidates are sorted by that score and bounded to `PATENT_CANDIDATE_TOP_K` (default 300).
+4. Each view runs its own `query_points` call against `patent_chunks_*` with `limit=RETRIEVAL_TOP_K_CHUNKS` (default 300), fetching full chunk text (not just IDs) — this is what Phase 4/5 later reuse as evidence.
+5. Chunks are deduplicated by point ID across views (merging `matched_views` and keeping the max score), grouped by `patent_id`, and each patent's `retrieval_score` is its single best chunk's score. Candidates are sorted by that score. **Note**: unlike the metadata-only branch, this semantic branch is not truncated to a fixed patent count — the only real bound is the per-view chunk fetch limit.
 6. Surviving candidates' patent metadata is batch-fetched from `patents_metadata_*` for display and downstream filtering.
 
 ---
@@ -145,40 +143,29 @@ Deterministic, strict-AND enforcement of `parsed_query.metadata_filters` against
 
 ---
 
-### Stage 9: Bounded Evidence Retrieval (`app/retrieval/evidence_retriever.py`, Search Phase 4)
-For the patents that survived Phase 3, gathers the chunk text needed for verification and reranking — **not** an unbounded per-patent fetch:
+### Stage 9: Relationship & Requirement Verification (`app/verification/verifier.py`, Search Phase 4)
+A fast (sub-second), GPU-accelerated **precision gate** — it scores how well each candidate's evidence supports the query's structure, and eliminates candidates that fall short. There is no separate evidence-retrieval step: the evidence chunks scored here are the same chunk text Phase 2 already fetched for each surviving Phase 3 candidate, reshaped in-memory (`_candidates_to_evidence_result` in `app/semantic_search.py`) — zero new Qdrant calls between Phase 3 and Phase 4.
 
-1. `build_evidence_query` deterministically combines `semantic_query`, `relationships`, `requirements`, and `concepts` into one compact query text (no LLM call).
-2. Phase 2's already-held chunk text is seeded into the evidence pool first.
-3. One additional vector search embeds that evidence query and runs `query_points` restricted to the surviving patent IDs (`MatchAny`), with `limit=EVIDENCE_GLOBAL_TOP_K_CHUNKS` (default 1000) — a **global** cap shared across the whole candidate batch, not a per-patent cap.
-4. For every chunk now on hand, up to `EVIDENCE_NEIGHBOR_CHUNKS` (default 1) adjacent chunk indices on each side are fetched in a single batched Qdrant scroll, scored at `0.95 ×` the nearest anchor chunk's score, and merged in.
-5. Chunks are deduplicated per patent and ordered (direct matches before neighbors, by score); every matched chunk and its neighbors are kept — there is no per-patent truncation at this stage.
-
----
-
-### Stage 10: Relationship & Requirement Verification (`app/verification/verifier.py`, Search Phase 5)
-A fast (sub-second), GPU-accelerated **precision gate** — it scores how well each candidate's evidence supports the query's structure, and eliminates candidates that fall short:
-
-1. Every Phase 4 candidate is verified — there is no cap on how many are processed.
+1. Every Phase 3 candidate is verified — there is no cap on how many are processed.
 2. For each `relationship` (`subject relation object [context]`) and each free-text `requirement`, a hypothesis string is built.
-3. Every hypothesis is scored against every evidence chunk of every candidate in batched calls to the remote BGE cross-encoder (`/rerank` endpoint, shared with Phase 6's reranker server).
+3. Every hypothesis is scored against every candidate's chunks in batched calls to the remote BGE cross-encoder (`/rerank` endpoint, shared with Phase 5's reranker server).
 4. **Relationship support**: `SUPPORTED` if the best cross-encoder score across the candidate's chunks is ≥ `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD` (0.35) — purely a cross-encoder semantic judgment, with no deterministic word-proximity override.
 5. **Requirement support**: `SUPPORTED` if the best of (cross-encoder score, `0.5 ×` word-overlap ratio) across the candidate's chunks is ≥ `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD` (0.35).
 6. Per-patent `relationship_coverage` / `requirement_coverage` are the fraction of relationships/requirements marked supported (1.0 if the query has none of that kind, or is metadata-only).
-7. **Elimination gate**: a candidate whose `relationship_coverage` or `requirement_coverage` falls below `VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD` / `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD` (0.5 each) is dropped here and never reaches Phase 6/7. Surviving candidates carry their coverage ratios into Phase 7's score.
+7. **Elimination gate**: a candidate whose `relationship_coverage` or `requirement_coverage` falls below `VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD` / `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD` (0.5 each) is dropped here and never reaches Phase 5/6. Surviving candidates carry their coverage ratios into Phase 6's score.
 
 ---
 
-### Stage 11: BGE Cross-Encoder Reranking & Highlighting (`app/reranking/reranker.py` + `app/highlighting/`, Search Phase 6)
+### Stage 10: BGE Cross-Encoder Reranking & Highlighting (`app/reranking/reranker.py` + `app/highlighting/`, Search Phase 5)
 1. The reranking query is the user's `original_query`, used verbatim — no synthetic construction, no LLM call, no new embeddings.
 2. Each evidence chunk is formatted (`Section: <name>\n\n<text>`) and truncated to a token budget (`RERANKER_MAX_CONTEXT_TOKENS` minus the query's tokens minus `RERANKER_TOKEN_SAFETY_MARGIN`), sliced at exact tokenizer offsets so truncation never splits a token.
 3. All chunks across all verified candidates are scored against the reranking query in one set of batched HTTP calls (`RERANK_BATCH_SIZE` docs per request, up to `RERANK_CONCURRENT_REQUESTS` in flight) to the remote BGE reranker (`BAAI/bge-reranker-v2-m3`). A failed batch scores 0.0 rather than aborting the search.
 4. **Query-match highlighting**: each chunk's sentences (split multilingually, short fragments like "FIG. 1" skipped) are scored in the **same** batched requests as the chunks, and sentences scoring above `HIGHLIGHT_SENTENCE_THRESHOLD` (strong above `HIGHLIGHT_SENTENCE_STRONG_THRESHOLD`) are marked. Separately, the query's own content words (stemmed, CJK-aware) are matched as literal term spans. Both are character-offset spans the UI highlights directly on the chunk text.
-5. A patent's `best_reranker_score` is the **MAX** across its own chunks' scores (not an average); `avg_reranker_score` is also kept. Phase 5's verification results are carried through unchanged.
+5. A patent's `best_reranker_score` is the **MAX** across its own chunks' scores (not an average); `avg_reranker_score` is also kept. Phase 4's verification results are carried through unchanged.
 
 ---
 
-### Stage 12: Final Scoring & Result Selection (`app/scoring/scorer.py`, Search Phase 7)
+### Stage 11: Final Scoring & Result Selection (`app/scoring/scorer.py`, Search Phase 6)
 Pure in-memory, deterministic — zero LLM/reranker/embedding/Qdrant calls. For each candidate, four 0–1 component scores are combined into one 0–10 final score:
 
 ```
@@ -188,13 +175,13 @@ final_score = 10 × ( 0.45 × relationship_score
                     + 0.10 × retrieval_score )
 ```
 
-* `relationship_score` = Phase 5's `relationship_coverage`, forced to `0.0` if any relationship was explicitly `CONTRADICTED`.
-* `requirement_score` = Phase 5's `requirement_coverage`.
-* `reranker_score` = Phase 6's `best_reranker_score`, clamped to [0, 1].
+* `relationship_score` = Phase 4's `relationship_coverage`, forced to `0.0` if any relationship was explicitly `CONTRADICTED`.
+* `requirement_score` = Phase 4's `requirement_coverage`.
+* `reranker_score` = Phase 5's `best_reranker_score`, clamped to [0, 1].
 * `retrieval_score` = Phase 2's `candidate_score` (retrieval similarity), clamped to [0, 1].
 * The four weights (`FINAL_WEIGHT_*`) must sum to 1.0 (validated at `FinalScorer` construction).
 * A patent qualifies only if `final_score >= FINAL_SCORE_THRESHOLD` (default 7.0); qualifying patents are returned sorted descending, with **no fixed top-K cap**.
-* **Metadata-only queries** skip scoring entirely: there is no topic to verify or rank against, so every matching patent is returned unscored and unranked, in the order Phase 6 delivered them, rather than dressing up a meaningless number.
+* **Metadata-only queries** skip scoring entirely: there is no topic to verify or rank against, so every matching patent is returned unscored and unranked, in the order Phase 5 delivered them, rather than dressing up a meaningless number.
 
 ---
 
@@ -216,18 +203,15 @@ final_score = 10 × ( 0.45 × relationship_score
 | | `VALIDATOR_DEGENERATE_OVERLAP_THRESHOLD` | `0.9` | Minimum unique-content ratio vs. previous chunk |
 | **Query Understanding** | `QUERY_LLM_REMOTE_BASE_URL` / `_MODEL` | — | Remote OpenAI-compatible endpoint & model |
 | | `QUERY_CACHE_SIZE` | `1024` | LRU cache size for parsed queries |
-| **Phase 2 Retrieval** | `RETRIEVAL_TOP_K_PER_VIEW` | `1500` | Chunks fetched per retrieval view before dedup/grouping |
-| | `PATENT_CANDIDATE_TOP_K` | `300` | Candidate patents kept after Phase 2 grouping |
-| **Phase 4 Evidence** | `EVIDENCE_GLOBAL_TOP_K_CHUNKS` | `1000` | Global (not per-patent) cap on the evidence vector search |
-| | `EVIDENCE_NEIGHBOR_CHUNKS` | `1` | Adjacent chunk indices fetched on each side of a matched chunk |
-| **Phase 5 Verification** | `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD` | `0.35` | Min cross-encoder score to mark a relationship SUPPORTED |
+| **Phase 2 Retrieval** | `RETRIEVAL_TOP_K_CHUNKS` | `300` | Chunks fetched per retrieval view (also the metadata-only truncation count); the semantic branch's candidate-patent count itself is uncapped |
+| **Phase 4 Verification** | `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD` | `0.35` | Min cross-encoder score to mark a relationship SUPPORTED |
 | | `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD` | `0.35` | Min effective score to mark a requirement SUPPORTED |
-| | `VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD` | `0.5` | Min relationship coverage ratio to survive the Phase 5 elimination gate |
-| | `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD` | `0.5` | Min requirement coverage ratio to survive the Phase 5 elimination gate |
-| **Phase 6 Reranker** | `RERANKER_REMOTE_BASE_URL` / `_MODEL` | — | Remote BGE cross-encoder server & `BAAI/bge-reranker-v2-m3` |
+| | `VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD` | `0.5` | Min relationship coverage ratio to survive the Phase 4 elimination gate |
+| | `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD` | `0.5` | Min requirement coverage ratio to survive the Phase 4 elimination gate |
+| **Phase 5 Reranker** | `RERANKER_REMOTE_BASE_URL` / `_MODEL` | — | Remote BGE cross-encoder server & `BAAI/bge-reranker-v2-m3` |
 | | `RERANK_BATCH_SIZE` / `RERANK_CONCURRENT_REQUESTS` | `128` / `6` | Docs per rerank HTTP request / requests in flight |
 | | `RERANKER_MAX_CONTEXT_TOKENS` / `_TOKEN_SAFETY_MARGIN` | `4096` / `16` | Combined query+doc token budget per request |
-| **Phase 7 Scoring** | `FINAL_SCORE_THRESHOLD` | `7.0` | Minimum 0–10 final score to appear in results |
+| **Phase 6 Scoring** | `FINAL_SCORE_THRESHOLD` | `7.0` | Minimum 0–10 final score to appear in results |
 | | `FINAL_WEIGHT_RELATIONSHIP/REQUIREMENT/RERANKER/RETRIEVAL` | `0.45 / 0.25 / 0.20 / 0.10` | Multi-signal scoring weights (must sum to 1.0) |
 | **Highlighting** | `HIGHLIGHT_SENTENCE_THRESHOLD` / `_STRONG_THRESHOLD` | `0.02` / `0.25` | Cross-encoder sentence score cutoffs for highlighting |
 | | `HIGHLIGHT_MIN_SENTENCE_CHARS` / `_WORDS` | `8` / `4` | Minimum sentence size scored for highlighting |
@@ -252,24 +236,23 @@ rag_demo/
 │   │   ├── prompt.py                   # Query-understanding system prompt
 │   │   ├── field_mapping.py            # Filterable metadata field allowlist
 │   │   └── normalizer.py               # Country / organization name normalization
-│   ├── retrieval/                      # Phases 2-4: candidate + evidence retrieval
-│   │   ├── retriever.py                # CandidateRetriever: multi-view vector search (Phase 2)
+│   ├── retrieval/                      # Phases 2-3: candidate retrieval + metadata filtering
+│   │   ├── retriever.py                # CandidateRetriever: multi-view vector search, full chunk text kept (Phase 2)
 │   │   ├── views.py                    # Deterministic original/semantic/structured view builder
 │   │   ├── filter_builder.py           # Metadata field -> Qdrant filter / payload key resolution
-│   │   ├── metadata_filter.py          # Strict-AND metadata constraint enforcement (Phase 3)
-│   │   └── evidence_retriever.py       # Bounded evidence chunk + neighbor retrieval (Phase 4)
+│   │   └── metadata_filter.py          # Strict-AND metadata constraint enforcement (Phase 3)
 │   ├── verification/
-│   │   └── verifier.py                 # RelationshipVerifier: cross-encoder coverage + elimination gate (Phase 5)
+│   │   └── verifier.py                 # RelationshipVerifier: cross-encoder coverage + elimination gate (Phase 4)
 │   ├── reranking/
-│   │   └── reranker.py                 # BGEReranker: cross-encoder reranking + highlighting (Phase 6)
+│   │   └── reranker.py                 # BGEReranker: cross-encoder reranking + highlighting (Phase 5)
 │   ├── highlighting/
 │   │   └── highlighter.py              # Sentence/term span highlighting used by the reranker
 │   ├── scoring/
-│   │   └── scorer.py                   # FinalScorer: weighted multi-signal scoring (Phase 7)
+│   │   └── scorer.py                   # FinalScorer: weighted multi-signal scoring (Phase 6)
 │   ├── models/                         # Pydantic dataclasses & schema definitions
 │   │   ├── parsed_query.py             # ParsedQuery, SemanticRelationship, ConceptAttribute, MetadataFilter
 │   │   ├── candidate.py                # CandidateChunk, CandidatePatent, (Filtered)CandidateRetrievalResult
-│   │   ├── evidence.py                 # EvidenceChunk, PatentEvidence, EvidenceRetrievalResult
+│   │   ├── evidence.py                 # EvidenceChunk, PatentEvidence, EvidenceRetrievalResult (built in-memory from Phase 2/3 candidates, not its own phase)
 │   │   ├── verification.py             # RelationshipVerification, RequirementVerification, VerificationBatchResult
 │   │   ├── reranking.py                # RerankedEvidenceChunk, RerankedPatentResult, ChunkHighlight
 │   │   ├── scoring.py                  # FinalPatentResult, ScoreBreakdown, FinalSearchResult
@@ -277,7 +260,7 @@ rag_demo/
 │   │   ├── patent_chunk.py             # PatentChunk dataclass (ingestion)
 │   │   └── patent_document.py          # Raw parsed PatentDocument dataclass (ingestion)
 │   ├── api/
-│   │   ├── main.py                     # FastAPI server: streams the 7-phase pipeline as NDJSON
+│   │   ├── main.py                     # FastAPI server: streams the 6-phase pipeline as NDJSON
 │   │   ├── schemas.py                  # Request/response Pydantic models
 │   │   ├── history.py                  # Search history endpoints (PostgreSQL)
 │   │   ├── settings.py                 # UI appearance settings endpoints
@@ -294,7 +277,7 @@ rag_demo/
 │   ├── embedder.py                     # Remote vLLM embedding client
 │   ├── qdrant_db.py                    # Qdrant client: collection discovery, search, metadata I/O
 │   ├── ingest.py                       # Five-stage concurrent ingestion pipeline
-│   └── semantic_search.py              # SearchPipeline: orchestrates Phases 1-7
+│   └── semantic_search.py              # SearchPipeline: orchestrates Phases 1-6
 ├── frontend/                           # Vite + React + TypeScript UI (see frontend/README.md)
 ├── docker-compose.yml                  # Qdrant + PostgreSQL + Adminer + API (production-style)
 ├── docker-compose.override.yml         # Dev overrides: hot-reload API + Vite dev server

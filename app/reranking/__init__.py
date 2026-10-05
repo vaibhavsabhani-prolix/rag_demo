@@ -1,5 +1,5 @@
 """
-Phase 6: BGE Cross-Encoder Reranking Module
+Phase 5: BGE Cross-Encoder Reranking Module
 """
 
 from app.reranking.reranker import BGEReranker

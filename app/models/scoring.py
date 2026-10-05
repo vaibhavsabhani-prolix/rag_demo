@@ -1,8 +1,8 @@
 """
-Phase 7 Final Patent Scoring & Result Selection Data Models
+Phase 6 Final Patent Scoring & Result Selection Data Models
 
 Structured models for component score breakdowns, final scored patent results,
-and complete Phase 7 search results.
+and complete Phase 6 search results.
 """
 
 from typing import Any, Dict, List, Optional
@@ -70,7 +70,7 @@ class ScoreBreakdown(BaseModel):
 class FinalPatentResult(BaseModel):
     """
     A candidate patent with final computed score, score breakdown,
-    and all preserved Phase 5 verification and Phase 6 evidence data.
+    and all preserved Phase 4 verification and Phase 5 evidence data.
     """
     model_config = ConfigDict(extra="ignore")
 
@@ -112,7 +112,7 @@ class FinalPatentResult(BaseModel):
     )
     candidate_score: float = Field(
         default=0.0,
-        description="Phase 2 / Phase 4 retrieval score."
+        description="Phase 2 retrieval score."
     )
     supported_count: int = Field(default=0, description="Count of supported relationships.")
     unsupported_count: int = Field(default=0, description="Count of unsupported relationships.")
@@ -120,11 +120,11 @@ class FinalPatentResult(BaseModel):
     unknown_count: int = Field(default=0, description="Count of unknown relationships.")
     relationships: List[RelationshipVerification] = Field(
         default_factory=list,
-        description="List of verified relationships from Phase 5."
+        description="List of verified relationships from Phase 4."
     )
     requirements: List[RequirementVerification] = Field(
         default_factory=list,
-        description="List of verified requirements from Phase 5."
+        description="List of verified requirements from Phase 4."
     )
     evidence: List[RerankedEvidenceChunk] = Field(
         default_factory=list,
@@ -134,7 +134,7 @@ class FinalPatentResult(BaseModel):
 
 class FinalSearchResult(BaseModel):
     """
-    Complete output produced by Phase 7 Final Patent Scoring & Result Selection.
+    Complete output produced by Phase 6 Final Patent Scoring & Result Selection.
     """
     model_config = ConfigDict(extra="ignore")
 
@@ -144,7 +144,7 @@ class FinalSearchResult(BaseModel):
     )
     total_candidates_evaluated: int = Field(
         default=0,
-        description="Total candidate patents evaluated in Phase 7."
+        description="Total candidate patents evaluated in Phase 6."
     )
     passed_threshold_count: int = Field(
         default=0,

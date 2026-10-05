@@ -1,5 +1,5 @@
 """
-Phase 7: Final Patent Scoring & Result Selection Engine
+Phase 6: Final Patent Scoring & Result Selection Engine
 
 Computes deterministic, multi-signal final patent scores (0.0 to 10.0 scale)
 combining relationship verification, requirement satisfaction, BGE cross-encoder
@@ -13,7 +13,7 @@ Key guarantees:
 - Strict weight validation: weights must sum to 1.0 (within 1e-6 tolerance).
 - Descending score sorting; all qualifying patents returned (no fixed count cap).
 - Complete explainability via ScoreBreakdown.
-- Full preservation of Phase 5 verification and Phase 6 evidence data.
+- Full preservation of Phase 4 verification and Phase 5 evidence data.
 """
 
 import logging
@@ -61,7 +61,7 @@ def clamp(value: float, min_val: float = 0.0, max_val: float = 1.0) -> float:
 
 class FinalScorer:
     """
-    Phase 7 Final Patent Scoring and Result Selection Engine.
+    Phase 6 Final Patent Scoring and Result Selection Engine.
     """
 
     def __init__(
@@ -140,7 +140,7 @@ class FinalScorer:
         is_metadata_only: bool = False,
     ) -> FinalSearchResult:
         """
-        Evaluate all candidate patents from Phase 6, compute final scores,
+        Evaluate all candidate patents from Phase 5, compute final scores,
         filter by FINAL_SCORE_THRESHOLD, and sort descending. All qualifying
         patents are returned (no fixed result count cap).
 
@@ -150,7 +150,7 @@ class FinalScorer:
         then trivially 1.0 (nothing to verify or rank against) and evidence
         wasn't chosen for relevance, so a computed score would just be noise
         dressed up as a number. Every matching patent is returned unscored
-        and unranked instead, in the order Phase 6 delivered them.
+        and unranked instead, in the order Phase 5 delivered them.
         """
         t_start = time.perf_counter()
 
@@ -202,7 +202,7 @@ class FinalScorer:
 
         scoring_time_ms = (time.perf_counter() - t_scoring_start) * 1000
 
-        # 2. Metadata-only: every match qualifies, in Phase 6's order - there's no
+        # 2. Metadata-only: every match qualifies, in Phase 5's order - there's no
         #    score to threshold or sort by. Otherwise filter by FINAL_SCORE_THRESHOLD
         #    and sort descending.
         t_filter_start = time.perf_counter()

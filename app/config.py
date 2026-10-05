@@ -101,14 +101,7 @@ PATENT_VIEW_URL_TEMPLATE = "https://www.qubeip.com/en/patent-view/{patent_id}"
 # Phase 2 Retrieval configuration
 RETRIEVAL_TOP_K_CHUNKS = 300
 
-# Phase 4 Bounded Evidence Retrieval configuration
-# No per-patent chunk cap by design - every matched chunk and its neighbors
-# are kept; EVIDENCE_GLOBAL_TOP_K_CHUNKS is the only ceiling, applied across
-# the whole candidate batch during the Qdrant vector fetch.
-EVIDENCE_NEIGHBOR_CHUNKS = 1
-EVIDENCE_GLOBAL_TOP_K_CHUNKS = 1000
-
-# Phase 5 Relationship Verification configuration
+# Phase 4 Relationship Verification configuration
 # Minimum cross-encoder relevance score required to mark a relationship/requirement as
 # SUPPORTED. Was 0.05, which is far too permissive for a BGE cross-encoder — near-zero
 # scores would still pass, letting patents that only share generic terms (e.g. "method",
@@ -119,12 +112,12 @@ EVIDENCE_GLOBAL_TOP_K_CHUNKS = 1000
 VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD = 0.35
 VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD = 0.35
 # Minimum relationship_coverage / requirement_coverage a candidate must reach to
-# survive Phase 5. A candidate below either cutoff is eliminated here and never
-# reaches Phase 6/7, instead of just being scored lower.
+# survive Phase 4. A candidate below either cutoff is eliminated here and never
+# reaches Phase 5/6, instead of just being scored lower.
 VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD = 0.5
 VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD = 0.5
 
-# Phase 7 Final Patent Scoring & Result Selection configuration
+# Phase 6 Final Patent Scoring & Result Selection configuration
 # Minimum final patent score required for a patent to appear in final results (0.0 to 10.0 scale).
 # All qualifying patents are returned (no fixed top-K cap) — change this value to raise/lower the bar.
 FINAL_SCORE_THRESHOLD = 7.0
@@ -135,7 +128,7 @@ FINAL_WEIGHT_REQUIREMENT = 0.25
 FINAL_WEIGHT_RERANKER = 0.20
 FINAL_WEIGHT_RETRIEVAL = 0.10
 
-# Query match highlighting (computed in Phase 6 reranking)
+# Query match highlighting (computed in Phase 5 reranking)
 # BGE cross-encoder score of each chunk sentence against the reranking query.
 # Scores are sigmoid-shaped. Measured on a real "television" search (2087
 # sentences): sentences mentioning TV had deciles 0.006-0.13, all others

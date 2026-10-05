@@ -1,8 +1,8 @@
 """
-Phase 6 BGE Reranking Data Models
+Phase 5 BGE Reranking Data Models
 
 Structured models for evidence chunk reranking scores, patent-level
-intermediate reranker aggregations, and Phase 6 batch results.
+intermediate reranker aggregations, and Phase 5 batch results.
 """
 
 from typing import Any, Dict, List, Optional
@@ -43,7 +43,7 @@ class RerankedEvidenceChunk(BaseModel):
     text: str = Field(default="", description="Text of the evidence chunk.")
     retrieval_score: float = Field(
         default=0.0,
-        description="Vector similarity or retrieval score from Phase 4."
+        description="Vector similarity or retrieval score from Phase 2."
     )
     retrieval_source: str = Field(
         default="evidence_query",
@@ -64,8 +64,8 @@ class RerankedEvidenceChunk(BaseModel):
 
 class RerankedPatentResult(BaseModel):
     """
-    Candidate patent with Phase 5 verification results and Phase 6 reranker scores.
-    Preserves all Phase 5 relationship and requirement verification results.
+    Candidate patent with Phase 4 verification results and Phase 5 reranker scores.
+    Preserves all Phase 4 relationship and requirement verification results.
     """
     model_config = ConfigDict(extra="ignore")
 
@@ -76,27 +76,27 @@ class RerankedPatentResult(BaseModel):
     )
     candidate_score: float = Field(
         default=0.0,
-        description="Phase 2 / Phase 4 retrieval score."
+        description="Phase 2 retrieval score."
     )
     relationship_coverage: float = Field(
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Proportion of requested relationships supported by evidence (from Phase 5)."
+        description="Proportion of requested relationships supported by evidence (from Phase 4)."
     )
     requirement_coverage: float = Field(
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Proportion of requested requirements supported by evidence (from Phase 5)."
+        description="Proportion of requested requirements supported by evidence (from Phase 4)."
     )
     relationships: List[RelationshipVerification] = Field(
         default_factory=list,
-        description="List of verified relationships from Phase 5."
+        description="List of verified relationships from Phase 4."
     )
     requirements: List[RequirementVerification] = Field(
         default_factory=list,
-        description="List of verified requirements from Phase 5."
+        description="List of verified requirements from Phase 4."
     )
     supported_count: int = Field(default=0, description="Count of supported relationships.")
     unsupported_count: int = Field(default=0, description="Count of unsupported relationships.")
@@ -118,7 +118,7 @@ class RerankedPatentResult(BaseModel):
 
 class RerankBatchResult(BaseModel):
     """
-    Complete output produced by Phase 6 BGE Reranking.
+    Complete output produced by Phase 5 BGE Reranking.
     """
     model_config = ConfigDict(extra="ignore")
 

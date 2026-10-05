@@ -2,7 +2,7 @@
 
 This document explains what happens, in order, from the moment a user types a
 query in the React web app ([frontend/](frontend/)) to the moment ranked patents are
-shown on screen. It covers the current 7-phase search pipeline only. For how
+shown on screen. It covers the current 6-phase search pipeline only. For how
 patents get chunked, embedded, and indexed into Qdrant in the first place, see
 [INDEXING_README.md](INDEXING_README.md).
 
@@ -26,25 +26,28 @@ Phase 2  Candidate Retrieval            (vector search, Qdrant)      → Candida
 Phase 3  Metadata Filtering             (deterministic, no I/O)      → FilteredCandidateResult
        │
        ▼
-Phase 4  Bounded Evidence Retrieval     (vector search, Qdrant)      → EvidenceRetrievalResult
+Phase 4  Relationship/Requirement Verification (cross-encoder)       → VerificationBatchResult
        │
        ▼
-Phase 5  Relationship/Requirement Verification (cross-encoder)       → VerificationBatchResult
+Phase 5  BGE Cross-Encoder Reranking    (cross-encoder)              → RerankBatchResult
        │
        ▼
-Phase 6  BGE Cross-Encoder Reranking    (cross-encoder)              → RerankBatchResult
-       │
-       ▼
-Phase 7  Final Scoring & Selection      (deterministic, no I/O)      → FinalSearchResult
+Phase 6  Final Scoring & Selection      (deterministic, no I/O)      → FinalSearchResult
        │
        ▼
 Ranked patent cards on screen
 ```
 
 Only two things ever call an external model over the network: **Phase 1**
-(one LLM call) and **Phase 5 + Phase 6** (a shared BGE cross-encoder server).
+(one LLM call) and **Phase 4 + Phase 5** (a shared BGE cross-encoder server).
 Every other phase is pure Python running against data already in memory or
 in Qdrant.
+
+There is no separate evidence-retrieval phase: Phase 4 and Phase 5 score the
+same chunk text Phase 2 already fetched for each Phase-3-surviving candidate.
+`_candidates_to_evidence_result()` in `app/semantic_search.py` reshapes that
+data in memory between Phase 3 and Phase 4 — zero new Qdrant calls happen
+there.
 
 ---
 
@@ -379,77 +382,7 @@ Rendered as **Phase 3: Metadata Filtering & Constraint Enforcement**.
 
 ---
 
-## Phase 4 — Bounded Evidence Retrieval
-
-**Module:** `app/retrieval/evidence_retriever.py` (`EvidenceRetriever.retrieve_evidence`)
-**Config:** `EVIDENCE_CHUNKS_PER_PATENT=5`, `EVIDENCE_NEIGHBOR_CHUNKS=1`, `EVIDENCE_GLOBAL_TOP_K_CHUNKS=1000`
-
-Phase 2 only surfaced whichever chunk happened to score best per view — this
-phase fetches a small, focused bundle of the *most relevant* text per
-surviving candidate, which downstream verification/reranking will actually
-read.
-
-```text
-PHASE 4 — BOUNDED EVIDENCE RETRIEVAL
-
-  Phase 3 Output (surviving candidates)
-               ↓
-  Build ONE evidence query
-  (semantic_query + relationships + requirements + concepts)
-               ↓
-  Seed pool with chunks Phase 2 already fetched
-  (retrieval_source = "initial_candidate")
-               ↓
-  Embed evidence query (one HTTP call)
-               ↓
-  Vector search — restricted to surviving candidates' patent_ids
-  (bounded to candidates × chunks_per_patent × 2,
-   capped at EVIDENCE_GLOBAL_TOP_K_CHUNKS)
-               ↓
-  Merge into pool
-  (retrieval_source = "evidence_query")
-               ↓
-  Fetch neighbor chunks (±1) in ONE batched scroll
-  (retrieval_source = "neighbor")
-               ↓
-  Sort chunks per patent:
-  direct evidence first, then neighbors, by score
-               ↓
-  Keep top 5 chunks per patent
-               ↓
-  PHASE 4 OUTPUT
-
-  EvidenceRetrievalResult
-  (each surviving patent → up to 5 evidence chunks)
-               ↓
-        Send to Phase 5
-```
-
-1. **Build one evidence query** (`build_evidence_query`) — deterministic
-   concatenation of `semantic_query`, relationships, requirements, and
-   concepts (no LLM call).
-2. **Seed with what Phase 2 already fetched** — chunk text already in hand
-   from Phase 2 goes in first (`retrieval_source="initial_candidate"`).
-3. **One more vector search**, restricted by `patent_id` to only the
-   surviving candidates, using the evidence query's embedding — bounded to
-   `min(candidates × chunks_per_patent × 2, EVIDENCE_GLOBAL_TOP_K_CHUNKS)`
-   total hits (`retrieval_source="evidence_query"`).
-4. **Pull neighbor chunks** — for every chunk collected so far, its immediate
-   textual neighbors (±`EVIDENCE_NEIGHBOR_CHUNKS`) are fetched in one batched
-   Qdrant `scroll` call, so a matching chunk's surrounding context isn't lost
-   mid-sentence (`retrieval_source="neighbor"`, scored slightly below its anchor).
-5. **Bound per patent** — chunks are sorted (direct evidence before
-   neighbors, by score) and truncated to `EVIDENCE_CHUNKS_PER_PATENT` (5) per patent.
-
-Every patent entering Phase 5 carries at most 5 chunks of text — enough for
-the cross-encoder stages to judge it without shipping a patent's entire
-(potentially thousands-of-chunks) document.
-
-Rendered as **Phase 4: Bounded Evidence Retrieval**.
-
----
-
-## Phase 5 — Semantic Relationship & Requirement Verification
+## Phase 4 — Semantic Relationship & Requirement Verification
 
 **Module:** `app/verification/verifier.py` (`RelationshipVerifier.verify_candidates`)
 **Config:** `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD=0.35`, `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD=0.35`, `VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD=0.5`, `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD=0.5`
@@ -457,9 +390,15 @@ Rendered as **Phase 4: Bounded Evidence Retrieval**.
 This is the **precision gate** — the phase responsible for deciding, patent
 by patent, whether the query's specific relationships and requirements are
 actually backed by evidence text, as opposed to the patent merely sharing
-generic vocabulary with the query. Unlike earlier phases, Phase 5 actually
+generic vocabulary with the query. Unlike earlier phases, Phase 4 actually
 **eliminates** candidates — a patent whose coverage falls below the
-configured threshold never reaches Phase 6/7.
+configured threshold never reaches Phase 5/6.
+
+There is no separate evidence-retrieval step feeding this phase: the
+"evidence chunks" scored below are the same chunk text Phase 2 already
+fetched for each Phase-3-surviving candidate, reshaped in memory
+(`_candidates_to_evidence_result()` in `app/semantic_search.py`) right before
+this phase runs — zero new Qdrant calls happen between Phase 3 and Phase 4.
 
 > Past bug fixed: the support threshold used to be a hardcoded `0.05`, which
 > is far too permissive for a BGE cross-encoder — near-zero relevance scores
@@ -470,9 +409,10 @@ configured threshold never reaches Phase 6/7.
 > are now real config values in `app/config.py` instead of magic numbers.
 
 ```text
-PHASE 5 — RELATIONSHIP & REQUIREMENT VERIFICATION
+PHASE 4 — RELATIONSHIP & REQUIREMENT VERIFICATION
 
-  Phase 4 Output (every surviving candidate, no cap)
+  Phase 3 Output (every surviving candidate, no cap;
+  evidence chunks reused directly from Phase 2)
                ↓
     is_metadata_only OR no relationships/requirements?
     ┌──────────┴──────────┐
@@ -507,27 +447,27 @@ PHASE 5 — RELATIONSHIP & REQUIREMENT VERIFICATION
                ELIMINATED      Keep
     └──────────┬──────────────────┘
                ↓
-  PHASE 5 OUTPUT
+  PHASE 4 OUTPUT
 
   VerificationBatchResult
   (surviving patents only + coverage ratios +
    per-relationship/requirement verdicts + eliminated_count)
                ↓
-        Send to Phase 6
+        Send to Phase 5
 ```
 
 Skipped entirely (auto-pass, coverage = 1.0) when the query is metadata-only
 or carries no relationships/requirements — there's nothing to verify.
 
-Otherwise, for **every** Phase 4 candidate (no cap — `VERIFICATION_MAX_CANDIDATES`
-was removed; Phase 5 now processes the full candidate set):
+Otherwise, for **every** Phase 3 candidate (no cap — `VERIFICATION_MAX_CANDIDATES`
+was removed; Phase 4 processes the full candidate set):
 
 1. **Build one hypothesis string per relationship** — e.g.
    `"manufacturing method produces water (process for making water)"`.
 2. **Build one hypothesis string per requirement** — the requirement's own text.
 3. **Batch cross-encoder scoring** — every hypothesis is scored against every
    evidence chunk of every candidate in batched calls to the same BGE
-   reranker server used in Phase 6 (`_score_pairs_remote`).
+   reranker server used in Phase 5 (`_score_pairs_remote`).
 4. **Relationship verdict** — `SUPPORTED` purely if the best cross-encoder
    score across the candidate's chunks clears
    `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD`; `NOT_SUPPORTED` otherwise.
@@ -543,33 +483,33 @@ was removed; Phase 5 now processes the full candidate set):
 7. **Elimination gate** — a patent whose `relationship_coverage` or
    `requirement_coverage` falls below `VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD`
    / `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD` (0.5 each) is dropped
-   entirely (`eliminated_count` tracks how many) and never reaches Phase 6.
+   entirely (`eliminated_count` tracks how many) and never reaches Phase 5.
    There's no per-patent record of *why* a given patent was eliminated beyond
    its coverage numbers — only the aggregate count is kept.
 
 These two coverage numbers matter a lot downstream — together they make up
-**70% of the final score** in Phase 7 (`FINAL_WEIGHT_RELATIONSHIP` +
+**70% of the final score** in Phase 6 (`FINAL_WEIGHT_RELATIONSHIP` +
 `FINAL_WEIGHT_REQUIREMENT` = 0.45 + 0.25), so getting the support threshold
 right here is the single highest-leverage knob for search precision.
 
-Rendered as **Phase 5: Semantic Relationship Verification**.
+Rendered as **Phase 4: Semantic Relationship Verification**.
 
 ---
 
-## Phase 6 — BGE Cross-Encoder Reranking
+## Phase 5 — BGE Cross-Encoder Reranking
 
 **Module:** `app/reranking/reranker.py` (`BGEReranker.rerank_candidates`)
 **Config:** `RERANKER_REMOTE_BASE_URL`/`_MODEL` (`BAAI/bge-reranker-v2-m3`), `RERANK_BATCH_SIZE=128`, `RERANK_CONCURRENT_REQUESTS=6`, `RERANKER_MAX_CONTEXT_TOKENS=4096`
 
-Where Phase 5 asks "is the query's *structure* (relationships/requirements)
-satisfied?", Phase 6 asks a simpler, complementary question: "how relevant
+Where Phase 4 asks "is the query's *structure* (relationships/requirements)
+satisfied?", Phase 5 asks a simpler, complementary question: "how relevant
 is this evidence text to the query overall?" — a general cross-encoder
 relevance score, independent of the structured verification above.
 
 ```text
-PHASE 6 — BGE CROSS-ENCODER RERANKING
+PHASE 5 — BGE CROSS-ENCODER RERANKING
 
-  Phase 5 Output (verified candidates)
+  Phase 4 Output (verified candidates)
                ↓
   Reranking query = user's original query, verbatim
                ↓
@@ -586,13 +526,13 @@ PHASE 6 — BGE CROSS-ENCODER RERANKING
   best_reranker_score = MAX(chunk scores) per patent
   avg_reranker_score  = AVG(chunk scores) per patent
                ↓
-  PHASE 6 OUTPUT
+  PHASE 5 OUTPUT
 
   RerankBatchResult
   (best/avg reranker score per patent;
-   Phase 5 verification data carried forward unchanged)
+   Phase 4 verification data carried forward unchanged)
                ↓
-        Send to Phase 7
+        Send to Phase 6
 ```
 
 1. **Set the reranking query** — the user's `original_query`, used verbatim.
@@ -611,15 +551,15 @@ PHASE 6 — BGE CROSS-ENCODER RERANKING
 5. **Resilient to failure** — if every reranker endpoint fails, chunks fall
    back to a `0.0` score rather than crashing the whole search.
 
-All of Phase 5's verification data (relationships, requirements, coverage
-counts) is carried forward unchanged into `RerankedPatentResult` — Phase 6
+All of Phase 4's verification data (relationships, requirements, coverage
+counts) is carried forward unchanged into `RerankedPatentResult` — Phase 5
 only adds the cross-encoder score, it doesn't recompute or discard anything.
 
-Rendered as **Phase 6: BGE Cross-Encoder Reranking**.
+Rendered as **Phase 5: BGE Cross-Encoder Reranking**.
 
 ---
 
-## Phase 7 — Final Patent Scoring & Result Selection
+## Phase 6 — Final Patent Scoring & Result Selection
 
 **Module:** `app/scoring/scorer.py` (`FinalScorer.score_and_rank`)
 **Config:** `FINAL_SCORE_THRESHOLD`, `FINAL_WEIGHT_RELATIONSHIP=0.45`, `FINAL_WEIGHT_REQUIREMENT=0.25`, `FINAL_WEIGHT_RERANKER=0.20`, `FINAL_WEIGHT_RETRIEVAL=0.10`
@@ -629,9 +569,9 @@ every signal collected so far into one 0–10 score per patent, then decides
 what actually gets shown.
 
 ```text
-PHASE 7 — FINAL PATENT SCORING & RESULT SELECTION
+PHASE 6 — FINAL PATENT SCORING & RESULT SELECTION
 
-  Phase 6 Output (reranked + verified candidates)
+  Phase 5 Output (reranked + verified candidates)
                ↓
   For each candidate, compute 4 components (0.0 – 1.0):
     relationship_score   (forced to 0 if CONTRADICTED)
@@ -657,7 +597,7 @@ Qualify                  Reject
                ↓
   Sort qualifying patents descending by final_score
                ↓
-  PHASE 7 OUTPUT
+  PHASE 6 OUTPUT
 
   FinalSearchResult
   (ALL qualifying patents, no fixed top-N cap,
@@ -666,14 +606,14 @@ Qualify                  Reject
   Rendered as ranked patent result cards
 ```
 
-For every candidate that made it through Phase 6:
+For every candidate that made it through Phase 5:
 
 1. **Four normalized (0.0–1.0) component scores:**
-   - `relationship_score` = Phase 5's `relationship_coverage`, forced to
+   - `relationship_score` = Phase 4's `relationship_coverage`, forced to
      `0.0` if the patent had **any** `CONTRADICTED` relationship — an
      explicit contradiction overrides whatever coverage ratio it otherwise had.
-   - `requirement_score` = Phase 5's `requirement_coverage`.
-   - `reranker_score` = Phase 6's `best_reranker_score`.
+   - `requirement_score` = Phase 4's `requirement_coverage`.
+   - `reranker_score` = Phase 5's `best_reranker_score`.
    - `retrieval_score` = Phase 2's original `candidate_score` (the initial
      embedding-similarity signal, carried all the way through).
 2. **Weighted sum on a 0–10 scale:**
@@ -694,17 +634,17 @@ For every candidate that made it through Phase 6:
    how many results are shown.
 5. **Full explainability** — every result carries a `ScoreBreakdown` (each
    component's raw value and its weighted contribution) plus every Phase
-   5/6 relationship, requirement, and evidence chunk that produced it, so
+   4/5 relationship, requirement, and evidence chunk that produced it, so
    the UI can show exactly *why* a patent scored what it did.
 
-Rendered as **Phase 7: Final Patent Scoring & Result Selection**, followed by
+Rendered as **Phase 6: Final Patent Scoring & Result Selection**, followed by
 the patent result cards themselves.
 
 ---
 
 ## Why a patent can rank highly for the wrong reason (and how to fix it)
 
-Because 70% of the final score comes from Phase 5's coverage ratios, and
+Because 70% of the final score comes from Phase 4's coverage ratios, and
 those ratios are threshold-gated cross-encoder judgments, the single biggest
 lever for search precision is
 `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD` / `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD`
@@ -718,7 +658,7 @@ in `app/config.py`:
 
 The relationship support decision is now a pure cross-encoder score check
 (the prior deterministic word-proximity override was removed — see the
-Phase 5 section above), so a `SUPPORTED` verdict always reflects what the
+Phase 4 section above), so a `SUPPORTED` verdict always reflects what the
 cross-encoder judged, never a coincidental word co-occurrence overriding it.
 
 That said, the verification layer only checks "does the cross-encoder think
@@ -733,21 +673,21 @@ document without ever describing the same component. Treat a `SUPPORTED`
 relationship as "the query's words are grounded in this evidence," not as
 "this exact claim is true," especially for compound technical terms.
 
-The next lever is `FINAL_SCORE_THRESHOLD` in Phase 7 — it decides how many
+The next lever is `FINAL_SCORE_THRESHOLD` in Phase 6 — it decides how many
 of the qualifying patents actually get shown at all, independent of how they
 were scored.
 
-Finally, the Phase 5 **elimination gate**
+Finally, the Phase 4 **elimination gate**
 (`VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD` / `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD`,
-0.5 each) means a patent can pass Phase 2-4 with a strong embedding/metadata
-match and still never reach Phase 6/7 if too few of its relationships or
+0.5 each) means a patent can pass Phase 2-3 with a strong embedding/metadata
+match and still never reach Phase 5/6 if too few of its relationships or
 requirements clear the support threshold. There's no per-patent record of
 *why* a patent was eliminated — only the aggregate `eliminated_count` on
 `VerificationBatchResult` — so if a known-relevant patent is missing from
 results, check its individual relationship/requirement scores against the
 support threshold before assuming it's a retrieval problem upstream.
-Phase 5 itself has no candidate cap anymore (`VERIFICATION_MAX_CANDIDATES`
-was removed) — every Phase 4 survivor is verified.
+Phase 4 itself has no candidate cap anymore (`VERIFICATION_MAX_CANDIDATES`
+was removed) — every Phase 3 survivor is verified.
 
 ---
 

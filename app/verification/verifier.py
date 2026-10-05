@@ -1,9 +1,9 @@
 """
-Phase 5: High-Speed Semantic Relationship & Requirement Verification Engine
+Phase 4: High-Speed Semantic Relationship & Requirement Verification Engine
 
 Performs fast (< 500ms), GPU-accelerated semantic verification of candidate
 patent evidence against requested directed relationships and requirements using
-cross-encoder semantic entailment and deterministic span proximity.
+cross-encoder semantic entailment.
 
 Eliminates slow LLM latency while maintaining high precision for compositional
 patent matching.
@@ -64,8 +64,8 @@ def _tokenize_terms(text: str) -> List[str]:
 
 class RelationshipVerifier:
     """
-    Phase 5 Fast Semantic Relationship Verification Engine.
-    Uses GPU Cross-Encoder Entailment + Deterministic Span Proximity.
+    Phase 4 Fast Semantic Relationship Verification Engine.
+    Uses GPU Cross-Encoder Entailment.
     """
 
     def __init__(
@@ -310,7 +310,7 @@ class RelationshipVerifier:
             req_cov = calculate_requirement_coverage(req_verifications)
 
             # Eliminate candidates whose coverage falls below the configured
-            # threshold - they never reach Phase 6/7, instead of just scoring low.
+            # threshold - they never reach Phase 5/6, instead of just scoring low.
             if (
                 rel_cov < self.relationship_coverage_threshold
                 or req_cov < self.requirement_coverage_threshold

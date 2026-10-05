@@ -7,7 +7,7 @@ import { ResultCard } from './ResultCard'
 export function ResultsView({ run }: { run: SearchRun }) {
   const dispatch = useAppDispatch()
   const { status } = run
-  const final = run.phases[7]
+  const final = run.phases[6]
 
   if (!final) {
     if (status === 'running') {
