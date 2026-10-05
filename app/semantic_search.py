@@ -11,10 +11,9 @@ phase's typed result to the next:
     Phase 5  BGEReranker.rerank_candidates               -> RerankBatchResult
     Phase 6  FinalScorer.score_and_rank                  -> FinalSearchResult
 
-Phase 4 and 5 consume evidence chunks straight from Phase 2/3's candidate
-chunks (`_candidates_to_evidence_result`) — there is no separate evidence
-retrieval phase; Phase 2 already fetched the chunk text these phases need,
-so no new Qdrant calls happen between Phase 3 and Phase 4.
+Phase 4 and 5 consume Phase 3's surviving candidates directly — there is no
+separate evidence retrieval phase; Phase 2 already fetched the chunk text
+these phases need, so no new Qdrant calls happen between Phase 3 and Phase 4.
 
 Every phase-specific decision (thresholds, batching, prompt building, etc.)
 lives in that phase's own module — this file only sequences them and reports
@@ -23,11 +22,9 @@ can render each phase's result as soon as it is ready.
 """
 
 import time
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
-from app.models.candidate import CandidatePatent
 from app.models.collection import SearchCollection
-from app.models.evidence import EvidenceChunk, EvidenceRetrievalResult, PatentEvidence
 from app.models.parsed_query import ParsedQuery
 from app.models.scoring import FinalSearchResult
 from app.query_understanding.engine import QueryUnderstandingEngine
@@ -48,48 +45,6 @@ PHASE_NAMES = {
     5: "BGE Cross-Encoder Reranking",
     6: "Final Patent Scoring",
 }
-
-
-def _candidates_to_evidence_result(candidates: List[CandidatePatent]) -> EvidenceRetrievalResult:
-    """
-    Build the evidence structure Phase 4/5 consume directly from Phase 2/3's
-    candidate chunks — no new retrieval, just a reshape of data already fetched.
-    """
-    evidence_by_patent: dict[str, List[EvidenceChunk]] = {}
-    patent_evidence_list: List[PatentEvidence] = []
-    total_chunks = 0
-
-    for cand in candidates:
-        chunks = [
-            EvidenceChunk(
-                patent_id=cand.patent_id,
-                chunk_id=c.chunk_id,
-                text=c.text or "",
-                retrieval_score=c.score,
-                retrieval_source="candidate_retrieval",
-                section=c.section,
-                document_chunk_index=c.document_chunk_index,
-                token_count=c.token_count,
-            )
-            for c in cand.chunks
-        ]
-        evidence_by_patent[cand.patent_id] = chunks
-        patent_evidence_list.append(
-            PatentEvidence(
-                patent_id=cand.patent_id,
-                chunks=chunks,
-                metadata=cand.metadata,
-                candidate_score=cand.retrieval_score,
-            )
-        )
-        total_chunks += len(chunks)
-
-    return EvidenceRetrievalResult(
-        evidence_by_patent=evidence_by_patent,
-        patent_evidence_list=patent_evidence_list,
-        total_candidates=len(candidates),
-        total_evidence_chunks=total_chunks,
-    )
 
 
 class SearchPipeline:
@@ -167,19 +122,15 @@ class SearchPipeline:
         )
         self._emit(on_phase_complete, 3, filtered_result, (time.perf_counter() - t0) * 1000)
 
-        # Evidence for Phase 4/5 comes straight from Phase 2/3's candidate chunks —
-        # no new retrieval, so this isn't its own phase/callback.
-        evidence_result = _candidates_to_evidence_result(filtered_result.candidates)
-
         # Phase 4 — Semantic Relationship & Requirement Verification
         t0 = time.perf_counter()
-        verification_result = self.verifier.verify_candidates(parsed_query, evidence_result)
+        verification_result = self.verifier.verify_candidates(parsed_query, filtered_result.candidates)
         self._emit(on_phase_complete, 4, verification_result, (time.perf_counter() - t0) * 1000)
 
         # Phase 5 — BGE Cross-Encoder Reranking
         t0 = time.perf_counter()
         rerank_result = self.reranker.rerank_candidates(
-            parsed_query, verification_result, evidence_result
+            parsed_query, verification_result, filtered_result.candidates
         )
         self._emit(on_phase_complete, 5, rerank_result, (time.perf_counter() - t0) * 1000)
 

@@ -24,12 +24,10 @@ from app.config import (
     RERANKER_REMOTE_BASE_URL,
     RERANKER_REMOTE_MODEL,
     RERANKER_REQUEST_TIMEOUT,
-    VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD,
     VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD,
-    VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD,
     VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD,
 )
-from app.models.evidence import EvidenceChunk, EvidenceRetrievalResult, PatentEvidence
+from app.models.candidate import CandidateChunk, CandidatePatent
 from app.models.parsed_query import ParsedQuery, SemanticRelationship
 from app.models.verification import (
     PatentVerificationResult,
@@ -76,8 +74,6 @@ class RelationshipVerifier:
         timeout: Optional[float] = None,
         batch_size: int = RERANK_BATCH_SIZE,
         concurrent_requests: int = RERANK_CONCURRENT_REQUESTS,
-        relationship_coverage_threshold: float = VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD,
-        requirement_coverage_threshold: float = VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD,
     ):
         self.base_url = (base_url or RERANKER_REMOTE_BASE_URL).rstrip("/")
         self.model = model or RERANKER_REMOTE_MODEL
@@ -85,8 +81,6 @@ class RelationshipVerifier:
         self.timeout = timeout if timeout is not None else RERANKER_REQUEST_TIMEOUT
         self.batch_size = batch_size
         self.concurrent_requests = concurrent_requests
-        self.relationship_coverage_threshold = relationship_coverage_threshold
-        self.requirement_coverage_threshold = requirement_coverage_threshold
 
         # Persistent requests session for connection pooling
         self.session = requests.Session()
@@ -129,12 +123,12 @@ class RelationshipVerifier:
     def verify_candidates(
         self,
         parsed_query: ParsedQuery,
-        evidence_result: EvidenceRetrievalResult,
+        candidates: List[CandidatePatent],
     ) -> VerificationBatchResult:
 
         t_start = time.perf_counter()
 
-        target_candidates = evidence_result.patent_evidence_list
+        target_candidates = candidates
 
         if not target_candidates:
             total_time_ms = (time.perf_counter() - t_start) * 1000
@@ -164,7 +158,7 @@ class RelationshipVerifier:
                     contradicted_count=0,
                     unknown_count=0,
                     metadata=c.metadata,
-                    candidate_score=c.candidate_score,
+                    candidate_score=c.retrieval_score,
                 )
                 for c in target_candidates
             ]
@@ -190,8 +184,8 @@ class RelationshipVerifier:
         req_hypotheses: List[Tuple[int, str]] = [(idx, req.strip()) for idx, req in enumerate(requirements)]
 
         # 2. Gather all candidate evidence chunks
-        # Map: (patent_id, chunk_id) -> EvidenceChunk
-        all_chunks: List[Tuple[str, EvidenceChunk]] = []
+        # Map: (patent_id, chunk_id) -> CandidateChunk
+        all_chunks: List[Tuple[str, CandidateChunk]] = []
         for cand in target_candidates:
             for ch in cand.chunks:
                 all_chunks.append((cand.patent_id, ch))
@@ -200,7 +194,7 @@ class RelationshipVerifier:
         # Score each relationship hypothesis against all chunks
         # rel_scores: (rel_idx, patent_id, chunk_id) -> score
         rel_scores: Dict[Tuple[int, str, int], float] = {}
-        doc_texts = [f"Section: {ch.section}\n\n{ch.text}" if ch.section else ch.text for _, ch in all_chunks]
+        doc_texts = [f"Section: {ch.section}\n\n{ch.text or ''}" if ch.section else (ch.text or "") for _, ch in all_chunks]
 
         if rel_hypotheses and doc_texts:
             for r_idx, hyp_text, _, _, _ in rel_hypotheses:
@@ -218,6 +212,7 @@ class RelationshipVerifier:
 
         # 5. Evaluate each Candidate Patent
         verified_patents: List[PatentVerificationResult] = []
+        eliminated_patents: List[PatentVerificationResult] = []
         eliminated_count = 0
 
         for cand in target_candidates:
@@ -240,12 +235,10 @@ class RelationshipVerifier:
                 is_supported = best_score >= VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD
                 if is_supported and best_cid is not None:
                     status = "SUPPORTED"
-                    confidence = round(max(0.75, min(0.98, best_score * 2.0 if best_score > 0 else 0.85)), 2)
                     cids = [best_cid]
                     explanation = f"Verified in Chunk #{best_cid}"
                 else:
                     status = "NOT_SUPPORTED"
-                    confidence = 0.80
                     cids = []
                     explanation = "No evidence chunk sufficiently connects subject and object."
 
@@ -257,7 +250,7 @@ class RelationshipVerifier:
                         object=obj,
                         supported=is_supported,
                         status=status,
-                        confidence=confidence,
+                        score=round(best_score, 4),
                         evidence_chunk_ids=cids,
                         explanation=explanation,
                     )
@@ -273,7 +266,7 @@ class RelationshipVerifier:
 
                 for ch in chunks:
                     sc = req_scores.get((req_idx, pid, ch.chunk_id), 0.0)
-                    ch_words = set(_tokenize_terms(ch.text))
+                    ch_words = set(_tokenize_terms(ch.text or ""))
                     overlap = len(req_words & ch_words) / len(req_words) if req_words else 0.0
 
                     effective_score = max(sc, overlap * 0.5)
@@ -288,7 +281,7 @@ class RelationshipVerifier:
                             requirement_index=req_idx,
                             requirement=req_text,
                             supported=True,
-                            confidence=round(max(0.75, min(0.95, best_req_score * 2.0)), 2),
+                            score=round(best_req_score, 4),
                             evidence_chunk_ids=[best_req_cid],
                             explanation=f"Requirement supported in Chunk #{best_req_cid}",
                         )
@@ -299,45 +292,49 @@ class RelationshipVerifier:
                             requirement_index=req_idx,
                             requirement=req_text,
                             supported=False,
-                            confidence=0.80,
+                            score=round(best_req_score, 4),
                             evidence_chunk_ids=[],
                             explanation="Requirement not satisfied in candidate evidence.",
                         )
                     )
 
-            # Local Coverage Metrics
+            # Local Coverage Metrics (reported for visibility, not used to eliminate)
             rel_cov = calculate_relationship_coverage(rel_verifications)
             req_cov = calculate_requirement_coverage(req_verifications)
 
-            # Eliminate candidates whose coverage falls below the configured
-            # threshold - they never reach Phase 5/6, instead of just scoring low.
-            if (
-                rel_cov < self.relationship_coverage_threshold
-                or req_cov < self.requirement_coverage_threshold
-            ):
-                eliminated_count += 1
-                continue
+            # A candidate qualifies only if every requested relationship AND
+            # every requested requirement is individually supported.
+            all_rels_supported = all(r.supported for r in rel_verifications)
+            all_reqs_supported = all(r.supported for r in req_verifications)
+            qualified = all_rels_supported and all_reqs_supported
 
             sup_count = sum(1 for r in rel_verifications if r.supported)
             unsup_count = sum(1 for r in rel_verifications if r.status == "NOT_SUPPORTED")
             contra_count = sum(1 for r in rel_verifications if r.status == "CONTRADICTED")
             unk_count = sum(1 for r in rel_verifications if r.status == "UNKNOWN")
 
-            verified_patents.append(
-                PatentVerificationResult(
-                    patent_id=pid,
-                    relationships=rel_verifications,
-                    requirements=req_verifications,
-                    relationship_coverage=rel_cov,
-                    requirement_coverage=req_cov,
-                    supported_count=sup_count,
-                    unsupported_count=unsup_count,
-                    contradicted_count=contra_count,
-                    unknown_count=unk_count,
-                    metadata=cand.metadata,
-                    candidate_score=cand.candidate_score,
-                )
+            result = PatentVerificationResult(
+                patent_id=pid,
+                qualified=qualified,
+                relationships=rel_verifications,
+                requirements=req_verifications,
+                relationship_coverage=rel_cov,
+                requirement_coverage=req_cov,
+                supported_count=sup_count,
+                unsupported_count=unsup_count,
+                contradicted_count=contra_count,
+                unknown_count=unk_count,
+                metadata=cand.metadata,
+                candidate_score=cand.retrieval_score,
             )
+
+            # Eliminated candidates are kept (with their scores) for display,
+            # but they never reach Phase 5/6 - only verified_patents does.
+            if qualified:
+                verified_patents.append(result)
+            else:
+                eliminated_count += 1
+                eliminated_patents.append(result)
 
         total_time_ms = (time.perf_counter() - t_start) * 1000
         avg_ms = total_time_ms / len(target_candidates) if target_candidates else 0.0
@@ -348,6 +345,7 @@ class RelationshipVerifier:
 
         return VerificationBatchResult(
             verified_patents=verified_patents,
+            eliminated_patents=eliminated_patents,
             total_evaluated=len(verified_patents),
             fully_supported_count=fully_sup,
             partially_supported_count=partially_sup,

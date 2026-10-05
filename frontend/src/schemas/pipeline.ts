@@ -115,7 +115,7 @@ export const relationshipVerificationSchema = z.object({
   object: z.string(),
   supported: z.boolean(),
   status: z.string(),
-  confidence: z.number(),
+  score: z.number(),
   evidence_chunk_ids: z.array(z.number()),
   explanation: z.string().nullish(),
 })
@@ -124,7 +124,7 @@ export const requirementVerificationSchema = z.object({
   requirement_index: z.number(),
   requirement: z.string(),
   supported: z.boolean(),
-  confidence: z.number(),
+  score: z.number(),
   evidence_chunk_ids: z.array(z.number()),
   explanation: z.string().nullish(),
 })
@@ -138,6 +138,7 @@ const verificationCounts = {
 
 export const patentVerificationSchema = z.object({
   patent_id: z.string(),
+  qualified: z.boolean(),
   relationships: z.array(relationshipVerificationSchema),
   requirements: z.array(requirementVerificationSchema),
   relationship_coverage: z.number(),
@@ -149,6 +150,7 @@ export const patentVerificationSchema = z.object({
 
 export const verificationBatchSchema = z.object({
   verified_patents: z.array(patentVerificationSchema),
+  eliminated_patents: z.array(patentVerificationSchema),
   total_evaluated: z.number(),
   fully_supported_count: z.number(),
   partially_supported_count: z.number(),
@@ -262,6 +264,7 @@ export type CandidatePatent = z.infer<typeof candidatePatentSchema>
 export type EvidenceChunk = z.infer<typeof evidenceChunkSchema>
 export type RelationshipVerification = z.infer<typeof relationshipVerificationSchema>
 export type RequirementVerification = z.infer<typeof requirementVerificationSchema>
+export type PatentVerification = z.infer<typeof patentVerificationSchema>
 export type RerankedChunk = z.infer<typeof rerankedChunkSchema>
 export type ChunkHighlight = z.infer<typeof chunkHighlightSchema>
 export type ScoreBreakdown = z.infer<typeof scoreBreakdownSchema>

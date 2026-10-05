@@ -38,7 +38,7 @@ from app.config import (
     RERANKER_TOKEN_SAFETY_MARGIN,
 )
 from app.highlighting import build_chunk_highlight, extract_term_patterns, sentences_to_score
-from app.models.evidence import EvidenceChunk, EvidenceRetrievalResult
+from app.models.candidate import CandidateChunk, CandidatePatent
 from app.models.parsed_query import ParsedQuery
 from app.models.reranking import (
     RerankBatchResult,
@@ -258,7 +258,7 @@ class BGEReranker:
         self,
         parsed_query: ParsedQuery,
         verification_result: VerificationBatchResult,
-        evidence_result: EvidenceRetrievalResult,
+        candidates: List[CandidatePatent],
     ) -> RerankBatchResult:
         """
         Execute Phase 5 BGE Reranking across all verified candidates and their bounded evidence chunks.
@@ -286,10 +286,10 @@ class BGEReranker:
         doc_budget = max(64, self.max_context_tokens - query_tokens - self.safety_margin)
 
         # 3. Gather evidence chunks per candidate patent
-        evidence_by_patent: Dict[str, List[EvidenceChunk]] = evidence_result.evidence_by_patent
+        evidence_by_patent: Dict[str, List[CandidateChunk]] = {c.patent_id: c.chunks for c in candidates}
 
-        # List of items to rerank: (patent_id, chunk_index_in_patent, EvidenceChunk, formatted_text, was_truncated)
-        items_to_rerank: List[Tuple[str, int, EvidenceChunk, str, bool]] = []
+        # List of items to rerank: (patent_id, chunk_index_in_patent, CandidateChunk, formatted_text, was_truncated)
+        items_to_rerank: List[Tuple[str, int, CandidateChunk, str, bool]] = []
         truncated_count = 0
 
         for vpat in verified_patents:
@@ -354,9 +354,9 @@ class BGEReranker:
                     RerankedEvidenceChunk(
                         patent_id=pid,
                         chunk_id=ch.chunk_id,
-                        text=ch.text,
-                        retrieval_score=ch.retrieval_score,
-                        retrieval_source=ch.retrieval_source,
+                        text=ch.text or "",
+                        retrieval_score=ch.score,
+                        retrieval_source="candidate_retrieval",
                         section=ch.section,
                         document_chunk_index=ch.document_chunk_index,
                         token_count=ch.token_count,

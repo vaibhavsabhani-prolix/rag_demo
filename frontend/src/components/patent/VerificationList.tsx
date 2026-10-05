@@ -1,25 +1,24 @@
 import type { ReactNode } from 'react'
 import { Badge } from '@/components/ui'
-import { formatPercent } from '@/lib/format'
 import { verificationTone } from '@/lib/tone'
 import type { RelationshipVerification, RequirementVerification } from '@/schemas/pipeline'
 
 interface VerificationRowProps {
   label: ReactNode
   status: string
-  confidence: number
+  score: number
   explanation?: string | null
   chunkIds: number[]
 }
 
-function VerificationRow({ label, status, confidence, explanation, chunkIds }: VerificationRowProps) {
+function VerificationRow({ label, status, score, explanation, chunkIds }: VerificationRowProps) {
   return (
     <li className="py-2.5">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1 text-sm text-slate-800">{label}</div>
         <div className="flex shrink-0 items-center gap-1.5">
           <Badge tone={verificationTone(status)}>{status.replaceAll('_', ' ')}</Badge>
-          <span className="text-xs text-slate-500 tabular-nums">{formatPercent(confidence)}</span>
+          <span className="text-xs text-slate-500 tabular-nums">{score.toFixed(2)}</span>
         </div>
       </div>
       {explanation && <p className="mt-1 text-sm text-slate-500">{explanation}</p>}
@@ -44,7 +43,7 @@ export function RelationshipList({ items }: { items: RelationshipVerification[] 
             </>
           }
           status={r.status}
-          confidence={r.confidence}
+          score={r.score}
           explanation={r.explanation}
           chunkIds={r.evidence_chunk_ids}
         />
@@ -62,7 +61,7 @@ export function RequirementList({ items }: { items: RequirementVerification[] })
           key={r.requirement_index}
           label={r.requirement}
           status={r.supported ? 'SUPPORTED' : 'NOT_SUPPORTED'}
-          confidence={r.confidence}
+          score={r.score}
           explanation={r.explanation}
           chunkIds={r.evidence_chunk_ids}
         />

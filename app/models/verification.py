@@ -24,11 +24,11 @@ class RelationshipVerification(BaseModel):
         default="NOT_SUPPORTED",
         description="Status: 'SUPPORTED', 'NOT_SUPPORTED', 'CONTRADICTED', or 'UNKNOWN'."
     )
-    confidence: float = Field(
+    score: float = Field(
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Model confidence in this relationship verification."
+        description="Raw cross-encoder entailment score for the best-matching chunk — the exact value compared against VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD to decide `supported`."
     )
     evidence_chunk_ids: List[int] = Field(
         default_factory=list,
@@ -49,11 +49,11 @@ class RequirementVerification(BaseModel):
     requirement_index: int = Field(..., description="Index of the requirement in ParsedQuery.requirements.")
     requirement: str = Field(..., description="Requirement text statement.")
     supported: bool = Field(default=False, description="Whether evidence supports this requirement.")
-    confidence: float = Field(
+    score: float = Field(
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Model confidence in requirement verification."
+        description="Raw best-chunk match score (cross-encoder score, or word-overlap fallback) — the exact value compared against VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD to decide `supported`."
     )
     evidence_chunk_ids: List[int] = Field(
         default_factory=list,
@@ -72,6 +72,10 @@ class PatentVerificationResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     patent_id: str = Field(..., description="Unique patent identifier.")
+    qualified: bool = Field(
+        default=True,
+        description="Whether this patent qualified for Phase 5/6 (every relationship and requirement individually supported)."
+    )
     relationships: List[RelationshipVerification] = Field(
         default_factory=list,
         description="List of verified relationship results."
@@ -114,7 +118,11 @@ class VerificationBatchResult(BaseModel):
 
     verified_patents: List[PatentVerificationResult] = Field(
         default_factory=list,
-        description="List of verification results for all evaluated candidate patents."
+        description="Qualified candidate patents only - these carry on to Phase 5/6."
+    )
+    eliminated_patents: List[PatentVerificationResult] = Field(
+        default_factory=list,
+        description="Rejected candidate patents, with their per-relationship/requirement scores, kept for display so it's clear why each was eliminated. Does not carry on to Phase 5/6."
     )
     total_evaluated: int = Field(default=0, description="Total candidate patents verified.")
     fully_supported_count: int = Field(default=0, description="Candidates with 100% relationship coverage.")
@@ -122,7 +130,7 @@ class VerificationBatchResult(BaseModel):
     unsupported_count: int = Field(default=0, description="Candidates with 0% coverage.")
     eliminated_count: int = Field(
         default=0,
-        description="Candidates removed for falling below the relationship/requirement coverage threshold."
+        description="Candidates removed for not having every requested relationship and requirement individually supported."
     )
     timings: Dict[str, float] = Field(
         default_factory=dict,

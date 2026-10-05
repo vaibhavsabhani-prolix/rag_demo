@@ -111,11 +111,6 @@ RETRIEVAL_TOP_K_CHUNKS = 300
 # relevant patents are being excluded.
 VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD = 0.35
 VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD = 0.35
-# Minimum relationship_coverage / requirement_coverage a candidate must reach to
-# survive Phase 4. A candidate below either cutoff is eliminated here and never
-# reaches Phase 5/6, instead of just being scored lower.
-VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD = 0.5
-VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD = 0.5
 
 # Phase 6 Final Patent Scoring & Result Selection configuration
 # Minimum final patent score required for a patent to appear in final results (0.0 to 10.0 scale).
