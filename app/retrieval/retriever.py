@@ -13,7 +13,7 @@ import time
 import logging
 from typing import Any, Dict, List, Optional
 
-from qdrant_client.models import Filter
+from qdrant_client.models import Filter, QueryRequest
 
 from app.config import RETRIEVAL_TOP_K_CHUNKS
 from app.embedder import Embedder
@@ -130,27 +130,36 @@ class CandidateRetriever:
         text_to_vec = dict(zip(unique_texts, embeddings_list))
         embedding_time_ms = (time.perf_counter() - t_embed_start) * 1000
 
-        # Step 3: Search each view, collect chunk hits
+        # Step 3: Search all views concurrently in a single batched Qdrant request
         t_qdrant_start = time.perf_counter()
         raw_results_per_view: List[tuple[str, Any]] = []
         total_raw_hits = 0
 
+        view_names: List[str] = []
+        requests: List[QueryRequest] = []
         for view_name, view_text in views.items():
             vec = text_to_vec.get(view_text)
             if not vec:
                 continue
-
-            search_res = self.db.client.query_points(
-                collection_name=collection.chunks_collection,
-                query=vec,
-                limit=self.candidate_top_k,
-                with_payload=True,
+            view_names.append(view_name)
+            requests.append(
+                QueryRequest(
+                    query=vec,
+                    limit=self.candidate_top_k,
+                    with_payload=True,
+                )
             )
 
-            hits = search_res.points if hasattr(search_res, "points") else search_res
-            total_raw_hits += len(hits)
-            for hit in hits:
-                raw_results_per_view.append((view_name, hit))
+        if requests:
+            batch_results = self.db.client.query_batch_points(
+                collection_name=collection.chunks_collection,
+                requests=requests,
+            )
+            for view_name, search_res in zip(view_names, batch_results):
+                hits = search_res.points if hasattr(search_res, "points") else search_res
+                total_raw_hits += len(hits)
+                for hit in hits:
+                    raw_results_per_view.append((view_name, hit))
 
         qdrant_time_ms = (time.perf_counter() - t_qdrant_start) * 1000
 
