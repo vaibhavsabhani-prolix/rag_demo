@@ -1,5 +1,16 @@
 import { useState, type ReactNode } from 'react'
-import { Card, CardBody, CardHeader, DataTable, Stat, Tabs, type Column } from '@/components/ui'
+import {
+  Card,
+  CardBody,
+  CardHeader,
+  Collapsible,
+  DataTable,
+  Pagination,
+  SelectField,
+  Stat,
+  Tabs,
+  type Column,
+} from '@/components/ui'
 import { SearchRunView } from '@/features/run/SearchRunView'
 import { formatBytes, formatMs } from '@/lib/format'
 import { PHASES, type PhaseNumber } from '@/schemas/pipeline'
@@ -326,9 +337,16 @@ function CandidateSimilarity({ metrics, series }: { metrics: CollectionMetrics[]
   )
 }
 
+const OVERLAP_PAGE_SIZES = [10, 25, 50, 100] as const
+
 function Overlap({ metrics, series }: { metrics: CollectionMetrics[]; series: Series[] }) {
   const rows = resultOverlap(metrics)
   const pairs = metrics.flatMap((a, i) => metrics.slice(i + 1).map((b) => [a, b] as const))
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState<number>(OVERLAP_PAGE_SIZES[0])
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize))
+  const safePage = Math.min(page, pageCount - 1)
+  const pagedRows = rows.slice(safePage * pageSize, safePage * pageSize + pageSize)
 
   const columns: Column<OverlapRow>[] = [
     {
@@ -359,12 +377,13 @@ function Overlap({ metrics, series }: { metrics: CollectionMetrics[]; series: Se
   ]
 
   return (
-    <Card>
-      <CardHeader
-        title="Result overlap"
-        subtitle="Which qualifying patents each collection found, with rank and final score."
-      />
-      <CardBody className="space-y-4">
+    <Collapsible
+      title="Result overlap"
+      subtitle="Which qualifying patents each collection found, with rank and final score."
+      aside={<span className="text-sm text-slate-500">{rows.length} patent{rows.length === 1 ? '' : 's'}</span>}
+      defaultOpen
+    >
+      <div className="space-y-4">
         {pairs.length > 0 && (
           <div className="flex flex-wrap gap-2">
             {pairs.map(([a, b]) => {
@@ -389,18 +408,43 @@ function Overlap({ metrics, series }: { metrics: CollectionMetrics[]; series: Se
         )}
         <DataTable
           columns={columns}
-          rows={rows}
+          rows={pagedRows}
           rowKey={(r) => r.patentId}
           emptyText="No collection has qualifying results yet."
         />
-      </CardBody>
-    </Card>
+        {rows.length > OVERLAP_PAGE_SIZES[0] && (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Pagination page={safePage} pageSize={pageSize} total={rows.length} onChange={setPage} />
+            <SelectField
+              className="w-36"
+              aria-label="Rows per page"
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value))
+                setPage(0)
+              }}
+            >
+              {OVERLAP_PAGE_SIZES.map((size) => (
+                <option key={size} value={size}>
+                  {size} per page
+                </option>
+              ))}
+            </SelectField>
+          </div>
+        )}
+      </div>
+    </Collapsible>
   )
 }
 
 /** Patents that every selected collection found among its qualifying results. */
 function CommonResults({ metrics, series }: { metrics: CollectionMetrics[]; series: Series[] }) {
   const rows = resultOverlap(metrics).filter((r) => Object.keys(r.found).length === metrics.length)
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState<number>(OVERLAP_PAGE_SIZES[0])
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize))
+  const safePage = Math.min(page, pageCount - 1)
+  const pagedRows = rows.slice(safePage * pageSize, safePage * pageSize + pageSize)
 
   const columns: Column<OverlapRow>[] = [
     {
@@ -430,24 +474,45 @@ function CommonResults({ metrics, series }: { metrics: CollectionMetrics[]; seri
   ]
 
   return (
-    <Card>
-      <CardHeader
-        title="Common results"
-        subtitle={
-          metrics.length < 2
-            ? 'Run more than one collection to see patents common to all of them.'
-            : `Qualifying patents found by all ${metrics.length} collections, with rank and final score in each.`
-        }
-      />
-      <CardBody>
+    <Collapsible
+      title="Common results"
+      subtitle={
+        metrics.length < 2
+          ? 'Run more than one collection to see patents common to all of them.'
+          : `Qualifying patents found by all ${metrics.length} collections, with rank and final score in each.`
+      }
+      aside={<span className="text-sm text-slate-500">{rows.length} patent{rows.length === 1 ? '' : 's'}</span>}
+      defaultOpen
+    >
+      <div className="space-y-4">
         <DataTable
           columns={columns}
-          rows={rows}
+          rows={pagedRows}
           rowKey={(r) => r.patentId}
           emptyText={metrics.length < 2 ? 'Run more than one collection to compare.' : 'No patent was found by every collection.'}
         />
-      </CardBody>
-    </Card>
+        {rows.length > OVERLAP_PAGE_SIZES[0] && (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Pagination page={safePage} pageSize={pageSize} total={rows.length} onChange={setPage} />
+            <SelectField
+              className="w-36"
+              aria-label="Rows per page"
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value))
+                setPage(0)
+              }}
+            >
+              {OVERLAP_PAGE_SIZES.map((size) => (
+                <option key={size} value={size}>
+                  {size} per page
+                </option>
+              ))}
+            </SelectField>
+          </div>
+        )}
+      </div>
+    </Collapsible>
   )
 }
 
