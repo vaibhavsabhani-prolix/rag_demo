@@ -72,12 +72,22 @@ export function useHistoryDetail(id: number) {
   return useQuery({
     queryKey: queryKeys.historyDetail(id),
     queryFn: async () => {
-      const detail = await api.getHistoryItem(id)
-      return { item: detail, run: historyToRun(detail) }
+      const [detail, phases] = await Promise.all([api.getHistoryItem(id), api.getHistoryPhases(id, true)])
+      const fullDetail = { ...detail, phases }
+      return { item: fullDetail, run: historyToRun(fullDetail) }
     },
     enabled: Number.isInteger(id) && id > 0,
     // Finished searches never change, so don't refetch these large payloads.
     staleTime: (query) => (query.state.data?.item.status === 'running' ? 0 : Infinity),
+  })
+}
+
+export function useHistoryPhases(id: number, enabled = true) {
+  return useQuery({
+    queryKey: [...queryKeys.historyDetail(id), 'phases'] as const,
+    queryFn: () => api.getHistoryPhases(id),
+    enabled: enabled && Number.isInteger(id) && id > 0,
+    staleTime: Infinity,
   })
 }
 

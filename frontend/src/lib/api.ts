@@ -11,7 +11,7 @@ import {
   type CompareEvent,
   type SearchEvent,
 } from '@/schemas/api'
-import { historyDetailSchema, historyListSchema } from '@/schemas/history'
+import { historyListSchema, historyPhasesSchema, historySummarySchema } from '@/schemas/history'
 import { uiSettingsSchema, type UiSettings } from '@/schemas/settings'
 
 const API_BASE = '/api'
@@ -103,7 +103,9 @@ export const api = {
     if (q) params.set('q', q)
     return request(`/history?${params}`, historyListSchema)
   },
-  getHistoryItem: (id: number) => request(`/history/${id}`, historyDetailSchema),
+  getHistoryItem: (id: number) => request(`/history/${id}`, historySummarySchema),
+  getHistoryPhases: (id: number, finalOnly = false) =>
+    request(`/history/${id}/phases?final_only=${finalOnly}`, historyPhasesSchema),
   deleteHistoryItem: (id: number) => send(`/history/${id}`, { method: 'DELETE' }),
   clearHistory: () => send('/history', { method: 'DELETE' }),
 

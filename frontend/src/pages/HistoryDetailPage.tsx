@@ -1,16 +1,26 @@
+import { useEffect } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { Alert, ArrowLeftIcon, Button, ConfirmButton, EmptyState, SearchIcon, Spinner } from '@/components/ui'
 import { HistoryStatusBadge } from '@/features/history/HistoryStatusBadge'
 import { SearchRunView } from '@/features/run/SearchRunView'
-import { useDeleteHistoryItem, useHistoryDetail } from '@/hooks/queries'
+import { useDeleteHistoryItem, useHistoryDetail, useHistoryPhases } from '@/hooks/queries'
 import { ApiError } from '@/lib/api'
 import { formatDate, formatMs } from '@/lib/format'
+import { historyToRun } from '@/lib/history'
+import { useAppDispatch } from '@/store'
+import { tabChanged } from '@/store/uiSlice'
 
 export function HistoryDetailPage() {
   const id = Number(useParams().id)
   const navigate = useNavigate()
+  const dispatch = useAppDispatch()
   const { data, isPending, error } = useHistoryDetail(id)
+  const fullPhases = useHistoryPhases(id, Boolean(data))
   const remove = useDeleteHistoryItem()
+
+  useEffect(() => {
+    dispatch(tabChanged('results'))
+  }, [dispatch, id])
 
   const backLink = (
     <Link to="/history" className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900">
@@ -36,7 +46,10 @@ export function HistoryDetailPage() {
     )
   }
 
-  const { item, run } = data
+  const { item, run: initialRun } = data
+  const run = fullPhases.data
+    ? historyToRun({ ...item, phases: { ...item.phases, ...fullPhases.data } })
+    : initialRun
   const searchAgainParams = new URLSearchParams({ q: item.query })
   if (item.collection) searchAgainParams.set('collection', item.collection)
 

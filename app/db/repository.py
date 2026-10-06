@@ -12,7 +12,7 @@ TOP_RESULTS_PREVIEW = 3
 
 
 def _top_results(phases: dict[str, Any]) -> list[dict[str, Any]]:
-    results = (phases.get("7") or {}).get("data", {}).get("results", [])
+    results = (phases.get("6") or phases.get("7") or {}).get("data", {}).get("results", [])
     preview = []
     for r in results[:TOP_RESULTS_PREVIEW]:
         meta = r.get("metadata") or {}
@@ -40,7 +40,7 @@ def finish_search(
     total_ms: float,
     error: Optional[str] = None,
 ) -> None:
-    results = (phases.get("7") or {}).get("data", {}).get("results", [])
+    results = (phases.get("6") or phases.get("7") or {}).get("data", {}).get("results", [])
     with SessionLocal.begin() as session:
         record = session.get(SearchRecord, search_id)
         if record is None:
@@ -68,7 +68,19 @@ def list_searches(limit: int, offset: int, query: Optional[str] = None) -> tuple
 
 def get_search(search_id: int) -> Optional[SearchRecord]:
     with SessionLocal() as session:
-        return session.get(SearchRecord, search_id, options=[undefer(SearchRecord.phases)])
+        return session.get(SearchRecord, search_id)
+
+
+def get_search_phases(search_id: int, *, final_only: bool = False) -> Optional[dict[str, Any]]:
+    with SessionLocal() as session:
+        if final_only:
+            phases = session.scalar(
+                select(SearchRecord.phases["6"]).where(SearchRecord.id == search_id)
+            )
+            return {"6": phases} if phases is not None else None
+
+        record = session.get(SearchRecord, search_id, options=[undefer(SearchRecord.phases)])
+        return record.phases if record is not None else None
 
 
 def delete_search(search_id: int) -> bool:

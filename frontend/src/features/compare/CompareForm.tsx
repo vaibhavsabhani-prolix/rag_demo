@@ -66,7 +66,7 @@ export function CompareForm({ compare }: { compare: CompareController }) {
             >
               Compare all
             </Button>
-            <Button
+            {/* <Button
               variant="secondary"
               size="lg"
               disabled={selected.length === 0 || tooMany}
@@ -75,7 +75,7 @@ export function CompareForm({ compare }: { compare: CompareController }) {
               title="Run the first collection now, then choose which to run next"
             >
               One by one
-            </Button>
+            </Button> */}
           </div>
         )}
       </div>

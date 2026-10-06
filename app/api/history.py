@@ -1,6 +1,6 @@
 """Search history endpoints, backed by PostgreSQL."""
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -25,7 +25,18 @@ def get_history(search_id: int) -> HistoryDetail:
     record = repository.get_search(search_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Search not found")
-    return HistoryDetail.model_validate(record)
+    return HistoryDetail.model_validate({**record.__dict__, "phases": {}})
+
+
+@router.get("/{search_id}/phases", response_model=Dict[str, Any])
+def get_history_phases(
+    search_id: int,
+    final_only: bool = Query(False),
+) -> Dict[str, Any]:
+    phases = repository.get_search_phases(search_id, final_only=final_only)
+    if phases is None:
+        raise HTTPException(status_code=404, detail="Search not found")
+    return phases
 
 
 @router.delete("/{search_id}", status_code=204)

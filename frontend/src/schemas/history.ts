@@ -28,6 +28,18 @@ export const historyListSchema = z.object({
 })
 
 /** Phase data is validated per phase later (see lib/history.ts). */
+export const historySummarySchema = historyItemSchema.extend({
+  phases: z.record(
+    z.string(),
+    z.object({ name: z.string(), elapsed_ms: z.number(), data: z.unknown() }),
+  ),
+})
+
+export const historyPhasesSchema = z.record(
+  z.string(),
+  z.object({ name: z.string(), elapsed_ms: z.number(), data: z.unknown() }),
+)
+
 export const historyDetailSchema = historyItemSchema.extend({
   phases: z.record(
     z.string(),
@@ -41,4 +53,6 @@ export const historyFilterSchema = z.object({
 
 export type HistoryItem = z.infer<typeof historyItemSchema>
 export type HistoryList = z.infer<typeof historyListSchema>
+export type HistorySummary = z.infer<typeof historySummarySchema>
+export type HistoryPhases = z.infer<typeof historyPhasesSchema>
 export type HistoryDetail = z.infer<typeof historyDetailSchema>
