@@ -1,9 +1,16 @@
 """
-Phase 4: High-Speed Semantic Relationship & Requirement Verification Engine
+Phase 4: High-Speed Hypothesis-Level Relationship & Requirement Evidence Scoring
 
-Performs fast (< 500ms), GPU-accelerated semantic verification of candidate
-patent evidence against requested directed relationships and requirements using
+Performs fast (< 500ms), GPU-accelerated semantic scoring of candidate patent
+evidence against requested directed relationships and requirements using
 cross-encoder semantic entailment.
+
+Every relationship and every requirement is an independent hypothesis, scored
+against every chunk of every surviving Phase-3 candidate. Phase 4 does NOT
+eliminate candidates — it annotates each one with per-hypothesis support and
+patent-level coverage ratios, and every candidate it evaluates proceeds to
+Phase 5/6, which combine that coverage with reranker/retrieval signals to
+decide final ranking.
 
 Eliminates slow LLM latency while maintaining high precision for compositional
 patent matching.
@@ -62,8 +69,8 @@ def _tokenize_terms(text: str) -> List[str]:
 
 class RelationshipVerifier:
     """
-    Phase 4 Fast Semantic Relationship Verification Engine.
-    Uses GPU Cross-Encoder Entailment.
+    Phase 4 Fast Hypothesis-Level Relationship & Requirement Evidence Scorer.
+    Uses GPU Cross-Encoder Entailment. Scores, never eliminates.
     """
 
     def __init__(
@@ -91,8 +98,8 @@ class RelationshipVerifier:
             }
         )
 
-    def _score_pairs_remote(self, query: str, documents: List[str]) -> List[float]:
-        """Send a batch of (query, doc) pairs to the remote BGE cross-encoder."""
+    def _score_batch(self, query: str, documents: List[str]) -> List[float]:
+        """Send a single batch of (query, doc) pairs to the remote BGE cross-encoder."""
         if not documents:
             return []
 
@@ -119,6 +126,37 @@ class RelationshipVerifier:
                 logger.warning("Fast verification cross-encoder exception at %s: %s", endpoint, e)
 
         return [0.0] * len(documents)
+
+    def _score_pairs_remote(self, query: str, documents: List[str]) -> List[float]:
+        """
+        Score one hypothesis (*query*) against *documents* (chunk texts),
+        splitting into batches of self.batch_size and running up to
+        self.concurrent_requests of them in flight, same batching/concurrency
+        mechanism Phase 5's reranker uses.
+        """
+        if not documents:
+            return []
+
+        starts = list(range(0, len(documents), self.batch_size))
+        scores: List[float] = [0.0] * len(documents)
+
+        def run(start: int) -> None:
+            batch = documents[start : start + self.batch_size]
+            batch_scores = self._score_batch(query, batch)
+            scores[start : start + len(batch_scores)] = batch_scores
+
+        if len(starts) == 1:
+            run(0)
+        else:
+            with ThreadPoolExecutor(max_workers=min(self.concurrent_requests, len(starts))) as executor:
+                futures = [executor.submit(run, start) for start in starts]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.error("Error scoring verification batch: %s", e)
+
+        return scores
 
     def verify_candidates(
         self,
@@ -298,15 +336,12 @@ class RelationshipVerifier:
                         )
                     )
 
-            # Local Coverage Metrics (reported for visibility, not used to eliminate)
+            # Per-patent coverage ratios - reported for display and consumed by
+            # Phase 6's weighted score. Phase 4 no longer eliminates candidates
+            # on these: every candidate handed to it proceeds to Phase 5/6, which
+            # weigh coverage alongside the reranker/retrieval signals instead.
             rel_cov = calculate_relationship_coverage(rel_verifications)
             req_cov = calculate_requirement_coverage(req_verifications)
-
-            # A candidate qualifies only if every requested relationship AND
-            # every requested requirement is individually supported.
-            all_rels_supported = all(r.supported for r in rel_verifications)
-            all_reqs_supported = all(r.supported for r in req_verifications)
-            qualified = all_rels_supported and all_reqs_supported
 
             sup_count = sum(1 for r in rel_verifications if r.supported)
             unsup_count = sum(1 for r in rel_verifications if r.status == "NOT_SUPPORTED")
@@ -315,7 +350,7 @@ class RelationshipVerifier:
 
             result = PatentVerificationResult(
                 patent_id=pid,
-                qualified=qualified,
+                qualified=True,
                 relationships=rel_verifications,
                 requirements=req_verifications,
                 relationship_coverage=rel_cov,
@@ -328,13 +363,7 @@ class RelationshipVerifier:
                 candidate_score=cand.retrieval_score,
             )
 
-            # Eliminated candidates are kept (with their scores) for display,
-            # but they never reach Phase 5/6 - only verified_patents does.
-            if qualified:
-                verified_patents.append(result)
-            else:
-                eliminated_count += 1
-                eliminated_patents.append(result)
+            verified_patents.append(result)
 
         total_time_ms = (time.perf_counter() - t_start) * 1000
         avg_ms = total_time_ms / len(target_candidates) if target_candidates else 0.0

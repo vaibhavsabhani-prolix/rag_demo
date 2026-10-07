@@ -74,7 +74,7 @@ class PatentVerificationResult(BaseModel):
     patent_id: str = Field(..., description="Unique patent identifier.")
     qualified: bool = Field(
         default=True,
-        description="Whether this patent qualified for Phase 5/6 (every relationship and requirement individually supported)."
+        description="Always true - Phase 4 scores relationships/requirements but no longer eliminates candidates on them; kept for API/frontend compatibility."
     )
     relationships: List[RelationshipVerification] = Field(
         default_factory=list,
@@ -118,11 +118,11 @@ class VerificationBatchResult(BaseModel):
 
     verified_patents: List[PatentVerificationResult] = Field(
         default_factory=list,
-        description="Qualified candidate patents only - these carry on to Phase 5/6."
+        description="Every candidate Phase 4 scored - all of them carry on to Phase 5/6, annotated with per-hypothesis support and coverage ratios."
     )
     eliminated_patents: List[PatentVerificationResult] = Field(
         default_factory=list,
-        description="Rejected candidate patents, with their per-relationship/requirement scores, kept for display so it's clear why each was eliminated. Does not carry on to Phase 5/6."
+        description="Always empty - Phase 4 no longer eliminates candidates. Kept for API/frontend compatibility."
     )
     total_evaluated: int = Field(default=0, description="Total candidate patents verified.")
     fully_supported_count: int = Field(default=0, description="Candidates with 100% relationship coverage.")
@@ -130,7 +130,7 @@ class VerificationBatchResult(BaseModel):
     unsupported_count: int = Field(default=0, description="Candidates with 0% coverage.")
     eliminated_count: int = Field(
         default=0,
-        description="Candidates removed for not having every requested relationship and requirement individually supported."
+        description="Always 0 - Phase 4 no longer eliminates candidates. Kept for API/frontend compatibility."
     )
     timings: Dict[str, float] = Field(
         default_factory=dict,

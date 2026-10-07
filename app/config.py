@@ -99,16 +99,9 @@ TOKEN_COUNT_CACHE_SIZE = 4096
 PATENT_VIEW_URL_TEMPLATE = "https://www.qubeip.com/en/patent-view/{patent_id}"
 
 # Phase 2 Retrieval configuration
-RETRIEVAL_TOP_K_CHUNKS = 1000
+RETRIEVAL_TOP_K_CHUNKS = 4000
 
-# Phase 4 Relationship Verification configuration
-# Minimum cross-encoder relevance score required to mark a relationship/requirement as
-# SUPPORTED. Was 0.05, which is far too permissive for a BGE cross-encoder — near-zero
-# scores would still pass, letting patents that only share generic terms (e.g. "method",
-# "manufacturing") with the query get marked as satisfying a specific requirement/relationship
-# (e.g. "produces water") even though the key subject term never appears in the evidence.
-# Raise this if unrelated patents are still slipping into results; lower it if genuinely
-# relevant patents are being excluded.
+# Phase 4 verification configuration
 VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD = 0.35
 VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD = 0.35
 
@@ -118,10 +111,10 @@ VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD = 0.35
 FINAL_SCORE_THRESHOLD = 7.0
 
 # Multi-signal scoring weights (must sum to 1.0)
-FINAL_WEIGHT_RELATIONSHIP = 0.45
-FINAL_WEIGHT_REQUIREMENT = 0.25
-FINAL_WEIGHT_RERANKER = 0.20
-FINAL_WEIGHT_RETRIEVAL = 0.10
+FINAL_WEIGHT_RELATIONSHIP = 0.20
+FINAL_WEIGHT_REQUIREMENT  = 0.20
+FINAL_WEIGHT_RERANKER     = 0.30
+FINAL_WEIGHT_RETRIEVAL    = 0.30
 
 # Query match highlighting (computed in Phase 5 reranking)
 # BGE cross-encoder score of each chunk sentence against the reranking query.

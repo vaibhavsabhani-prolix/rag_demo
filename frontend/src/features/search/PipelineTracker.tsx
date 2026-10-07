@@ -27,7 +27,7 @@ export function PipelineTracker({ run }: { run: SearchRun }) {
           {collection && <span className="font-normal text-slate-500"> · collection {collection}</span>}
         </span>
         <span className="text-slate-500">
-          {status === 'running' && nextPhase && `Running step ${nextPhase} of 7…`}
+          {status === 'running' && nextPhase && `Running step ${nextPhase} of 6…`}
           {status === 'success' && `Completed in ${formatMs(totalMs)}${cacheHit ? ' · query cache hit' : ''}`}
           {status === 'error' && 'Stopped with an error'}
         </span>

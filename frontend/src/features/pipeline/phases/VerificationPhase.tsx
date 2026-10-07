@@ -1,14 +1,23 @@
 import { RelationshipList, RequirementList } from '@/components/patent'
-import { Badge, Collapsible, Section, Stat, StatGrid } from '@/components/ui'
+import { Collapsible, Section, Stat, StatGrid } from '@/components/ui'
 import { formatMs } from '@/lib/format'
 import type { PatentVerification, PhaseResults } from '@/schemas/pipeline'
 
-function VerifiedPatentCard({ vp, qualified }: { vp: PatentVerification; qualified: boolean }) {
+function VerifiedPatentCard({ vp }: { vp: PatentVerification }) {
   return (
     <Collapsible
       key={vp.patent_id}
       title={<span className="font-mono">{vp.patent_id}</span>}
-      aside={<Badge tone={qualified ? 'success' : 'danger'}>{qualified ? 'QUALIFIED' : 'REJECTED'}</Badge>}
+      aside={
+        <div className="flex items-center gap-1.5 text-xs font-medium tabular-nums">
+          <span className="rounded-full bg-indigo-50 px-2 py-1 text-indigo-700">
+            Relationship: {vp.relationship_coverage.toFixed(2)}
+          </span>
+          <span className="rounded-full bg-indigo-50 px-2 py-1 text-indigo-700">
+            Requirement: {vp.requirement_coverage.toFixed(2)}
+          </span>
+        </div>
+      }
     >
       <div className="space-y-5">
         <Section title="Relationships">
@@ -32,23 +41,13 @@ export function VerificationPhase({ data }: { data: PhaseResults[4] }) {
         <Stat label="Unsupported" value={data.unsupported_count} />
       </StatGrid>
 
-      <Section title={`Qualified patents (${data.verified_patents.length})`}>
+      <Section title={`Evaluated patents (${data.verified_patents.length})`}>
         <div className="space-y-2">
           {data.verified_patents.map((vp) => (
-            <VerifiedPatentCard key={vp.patent_id} vp={vp} qualified />
+            <VerifiedPatentCard key={vp.patent_id} vp={vp} />
           ))}
         </div>
       </Section>
-
-      {data.eliminated_patents.length > 0 && (
-        <Section title={`Rejected patents (${data.eliminated_patents.length})`}>
-          <div className="space-y-2">
-            {data.eliminated_patents.map((vp) => (
-              <VerifiedPatentCard key={vp.patent_id} vp={vp} qualified={false} />
-            ))}
-          </div>
-        </Section>
-      )}
     </div>
   )
 }
