@@ -12,6 +12,15 @@ patent-level coverage ratios, and every candidate it evaluates proceeds to
 Phase 5/6, which combine that coverage with reranker/retrieval signals to
 decide final ranking.
 
+The hypothesis count is not fixed (it's relationships + requirements, however
+many the query produced), so all (hypothesis, batch) scoring work is flattened
+into a single global queue consumed by one bounded worker pool capped at
+RERANK_CONCURRENT_REQUESTS total in flight — never `hypothesis_count *
+concurrent_requests`. Batches from different hypotheses interleave (round-
+robin by batch position) rather than running one hypothesis to completion
+before the next starts, so wall-clock time stops scaling linearly with
+hypothesis count.
+
 Eliminates slow LLM latency while maintaining high precision for compositional
 patent matching.
 """
@@ -19,6 +28,7 @@ patent matching.
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -127,36 +137,70 @@ class RelationshipVerifier:
 
         return [0.0] * len(documents)
 
-    def _score_pairs_remote(self, query: str, documents: List[str]) -> List[float]:
+    @staticmethod
+    def _build_score_tasks(
+        hypotheses: List[Tuple[str, int, str]],
+        starts: List[int],
+    ) -> List[Tuple[str, int, str, int]]:
         """
-        Score one hypothesis (*query*) against *documents* (chunk texts),
-        splitting into batches of self.batch_size and running up to
-        self.concurrent_requests of them in flight, same batching/concurrency
-        mechanism Phase 5's reranker uses.
+        Flatten every (hypothesis, batch) pair into one globally-ordered task
+        list: *starts* is the outer loop and *hypotheses* the inner loop, so
+        task order is round-robin across hypotheses (one batch from every
+        hypothesis, then the next batch from every hypothesis, ...) rather
+        than grouped hypothesis-by-hypothesis. Submitted to a single bounded
+        worker pool, this round-robin order is what lets batches from
+        different hypotheses execute concurrently instead of one hypothesis
+        having to finish before the next one starts.
         """
-        if not documents:
-            return []
+        return [
+            (kind, idx, hyp_text, start)
+            for start in starts
+            for kind, idx, hyp_text in hypotheses
+        ]
 
-        starts = list(range(0, len(documents), self.batch_size))
-        scores: List[float] = [0.0] * len(documents)
+    def _score_all_hypotheses(
+        self,
+        hypotheses: List[Tuple[str, int, str]],
+        doc_texts: List[str],
+        all_chunks: List[Tuple[str, CandidateChunk]],
+        rel_scores: Dict[Tuple[int, str, int], float],
+        req_scores: Dict[Tuple[int, str, int], float],
+    ) -> None:
+        """
+        Score every hypothesis against every chunk through a single global
+        work queue and one bounded worker pool (max self.concurrent_requests
+        BGE HTTP requests in flight at once, regardless of how many
+        hypotheses there are - never hypothesis_count * concurrent_requests).
+        Preserves the existing batch size; only the scheduling changes.
+        """
+        if not doc_texts or not hypotheses:
+            return
 
-        def run(start: int) -> None:
-            batch = documents[start : start + self.batch_size]
-            batch_scores = self._score_batch(query, batch)
-            scores[start : start + len(batch_scores)] = batch_scores
+        starts = list(range(0, len(doc_texts), self.batch_size))
+        tasks = self._build_score_tasks(hypotheses, starts)
+        lock = threading.Lock()
 
-        if len(starts) == 1:
-            run(0)
-        else:
-            with ThreadPoolExecutor(max_workers=min(self.concurrent_requests, len(starts))) as executor:
-                futures = [executor.submit(run, start) for start in starts]
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as e:
-                        logger.error("Error scoring verification batch: %s", e)
+        def run(kind: str, idx: int, hyp_text: str, start: int) -> None:
+            batch_docs = doc_texts[start : start + self.batch_size]
+            batch_chunks = all_chunks[start : start + self.batch_size]
+            batch_scores = self._score_batch(hyp_text, batch_docs)
+            target = rel_scores if kind == "relationship" else req_scores
+            with lock:
+                for (pid, ch), sc in zip(batch_chunks, batch_scores):
+                    target[(idx, pid, ch.chunk_id)] = sc
 
-        return scores
+        if len(tasks) == 1:
+            run(*tasks[0])
+            return
+
+        max_workers = min(self.concurrent_requests, len(tasks))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(run, *task) for task in tasks]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error("Error scoring Phase 4 batch: %s", e)
 
     def verify_candidates(
         self,
@@ -210,7 +254,8 @@ class RelationshipVerifier:
                 timings={"total_ms": round(total_time_ms, 2)},
             )
 
-        # 1. Prepare verification hypotheses
+        # 1. Prepare verification hypotheses - however many relationships and
+        # requirements this query happens to have produced (not a fixed count).
         # rel_hypotheses: list of (idx, hyp_text, subject, object, relation)
         rel_hypotheses: List[Tuple[int, str, str, str, str]] = []
         for idx, r in enumerate(relationships):
@@ -221,6 +266,14 @@ class RelationshipVerifier:
         # req_hypotheses: list of (idx, req_text)
         req_hypotheses: List[Tuple[int, str]] = [(idx, req.strip()) for idx, req in enumerate(requirements)]
 
+        # all_hypotheses: unified (kind, idx, hyp_text) list consumed by the
+        # global scheduler below - relationships and requirements compete for
+        # the same bounded worker pool rather than running one kind, then the
+        # other, sequentially.
+        all_hypotheses: List[Tuple[str, int, str]] = [
+            ("relationship", idx, hyp_text) for idx, hyp_text, _, _, _ in rel_hypotheses
+        ] + [("requirement", idx, req_text) for idx, req_text in req_hypotheses]
+
         # 2. Gather all candidate evidence chunks
         # Map: (patent_id, chunk_id) -> CandidateChunk
         all_chunks: List[Tuple[str, CandidateChunk]] = []
@@ -228,25 +281,14 @@ class RelationshipVerifier:
             for ch in cand.chunks:
                 all_chunks.append((cand.patent_id, ch))
 
-        # 3. Fast Batched Scoring for Relationships via Cross-Encoder
-        # Score each relationship hypothesis against all chunks
-        # rel_scores: (rel_idx, patent_id, chunk_id) -> score
-        rel_scores: Dict[Tuple[int, str, int], float] = {}
         doc_texts = [f"Section: {ch.section}\n\n{ch.text or ''}" if ch.section else (ch.text or "") for _, ch in all_chunks]
 
-        if rel_hypotheses and doc_texts:
-            for r_idx, hyp_text, _, _, _ in rel_hypotheses:
-                scores = self._score_pairs_remote(hyp_text, doc_texts)
-                for (pid, ch), sc in zip(all_chunks, scores):
-                    rel_scores[(r_idx, pid, ch.chunk_id)] = sc
-
-        # 4. Fast Batched Scoring for Requirements via Cross-Encoder
+        # 3. Score every hypothesis against every chunk through one global,
+        # boundedly-concurrent BGE work queue (see _score_all_hypotheses).
+        # rel_scores / req_scores: (hyp_idx, patent_id, chunk_id) -> score
+        rel_scores: Dict[Tuple[int, str, int], float] = {}
         req_scores: Dict[Tuple[int, str, int], float] = {}
-        if req_hypotheses and doc_texts:
-            for req_idx, req_text in req_hypotheses:
-                scores = self._score_pairs_remote(req_text, doc_texts)
-                for (pid, ch), sc in zip(all_chunks, scores):
-                    req_scores[(req_idx, pid, ch.chunk_id)] = sc
+        self._score_all_hypotheses(all_hypotheses, doc_texts, all_chunks, rel_scores, req_scores)
 
         # 5. Evaluate each Candidate Patent
         verified_patents: List[PatentVerificationResult] = []

@@ -12,7 +12,9 @@
 
 services:
   web:
-    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
+    # --timeout-graceful-shutdown bounds how long a reload waits for open
+    # connections before cancelling them; uvicorn's default is to wait forever.
+    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app --timeout-graceful-shutdown 5
     environment:
       FRONTEND_DEV_URL: http://localhost:5173
     volumes:
