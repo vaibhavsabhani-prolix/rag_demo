@@ -1,28 +1,6 @@
-"""
-Semantic Search Pipeline — Orchestration Layer
-
-Threads a raw user query through all six phases in order, handing each
-phase's typed result to the next:
-
-    Phase 1  QueryUnderstandingEngine.parse            -> ParsedQuery
-    Phase 2  CandidateRetriever.retrieve_candidates     -> CandidateRetrievalResult
-    Phase 3  filter_candidates                          -> FilteredCandidateResult
-    Phase 4  RelationshipVerifier.verify_candidates      -> VerificationBatchResult
-    Phase 5  BGEReranker.rerank_candidates               -> RerankBatchResult
-    Phase 6  FinalScorer.score_and_rank                  -> FinalSearchResult
-
-Phase 4 and 5 consume Phase 3's surviving candidates directly — there is no
-separate evidence retrieval phase; Phase 2 already fetched the chunk text
-these phases need, so no new Qdrant calls happen between Phase 3 and Phase 4.
-
-Every phase-specific decision (thresholds, batching, prompt building, etc.)
-lives in that phase's own module — this file only sequences them and reports
-timing/progress via an optional callback, so callers (e.g. the Streamlit UI)
-can render each phase's result as soon as it is ready.
-"""
-
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
+from typing import TypeVar
 
 from app.models.collection import SearchCollection
 from app.models.parsed_query import ParsedQuery
@@ -34,7 +12,8 @@ from app.retrieval.retriever import CandidateRetriever
 from app.scoring.scorer import FinalScorer
 from app.verification.verifier import RelationshipVerifier
 
-# Called after each phase completes: (phase_num, phase_name, result, elapsed_ms).
+T = TypeVar("T")
+
 PhaseCallback = Callable[[int, str, object, float], None]
 
 PHASE_NAMES = {
@@ -48,9 +27,6 @@ PHASE_NAMES = {
 
 
 class SearchPipeline:
-    """
-    Orchestrates the full 6-phase patent search pipeline end to end.
-    """
 
     def __init__(
         self,
@@ -68,7 +44,7 @@ class SearchPipeline:
 
     def _emit(
         self,
-        on_phase_complete: Optional[PhaseCallback],
+        on_phase_complete: PhaseCallback | None,
         phase_num: int,
         result: object,
         elapsed_ms: float,
@@ -76,75 +52,106 @@ class SearchPipeline:
         if on_phase_complete is not None:
             on_phase_complete(phase_num, PHASE_NAMES[phase_num], result, elapsed_ms)
 
+    def _run_phase(
+        self,
+        phase_num: int,
+        operation: Callable[[], T],
+        on_phase_complete: PhaseCallback | None,
+    ) -> T:
+        start = time.perf_counter()
+
+        result = operation()
+
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        self._emit(
+            on_phase_complete,
+            phase_num,
+            result,
+            elapsed_ms,
+        )
+
+        return result
+
     def run(
         self,
         query: str,
         collection: SearchCollection,
         use_cache: bool = True,
-        on_phase_complete: Optional[PhaseCallback] = None,
+        on_phase_complete: PhaseCallback | None = None,
     ) -> FinalSearchResult:
-        """
-        Run Phase 1 through Phase 6 in order for *query* against the Qdrant
-        *collection*, invoking *on_phase_complete* after each phase
-        finishes. Returns Phase 6's FinalSearchResult.
-        """
 
-        # Phase 1 — Query Understanding
-        t0 = time.perf_counter()
-        parsed_query = self.engine.parse(query, use_cache=use_cache)
-        self._emit(on_phase_complete, 1, parsed_query, (time.perf_counter() - t0) * 1000)
+        parsed_query = self._run_phase(
+            1,
+            lambda: self.engine.parse(query, use_cache=use_cache),
+            on_phase_complete,
+        )
 
-        return self.run_parsed(parsed_query, collection, on_phase_complete)
+        return self.run_parsed(
+            parsed_query,
+            collection,
+            on_phase_complete,
+        )
 
     def run_parsed(
         self,
         parsed_query: ParsedQuery,
         collection: SearchCollection,
-        on_phase_complete: Optional[PhaseCallback] = None,
+        on_phase_complete: PhaseCallback | None = None,
     ) -> FinalSearchResult:
-        """
-        Run Phase 2 through Phase 6 for an already parsed query. Phase 1 does
-        not depend on the collection, so comparing collections parses once
-        and calls this per collection.
-        """
 
         # Phase 2 — Candidate Retrieval (Vector Search)
-        t0 = time.perf_counter()
-        retrieval_result = self.retriever.retrieve_candidates(parsed_query, collection)
-        self._emit(on_phase_complete, 2, retrieval_result, (time.perf_counter() - t0) * 1000)
+        retrieval_result = self._run_phase(
+            2,
+            lambda: self.retriever.retrieve_candidates(
+                parsed_query,
+                collection,
+            ),
+            on_phase_complete,
+        )
 
         # Phase 3 — Metadata Filtering & Constraint Enforcement
-        t0 = time.perf_counter()
-        filtered_result = filter_candidates(
-            candidates=retrieval_result.candidates,
-            metadata_filters=parsed_query.metadata_filters,
-            is_metadata_only=parsed_query.is_metadata_only,
+        filtered_result = self._run_phase(
+            3,
+            lambda: filter_candidates(
+                candidates=retrieval_result.candidates,
+                metadata_filters=parsed_query.metadata_filters,
+                is_metadata_only=parsed_query.is_metadata_only,
+            ),
+            on_phase_complete,
         )
-        self._emit(on_phase_complete, 3, filtered_result, (time.perf_counter() - t0) * 1000)
 
         # Phase 4 — Semantic Relationship & Requirement Verification
-        t0 = time.perf_counter()
-        verification_result = self.verifier.verify_candidates(parsed_query, filtered_result.candidates)
-        self._emit(on_phase_complete, 4, verification_result, (time.perf_counter() - t0) * 1000)
+        verification_result = self._run_phase(
+            4,
+            lambda: self.verifier.verify_candidates(
+                parsed_query,
+                filtered_result.candidates,
+            ),
+            on_phase_complete,
+        )
 
         # Phase 5 — BGE Cross-Encoder Reranking
-        t0 = time.perf_counter()
-        rerank_result = self.reranker.rerank_candidates(
-            parsed_query, verification_result, filtered_result.candidates
+        rerank_result = self._run_phase(
+            5,
+            lambda: self.reranker.rerank_candidates(
+                parsed_query,
+                verification_result,
+                filtered_result.candidates,
+            ),
+            on_phase_complete,
         )
-        self._emit(on_phase_complete, 5, rerank_result, (time.perf_counter() - t0) * 1000)
 
         # Phase 6 — Final Patent Scoring & Result Selection
-        t0 = time.perf_counter()
-        final_result = self.scorer.score_and_rank(
-            rerank_result, is_metadata_only=parsed_query.is_metadata_only
+        final_result = self._run_phase(
+            6,
+            lambda: self.scorer.score_and_rank(
+                rerank_result,
+                is_metadata_only=parsed_query.is_metadata_only,
+            ),
+            on_phase_complete,
         )
-        self._emit(on_phase_complete, 6, final_result, (time.perf_counter() - t0) * 1000)
 
-        print(
-            f"[FinalResult] query={parsed_query.original_query[:80]!r} "
-            f"collection={collection.name} -> {len(final_result.results)} qualifying patent(s)"
-        )
         for r in final_result.results:
             score = "unscored" if r.final_score is None else f"{r.final_score:.2f}"
             print(f"[FinalResult]   {r.patent_id}  score={score}")

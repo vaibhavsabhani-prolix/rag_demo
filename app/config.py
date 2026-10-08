@@ -99,7 +99,7 @@ TOKEN_COUNT_CACHE_SIZE = 4096
 PATENT_VIEW_URL_TEMPLATE = "https://www.qubeip.com/en/patent-view/{patent_id}"
 
 # Phase 2 Retrieval configuration
-RETRIEVAL_TOP_K_CHUNKS = 2000
+RETRIEVAL_TOP_K_CHUNKS = 1000
 
 # Phase 4 verification configuration
 VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD = 0.35

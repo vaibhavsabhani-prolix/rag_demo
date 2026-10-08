@@ -1,34 +1,23 @@
-"""
-Deterministic Local Normalizer for Patent Query Understanding
-
-Handles metadata resolution against metadata_fields.py, operator canonicalization,
-case-insensitive deduplication, and value formatting.
-"""
-
 import re
-from typing import Any, List, Optional, Set, Tuple, Union
-from metadata_fields import METADATA_FIELD_CODES
+from typing import Any, ClassVar
+
 from app.models.parsed_query import (
     ConceptAttribute,
     MetadataFilter,
     ParsedQuery,
     SemanticRelationship,
 )
+from metadata_fields import METADATA_FIELD_CODES
 
 
 class QueryNormalizer:
-    """
-    Deterministic, high-performance local normalizer.
-    Enforces canonical field codes, operators, and item deduplication without LLM calls.
-    """
-
+    
     def __init__(self):
         self._build_metadata_index()
 
     def _build_metadata_index(self):
-        """Build bidirectional lookup structures from METADATA_FIELD_CODES."""
         # 1. Direct valid canonical codes (e.g. 'AS_EN', 'PY', 'CPC')
-        self.canonical_codes: Set[str] = set(METADATA_FIELD_CODES.keys())
+        self.canonical_codes: set[str] = set(METADATA_FIELD_CODES.keys())
 
         # 2. Lowercase description to canonical code lookup
         self.desc_to_code: dict[str, str] = {}
@@ -192,18 +181,10 @@ class QueryNormalizer:
             "range": "between",
         }
 
-    # LST ("Legal Status: Filed/Granted/Ceased") and ALD ("Legal State:
-    # Alive/Dead") are both commonly called "legal status" in natural
-    # language and share the "legal status"/"legal state" aliases above, but
-    # they are disjoint fields in the dataset with disjoint value domains.
-    # A field/value mismatch here (e.g. field resolved to LST, value is
-    # "Alive") isn't a formatting issue - it's the wrong field entirely, and
-    # the Qdrant filter can never match any patent as a result.
-    _ALIVE_DEAD_VALUES = {"alive", "dead"}
-    _FILED_GRANTED_CEASED_VALUES = {"filed", "granted", "ceased"}
+    _ALIVE_DEAD_VALUES: ClassVar[set[str]] = {"alive", "dead"}
+    _FILED_GRANTED_CEASED_VALUES: ClassVar[set[str]] = {"filed", "granted", "ceased"}
 
     def _correct_legal_status_field(self, field: str, value: Any) -> str:
-        """Re-resolve LST/ALD confusion using the value's own domain."""
         if field not in ("LST", "ALD"):
             return field
         val_lower = value.strip().lower() if isinstance(value, str) else None
@@ -213,12 +194,7 @@ class QueryNormalizer:
             return "LST"
         return field
 
-    def resolve_metadata_field(self, raw_field: str) -> Tuple[str, Optional[str]]:
-        """
-        Resolve a field string to a canonical field code from METADATA_FIELD_CODES.
-        Returns (canonical_field_code, raw_field_name).
-        If unresolved, preserves the raw field name without inventing a code.
-        """
+    def resolve_metadata_field(self, raw_field: str) -> tuple[str, str | None]:
         if not raw_field:
             return "UNKNOWN", raw_field
 
@@ -248,14 +224,12 @@ class QueryNormalizer:
         return cleaned, cleaned
 
     def normalize_operator(self, op: str) -> str:
-        """Normalize comparison operators."""
         if not op:
             return "=="
         cleaned = op.strip().lower()
         return self.operator_map.get(cleaned, "==")
 
     def normalize_value(self, field: str, value: Any) -> Any:
-        """Normalize filter values based on field context."""
         if isinstance(value, str):
             val_clean = value.strip().strip("'\"")
             # Country code normalization
@@ -265,15 +239,20 @@ class QueryNormalizer:
                     return self.country_map[val_lower]
                 return val_clean.upper()
             # Year normalization
-            if field in ("PY", "AY", "PRY", "EPRY"):
-                if val_clean.isdigit() and len(val_clean) == 4:
-                    return int(val_clean)
-            # Classification code normalization: the LLM often "corrects" a
-            # bare code like "H04N7163" into standard notation "H04N7/163",
-            # but Qdrant's CPC/IPC payload fields store the unpunctuated
-            # form - strip separators here so the Qdrant exact-match filter
-            # built later actually hits.
-            if field in ("CPC", "CPCP", "CPC12", "CPC4", "CPC8", "IPC", "IPC12", "IPC4", "IPC8"):
+            if field in ("PY", "AY", "PRY", "EPRY") and val_clean.isdigit() and len(val_clean) == 4:
+                return int(val_clean)
+
+            if field in (
+                "CPC",
+                "CPCP",
+                "CPC12",
+                "CPC4",
+                "CPC8",
+                "IPC",
+                "IPC12",
+                "IPC4",
+                "IPC8",
+            ):
                 return re.sub(r"[\s/\-.]", "", val_clean).upper()
             return val_clean
 
@@ -286,17 +265,20 @@ class QueryNormalizer:
         return value
 
     def normalize(self, query: ParsedQuery) -> ParsedQuery:
-        """
-        Perform complete deterministic normalization and deduplication on ParsedQuery.
-        """
         original_query = query.original_query.strip()
-        semantic_query = query.semantic_query.strip() if query.semantic_query else original_query
-        structured_query = query.structured_query.strip() if query.structured_query else semantic_query
-        evidence_query = query.evidence_query.strip() if query.evidence_query else semantic_query
+        semantic_query = (
+            query.semantic_query.strip() if query.semantic_query else original_query
+        )
+        structured_query = (
+            query.structured_query.strip() if query.structured_query else semantic_query
+        )
+        evidence_query = (
+            query.evidence_query.strip() if query.evidence_query else semantic_query
+        )
 
         # 1. Deduplicate concepts (case-insensitive, preserving order)
-        seen_concepts: Set[str] = set()
-        deduped_concepts: List[str] = []
+        seen_concepts: set[str] = set()
+        deduped_concepts: list[str] = []
         for c in query.concepts:
             c_clean = c.strip()
             if not c_clean:
@@ -307,8 +289,8 @@ class QueryNormalizer:
                 deduped_concepts.append(c_clean)
 
         # 2. Deduplicate and clean relationships
-        seen_rels: Set[Tuple[str, str, str]] = set()
-        deduped_rels: List[SemanticRelationship] = []
+        seen_rels: set[tuple[str, str, str]] = set()
+        deduped_rels: list[SemanticRelationship] = []
         for r in query.relationships:
             subj = r.subject.strip()
             rel = r.relation.strip()
@@ -328,8 +310,8 @@ class QueryNormalizer:
                 )
 
         # 3. Deduplicate and clean attributes
-        seen_attrs: Set[Tuple[str, str, str]] = set()
-        deduped_attrs: List[ConceptAttribute] = []
+        seen_attrs: set[tuple[str, str, str]] = set()
+        deduped_attrs: list[ConceptAttribute] = []
         for a in query.attributes:
             c = a.concept.strip()
             n = a.name.strip()
@@ -347,10 +329,12 @@ class QueryNormalizer:
         deduped_exclusions = self._dedupe_str_list(query.exclusions)
 
         # 5. Resolve and deduplicate metadata filters
-        seen_filters: Set[Tuple[str, str, str]] = set()
-        deduped_filters: List[MetadataFilter] = []
+        seen_filters: set[tuple[str, str, str]] = set()
+        deduped_filters: list[MetadataFilter] = []
         for f in query.metadata_filters:
-            canonical_field, raw_field = self.resolve_metadata_field(f.field or f.raw_field or "")
+            canonical_field, raw_field = self.resolve_metadata_field(
+                f.field or f.raw_field or ""
+            )
             op = self.normalize_operator(f.operator)
             val = self.normalize_value(canonical_field, f.value)
             canonical_field = self._correct_legal_status_field(canonical_field, val)
@@ -369,7 +353,11 @@ class QueryNormalizer:
         # 6. Safety check for is_metadata_only
         is_metadata_only = query.is_metadata_only
         # If there are no concepts, relationships, or requirements, and only metadata filters exist, it is metadata only
-        if len(deduped_filters) > 0 and len(deduped_concepts) == 0 and len(deduped_rels) == 0:
+        if (
+            len(deduped_filters) > 0
+            and len(deduped_concepts) == 0
+            and len(deduped_rels) == 0
+        ):
             is_metadata_only = True
         elif len(deduped_concepts) > 0 or len(deduped_rels) > 0:
             # Has technical concepts or relationships
@@ -391,9 +379,9 @@ class QueryNormalizer:
         )
 
     @staticmethod
-    def _dedupe_str_list(items: List[str]) -> List[str]:
-        seen: Set[str] = set()
-        result: List[str] = []
+    def _dedupe_str_list(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
         for item in items:
             clean = item.strip()
             if not clean:

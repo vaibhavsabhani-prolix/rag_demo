@@ -2,9 +2,10 @@
 Thread-safe Bounded In-Memory LRU Cache for Query Understanding
 """
 
-from collections import OrderedDict
 import threading
-from typing import Optional
+from collections import OrderedDict
+from typing import Any
+
 from app.models.parsed_query import ParsedQuery
 
 
@@ -26,7 +27,7 @@ class QueryCache:
         """Create a deterministic cache key by normalizing whitespace and casing."""
         return " ".join(query.strip().lower().split())
 
-    def get(self, query: str) -> Optional[ParsedQuery]:
+    def get(self, query: str) -> ParsedQuery | None:
         """
         Retrieve a cached ParsedQuery if present.
         Returns a fresh copy to guarantee immutability for caller.
@@ -69,7 +70,7 @@ class QueryCache:
             return len(self._cache)
 
     @property
-    def stats(self) -> dict:
+    def stats(self) -> dict[str, Any]:
         with self._lock:
             total = self._hits + self._misses
             hit_ratio = (self._hits / total) if total > 0 else 0.0
