@@ -7,6 +7,7 @@ import { Spinner } from '@/components/ui'
 const SearchPage = lazy(() => import('@/pages/SearchPage').then((m) => ({ default: m.SearchPage })))
 const ComparePage = lazy(() => import('@/pages/ComparePage').then((m) => ({ default: m.ComparePage })))
 const CollectionsPage = lazy(() => import('@/pages/CollectionsPage').then((m) => ({ default: m.CollectionsPage })))
+const KeyFeaturePage = lazy(() => import('@/pages/KeyFeaturePage').then((m) => ({ default: m.KeyFeaturePage })))
 const HistoryPage = lazy(() => import('@/pages/HistoryPage').then((m) => ({ default: m.HistoryPage })))
 const HistoryDetailPage = lazy(() =>
   import('@/pages/HistoryDetailPage').then((m) => ({ default: m.HistoryDetailPage })),
@@ -26,6 +27,7 @@ export default function App() {
         <Route element={<AppLayout />}>
           <Route index element={<SearchPage />} />
           <Route path="compare" element={<ComparePage />} />
+          <Route path="features" element={<KeyFeaturePage />} />
           <Route path="collections" element={<CollectionsPage />} />
           <Route path="history" element={<HistoryPage />} />
           <Route path="history/:id" element={<HistoryDetailPage />} />

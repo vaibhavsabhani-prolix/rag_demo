@@ -1,11 +1,12 @@
 import clsx from 'clsx'
 import { Link, NavLink } from 'react-router'
-import { Button, ChartIcon, DatabaseIcon, HistoryIcon, SearchIcon, SettingsIcon } from '@/components/ui'
+import { Button, ChartIcon, DatabaseIcon, HistoryIcon, SearchIcon, SettingsIcon, SparklesIcon } from '@/components/ui'
 import { useAppDispatch } from '@/store'
 import { settingsToggled } from '@/store/uiSlice'
 
 const NAV = [
   { to: '/', label: 'Search', icon: SearchIcon, end: true },
+  { to: '/features', label: 'Feature Search', icon: SparklesIcon, end: false },
   { to: '/compare', label: 'Compare', icon: ChartIcon, end: false },
   { to: '/collections', label: 'Collections', icon: DatabaseIcon, end: false },
   { to: '/history', label: 'History', icon: HistoryIcon, end: false },

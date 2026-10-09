@@ -99,3 +99,9 @@ export const DatabaseIcon = (p: IconProps) => (
     <path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" />
   </Icon>
 )
+
+export const SparklesIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z" />
+  </Icon>
+)

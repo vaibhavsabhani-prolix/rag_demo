@@ -34,7 +34,7 @@ from app.query_understanding.prompt import (
 logger = logging.getLogger(__name__)
 
 
-def _repair_truncated_json(text: str) -> dict[str, Any] | None:
+def repair_truncated_json(text: str) -> dict[str, Any] | None:
     stack: list[str] = []
     in_string = False
     escape = False
@@ -194,7 +194,7 @@ class QueryUnderstandingEngine:
             try:
                 data = json.loads(raw_text)
             except json.JSONDecodeError:
-                repaired = _repair_truncated_json(raw_text)
+                repaired = repair_truncated_json(raw_text)
                 if repaired is None:
                     raise
                 logger.warning(

@@ -11,6 +11,10 @@ import {
   type CompareEvent,
   type SearchEvent,
 } from '@/schemas/api'
+import {
+  keyFeatureEventSchema,
+  type KeyFeatureEvent,
+} from '@/schemas/keyfeature'
 import { historyListSchema, historyPhasesSchema, historySummarySchema } from '@/schemas/history'
 import { uiSettingsSchema, type UiSettings } from '@/schemas/settings'
 
@@ -130,4 +134,18 @@ export const api = {
     onEvent: (event: CompareEvent) => void,
     signal?: AbortSignal,
   ) => streamNdjson('/compare', body, compareEventSchema, onEvent, signal),
+
+  /** Run key-feature search pipeline with streaming NDJSON updates. */
+  streamKeyFeatureSearch: (
+    body: {
+      problem: string
+      invention_title: string
+      invention_details: string
+      collection: string
+      top_k?: number
+    },
+    onEvent: (event: KeyFeatureEvent) => void,
+    signal?: AbortSignal,
+  ) => streamNdjson('/keyfeature-search', body, keyFeatureEventSchema, onEvent, signal),
+
 }

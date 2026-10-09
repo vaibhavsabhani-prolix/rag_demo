@@ -94,6 +94,11 @@ from app.retrieval.retriever import CandidateRetriever
 from app.scoring.scorer import FinalScorer
 from app.semantic_search import PHASE_NAMES, SearchPipeline
 from app.verification.verifier import RelationshipVerifier
+from app.keyfeature_searchflow import (
+    KeyFeatureSearchPipeline,
+    KeyFeatureSearchRequest,
+    KeyFeatureSearchResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +111,7 @@ STREAM_EXCLUDE: dict[int, set[str]] = {}
 
 pipeline: SearchPipeline
 db: QdrantDB
+keyfeature_pipeline: Optional[KeyFeatureSearchPipeline] = None
 
 
 def build_pipeline(db: QdrantDB) -> SearchPipeline:
@@ -124,11 +130,21 @@ def build_pipeline(db: QdrantDB) -> SearchPipeline:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global pipeline, db
+    global pipeline, db, keyfeature_pipeline
     init_db()
     db = QdrantDB()
     pipeline = build_pipeline(db)
+    keyfeature_pipeline = KeyFeatureSearchPipeline(db=db)
     yield
+
+
+def _get_keyfeature_pipeline() -> KeyFeatureSearchPipeline:
+    global keyfeature_pipeline, db
+    if keyfeature_pipeline is None:
+        if "db" not in globals() or db is None:
+            db = QdrantDB()
+        keyfeature_pipeline = KeyFeatureSearchPipeline(db=db)
+    return keyfeature_pipeline
 
 
 app = FastAPI(title="Patent Semantic Search API", lifespan=lifespan)
@@ -302,6 +318,53 @@ def search(req: SearchRequest) -> StreamingResponse:
     # Resolved before streaming so an unknown collection is a plain HTTP error.
     collection = _resolve_collection(req.collection)
     return StreamingResponse(_stream_search(req, collection), media_type="application/x-ndjson")
+
+
+def _stream_keyfeature_search(
+    req: KeyFeatureSearchRequest, collection: SearchCollection
+) -> Iterator[str]:
+    events: "queue.Queue[dict | None]" = queue.Queue()
+    kf_pipe = _get_keyfeature_pipeline()
+
+    def worker() -> None:
+        t0 = time.perf_counter()
+        try:
+            res = kf_pipe.run(
+                problem=req.problem,
+                invention_title=req.invention_title,
+                invention_details=req.invention_details,
+                collection=collection,
+                top_k=req.top_k,
+            )
+            final_event = {
+                "type": "done",
+                "elapsed_ms": (time.perf_counter() - t0) * 1000,
+                "data": res.model_dump(),
+            }
+        except Exception as exc:
+            logger.exception("Key feature search flow failed")
+            final_event = {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+        events.put(final_event)
+        events.put(None)
+
+    yield _line({
+        "type": "start",
+        "problem": req.problem,
+        "invention_title": req.invention_title,
+        "collection": collection.name,
+    })
+    threading.Thread(target=worker, daemon=True).start()
+    while (event := events.get()) is not None:
+        yield _line(event)
+
+
+@app.post("/api/keyfeature-search")
+def keyfeature_search(req: KeyFeatureSearchRequest) -> StreamingResponse:
+    collection = _resolve_collection(req.collection)
+    return StreamingResponse(
+        _stream_keyfeature_search(req, collection),
+        media_type="application/x-ndjson",
+    )
 
 
 def _resolve_collections(names: Optional[list[str]]) -> list[SearchCollection]:

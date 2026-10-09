@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import uuid
+from typing import Any
 
 import requests
 from qdrant_client import QdrantClient
@@ -339,7 +340,7 @@ class QdrantDB:
         self,
         patent_ids: list[str],
         collection_name: str = PATENTS_COLLECTION_NAME,
-    ) -> dict[str, dict]:
+    ) -> dict[str, dict[str, Any]]:
         """
         Fetch metadata for a list of patent_ids in one request.
 
