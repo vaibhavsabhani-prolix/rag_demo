@@ -27,7 +27,7 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
       invention_title: '',
       invention_details: '',
       collection: collections.data?.default ?? '512',
-      top_k: 20,
+      score_threshold: 0.5,
     },
   })
 
@@ -111,7 +111,7 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
           )}
         </div>
 
-        {/* Options: Collection & Top-K */}
+        {/* Options: Collection & Score Threshold */}
         <div className="grid grid-cols-1 gap-4 pt-2 sm:grid-cols-2">
           <SelectField
             label="Qdrant Collection"
@@ -133,11 +133,14 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
 
           <TextField
             type="number"
-            label="Chunks per Feature (Top-K)"
-            min={1}
-            max={200}
-            {...register('top_k', { valueAsNumber: true })}
-            error={errors.top_k?.message}
+            label="Threshold Score"
+            hint="Chunks with similarity score ≥ this threshold are returned (0.0 to 1.0)"
+            min={0}
+            max={1}
+            step={0.01}
+            placeholder="0.5"
+            {...register('score_threshold', { valueAsNumber: true })}
+            error={errors.score_threshold?.message}
           />
         </div>
       </div>

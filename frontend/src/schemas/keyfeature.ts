@@ -15,7 +15,10 @@ export const keyFeatureFormSchema = z.object({
     .trim()
     .min(10, 'Please provide invention details or disclosure (at least 10 characters).'),
   collection: z.string().min(1, 'Select a collection to search.'),
-  top_k: z.number().int().min(1).max(200),
+  score_threshold: z
+    .number()
+    .min(0, 'Threshold score must be at least 0.0')
+    .max(1, 'Threshold score must be at most 1.0'),
 })
 
 export type KeyFeatureFormValues = z.infer<typeof keyFeatureFormSchema>
@@ -55,6 +58,7 @@ export const keyFeatureSearchResponseSchema = z.object({
   invention_title: z.string(),
   invention_details: z.string(),
   collection: z.string(),
+  score_threshold: z.number().nullable().optional(),
   total_features: z.number(),
   results: z.array(featureSearchResultSchema),
   timings: z.record(z.string(), z.number()).default({}),
@@ -68,6 +72,7 @@ export const keyFeatureEventSchema = z.discriminatedUnion('type', [
     problem: z.string().optional(),
     invention_title: z.string().optional(),
     collection: z.string().optional(),
+    score_threshold: z.number().optional(),
   }),
   z.object({
     type: z.literal('phase'),

@@ -334,7 +334,7 @@ def _stream_keyfeature_search(
                 invention_title=req.invention_title,
                 invention_details=req.invention_details,
                 collection=collection,
-                top_k=req.top_k,
+                score_threshold=req.score_threshold,
             )
             final_event = {
                 "type": "done",
@@ -352,6 +352,7 @@ def _stream_keyfeature_search(
         "problem": req.problem,
         "invention_title": req.invention_title,
         "collection": collection.name,
+        "score_threshold": req.score_threshold,
     })
     threading.Thread(target=worker, daemon=True).start()
     while (event := events.get()) is not None:

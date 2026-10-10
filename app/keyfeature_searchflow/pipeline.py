@@ -32,7 +32,7 @@ class KeyFeatureSearchPipeline:
         invention_title: str,
         invention_details: str,
         collection: SearchCollection | str = CHUNKS_COLLECTION_NAME,
-        top_k: int = 10,
+        score_threshold: float = 0.5,
     ) -> KeyFeatureSearchResponse:
 
         t_overall_start = time.perf_counter()
@@ -56,7 +56,7 @@ class KeyFeatureSearchPipeline:
         results = self.retriever.retrieve_for_features(
             features_with_embeddings=features_with_embeddings,
             collection=collection,
-            candidate_top_k=top_k,
+            score_threshold=score_threshold,
         )
         elapsed_retrieve = (time.perf_counter() - t2) * 1000
 
@@ -68,6 +68,7 @@ class KeyFeatureSearchPipeline:
             invention_title=invention_title,
             invention_details=invention_details,
             collection=collection_str,
+            score_threshold=score_threshold,
             total_features=len(features),
             results=results,
             timings={

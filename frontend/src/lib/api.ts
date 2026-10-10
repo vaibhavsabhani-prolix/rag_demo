@@ -142,7 +142,7 @@ export const api = {
       invention_title: string
       invention_details: string
       collection: string
-      top_k?: number
+      score_threshold?: number
     },
     onEvent: (event: KeyFeatureEvent) => void,
     signal?: AbortSignal,

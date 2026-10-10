@@ -35,7 +35,11 @@ export function KeyFeatureResultsView({ response }: KeyFeatureResultsViewProps) 
               </Badge>
             </div>
             <p className="mt-1 text-xs text-slate-500">
-              Collection: <span className="font-medium text-slate-700">{response.collection}</span> · Each feature searched independently
+              Collection: <span className="font-medium text-slate-700">{response.collection}</span>
+              {response.score_threshold != null && (
+                <> · Threshold: <span className="font-medium text-slate-700">≥ {response.score_threshold}</span></>
+              )}
+              {' '}· Each feature searched independently
             </p>
           </div>
 

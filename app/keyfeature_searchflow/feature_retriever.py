@@ -43,7 +43,8 @@ class KeyFeatureRetriever:
         self,
         features_with_embeddings: list[tuple[KeyFeatureItem, list[float]]],
         collection: SearchCollection | str = CHUNKS_COLLECTION_NAME,
-        candidate_top_k: int = 10,
+        score_threshold: float = 0.5,
+        limit: int = 2000,
     ) -> list[FeatureSearchResult]:
 
         if not features_with_embeddings:
@@ -52,11 +53,12 @@ class KeyFeatureRetriever:
         chunks_coll, patents_coll = self._resolve_collection_names(collection)
 
         # Build one QueryRequest per feature
-        # Each query uses ONLY that feature's own embedding vector
+        # Each query uses ONLY that feature's own embedding vector and filters by score_threshold
         requests = [
             QueryRequest(
                 query=embedding,
-                limit=candidate_top_k,
+                score_threshold=score_threshold,
+                limit=limit,
                 with_payload=True,
             )
             for _, embedding in features_with_embeddings
@@ -97,10 +99,12 @@ class KeyFeatureRetriever:
         for (feature_item, _), hits in zip(features_with_embeddings, hits_per_feature):
             chunk_results: list[FeatureChunkResult] = []
             for hit in hits:
+                score = float(hit.score)
+                if score < score_threshold:
+                    continue
                 payload: dict[str, Any] = hit.payload or {}
                 patent_id = payload.get("patent_id", "")
                 chunk_id = int(payload.get("chunk_id", 0))
-                score = float(hit.score)
                 text = payload.get("text", "")
                 section = payload.get("section")
                 point_id = str(hit.id)

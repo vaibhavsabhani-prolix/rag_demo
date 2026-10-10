@@ -40,7 +40,7 @@ class KeyFeatureSearchRequest(BaseModel):
     invention_title: str
     invention_details: str
     collection: str | None = None
-    top_k: int = 10
+    score_threshold: float = 0.5
 
 
 class KeyFeatureSearchResponse(BaseModel):
@@ -48,6 +48,7 @@ class KeyFeatureSearchResponse(BaseModel):
     invention_title: str
     invention_details: str
     collection: str
+    score_threshold: float | None = None
     total_features: int
     results: list[FeatureSearchResult]
     timings: dict[str, float] = Field(default_factory=dict)
