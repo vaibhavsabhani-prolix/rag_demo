@@ -117,10 +117,10 @@ VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD = 0.35
 FINAL_SCORE_THRESHOLD = 7.0
 
 # Multi-signal scoring weights (must sum to 1.0)
-FINAL_WEIGHT_RELATIONSHIP = 0.20
-FINAL_WEIGHT_REQUIREMENT  = 0.20
-FINAL_WEIGHT_RERANKER     = 0.30
-FINAL_WEIGHT_RETRIEVAL    = 0.30
+FINAL_WEIGHT_RELATIONSHIP = 0.10
+FINAL_WEIGHT_REQUIREMENT  = 0.10
+FINAL_WEIGHT_RERANKER     = 0.40
+FINAL_WEIGHT_RETRIEVAL    = 0.40
 
 # Query match highlighting (computed in Phase 5 reranking)
 # BGE cross-encoder score of each chunk sentence against the reranking query.

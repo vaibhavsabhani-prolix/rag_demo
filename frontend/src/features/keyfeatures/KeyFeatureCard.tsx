@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { HighlightedText } from '@/components/patent/EvidenceChunkCard'
 import { Badge, ChevronIcon } from '@/components/ui'
 import { usePipelineConfig } from '@/hooks/queries'
 import { patentUrl } from '@/lib/patent'
@@ -138,11 +139,16 @@ function ChunkItem({ chunk, index }: { chunk: FeatureChunkResult; index: number 
       </div>
 
       <div className="mt-2.5 text-xs leading-relaxed text-slate-700 whitespace-pre-wrap font-sans bg-slate-50/60 p-3 rounded-md border border-slate-100">
-        {chunk.text}
+        <HighlightedText text={chunk.text} limit={chunk.text.length} highlight={chunk.highlight} />
       </div>
 
       <div className="mt-2 flex items-center justify-between text-2xs text-slate-400">
         <span>Chunk ID: {chunk.chunk_id}</span>
+        {chunk.highlight && chunk.highlight.sentences.length > 0 && (
+          <span className="text-amber-600 font-medium">
+            Top matching sentence
+          </span>
+        )}
       </div>
     </div>
   )

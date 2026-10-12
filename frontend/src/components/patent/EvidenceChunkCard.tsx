@@ -74,7 +74,7 @@ export function EvidenceChunkCard({
 type Sentence = ChunkHighlight['sentences'][number]
 
 /** `text` up to `limit` characters, with matching sentences marked and query words underlined. */
-function HighlightedText({ text, limit, highlight }: { text: string; limit: number; highlight?: ChunkHighlight | null }) {
+export function HighlightedText({ text, limit, highlight }: { text: string; limit: number; highlight?: ChunkHighlight | null }) {
   if (!highlight) return text.slice(0, limit)
 
   // Cut the text at every sentence and term edge, then render each piece.

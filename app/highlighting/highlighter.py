@@ -111,7 +111,7 @@ def _stem(word: str) -> str:
     return word
 
 
-def extract_term_patterns(query: str, extra_terms: Sequence[str] = ()) -> Optional[re.Pattern]:
+def extract_term_patterns(query: str, extra_terms: Sequence[str] = ()) -> Optional[re.Pattern[str]]:
     """
     Build one case-insensitive regex matching the content words of the query
     and of *extra_terms* (e.g. the parsed query's concepts).
@@ -145,7 +145,7 @@ def extract_term_patterns(query: str, extra_terms: Sequence[str] = ()) -> Option
     return re.compile("|".join(alternatives), re.IGNORECASE)
 
 
-def find_term_spans(text: str, pattern: Optional[re.Pattern]) -> List[Span]:
+def find_term_spans(text: str, pattern: Optional[re.Pattern[str]]) -> List[Span]:
     """Non-overlapping spans of query terms in *text*, adjacent ones merged."""
     if pattern is None:
         return []
@@ -181,7 +181,7 @@ def build_chunk_highlight(
     text: str,
     sentence_spans: Sequence[Span],
     sentence_scores: Sequence[float],
-    term_pattern: Optional[re.Pattern],
+    term_pattern: Optional[re.Pattern[str]],
     threshold: float = HIGHLIGHT_SENTENCE_THRESHOLD,
     strong_threshold: float = HIGHLIGHT_SENTENCE_STRONG_THRESHOLD,
 ) -> ChunkHighlight:

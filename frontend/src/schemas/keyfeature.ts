@@ -1,5 +1,6 @@
 /** Key Feature Search validation & result schemas. */
 import { z } from 'zod'
+import { chunkHighlightSchema } from '@/schemas/pipeline'
 
 export const keyFeatureFormSchema = z.object({
   problem: z
@@ -48,6 +49,7 @@ export const featureChunkResultSchema = z.object({
   document_chunk_index: z.number().nullable().optional(),
   token_count: z.number().nullable().optional(),
   metadata: z.record(z.string(), z.unknown()).default({}),
+  highlight: chunkHighlightSchema.nullish(),
 })
 
 export type FeatureChunkResult = z.infer<typeof featureChunkResultSchema>

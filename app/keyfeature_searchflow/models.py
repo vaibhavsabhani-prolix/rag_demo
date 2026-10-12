@@ -6,11 +6,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 from app.config import (
     KEYFEATURE_RERANK_TOP_K,
     KEYFEATURE_RETRIEVAL_LIMIT,
 )
+from app.models.reranking import ChunkHighlight
 
 
 class KeyFeatureItem(BaseModel):
@@ -35,6 +35,7 @@ class FeatureChunkResult(BaseModel):
     document_chunk_index: int | None = None
     token_count: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    highlight: ChunkHighlight | None = None
 
 
 class FeatureSearchResult(BaseModel):

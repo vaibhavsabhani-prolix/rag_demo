@@ -6,9 +6,17 @@ text using the BGE cross-encoder reranker, and selects the top-K final chunks.
 """
 
 import logging
+import re
 
 from app.config import KEYFEATURE_RERANK_TOP_K
-from app.keyfeature_searchflow.models import FeatureSearchResult
+from app.highlighting import (
+    extract_term_patterns,
+    find_term_spans,
+    sentences_to_score,
+    split_sentences,
+)
+from app.keyfeature_searchflow.models import FeatureChunkResult, FeatureSearchResult
+from app.models.reranking import ChunkHighlight, HighlightSentence, HighlightTerm
 from app.reranking.reranker import BGEReranker
 
 logger = logging.getLogger(__name__)
@@ -92,7 +100,11 @@ class KeyFeatureReranker:
             )
 
             # Keep top_k final chunks
-            feature_result.chunks = chunks[:top_k]
+            top_chunks = chunks[:top_k]
+            feature_result.chunks = top_chunks
+
+            # Compute sentence-level highlights and query-term matches on retained chunks
+            self._compute_highlights_for_chunks(query=query, chunks=top_chunks)
 
             best_score = feature_result.chunks[0].score if feature_result.chunks else 0.0
             logger.info(
@@ -104,3 +116,79 @@ class KeyFeatureReranker:
             )
 
         return results
+
+    def _compute_highlights_for_chunks(
+        self,
+        query: str,
+        chunks: list[FeatureChunkResult],
+    ) -> None:
+        """
+        Compute sentence-level BGE scores and query term matches for winning chunks,
+        ensuring the top matching sentence is always highlighted.
+        """
+        if not chunks or not query:
+            return
+
+        # 1. Split each chunk into candidate sentences
+        chunk_spans: dict[int, list[tuple[int, int]]] = {}
+        all_sentence_docs: list[str] = []
+
+        for idx, ch in enumerate(chunks):
+            text = ch.text or ""
+            spans = sentences_to_score(text)
+            if not spans:
+                spans = split_sentences(text)
+            chunk_spans[idx] = spans
+            for s, e in spans:
+                all_sentence_docs.append(text[s:e])
+
+        if not all_sentence_docs:
+            return
+
+        # 2. Score distinct sentences against the feature query
+        unique_sentences = list(dict.fromkeys(all_sentence_docs))
+        score_by_sentence: dict[str, float] = {}
+        try:
+            sent_scores, _ = self.reranker.score_documents(
+                query=query,
+                documents=unique_sentences,
+            )
+            score_by_sentence = dict(zip(unique_sentences, sent_scores))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not score sentences for highlighting: %s", exc)
+
+        # 3. Build term match regex pattern
+        term_pattern: re.Pattern[str] | None = extract_term_patterns(query)
+
+        # 4. Attach ChunkHighlight to each chunk (ONLY the single top-1 sentence per chunk)
+        for idx, ch in enumerate(chunks):
+            text = ch.text or ""
+            spans = chunk_spans.get(idx, [])
+            scores = [score_by_sentence.get(text[s:e], 0.0) for s, e in spans]
+
+            sentences: list[HighlightSentence] = []
+            terms: list[HighlightTerm] = []
+
+            # Identify the single #1 most matching sentence in this chunk
+            if scores:
+                best_idx = max(range(len(scores)), key=lambda i: scores[i])
+                best_span = spans[best_idx]
+                best_score = scores[best_idx]
+
+                sentences.append(
+                    HighlightSentence(
+                        start=best_span[0],
+                        end=best_span[1],
+                        score=round(best_score, 4),
+                        strong=True,
+                    )
+                )
+
+            # Underline all matched query words across the entire chunk
+            if term_pattern:
+                terms = [
+                    HighlightTerm(start=s, end=e)
+                    for s, e in find_term_spans(text, term_pattern)
+                ]
+
+            ch.highlight = ChunkHighlight(sentences=sentences, terms=terms)
