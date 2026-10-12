@@ -19,6 +19,11 @@ export const keyFeatureFormSchema = z.object({
     .number()
     .min(0, 'Threshold score must be at least 0.0')
     .max(1, 'Threshold score must be at most 1.0'),
+  top_k: z
+    .number()
+    .int()
+    .min(1, 'Top chunks must be at least 1')
+    .max(200, 'Top chunks cannot exceed 200'),
 })
 
 export type KeyFeatureFormValues = z.infer<typeof keyFeatureFormSchema>
@@ -34,6 +39,8 @@ export const featureChunkResultSchema = z.object({
   chunk_id: z.number(),
   patent_id: z.string(),
   score: z.number(),
+  retrieval_score: z.number().nullable().optional(),
+  reranker_score: z.number().nullable().optional(),
   text: z.string(),
   section: z.string().nullable().optional(),
   title: z.string().nullable().optional(),
@@ -59,6 +66,8 @@ export const keyFeatureSearchResponseSchema = z.object({
   invention_details: z.string(),
   collection: z.string(),
   score_threshold: z.number().nullable().optional(),
+  top_k: z.number().optional(),
+  retrieval_limit: z.number().optional(),
   total_features: z.number(),
   results: z.array(featureSearchResultSchema),
   timings: z.record(z.string(), z.number()).default({}),
@@ -73,6 +82,8 @@ export const keyFeatureEventSchema = z.discriminatedUnion('type', [
     invention_title: z.string().optional(),
     collection: z.string().optional(),
     score_threshold: z.number().optional(),
+    top_k: z.number().optional(),
+    retrieval_limit: z.number().optional(),
   }),
   z.object({
     type: z.literal('phase'),

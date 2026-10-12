@@ -9,6 +9,7 @@ Simple 3-step pipeline:
 
 from app.keyfeature_searchflow.feature_embedder import KeyFeatureEmbedder
 from app.keyfeature_searchflow.feature_extractor import KeyFeatureExtractor
+from app.keyfeature_searchflow.feature_reranker import KeyFeatureReranker
 from app.keyfeature_searchflow.feature_retriever import KeyFeatureRetriever
 from app.keyfeature_searchflow.models import (
     FeatureChunkResult,
@@ -28,6 +29,7 @@ __all__ = [
     "KeyFeatureEmbedder",
     "KeyFeatureExtractor",
     "KeyFeatureItem",
+    "KeyFeatureReranker",
     "KeyFeatureRetriever",
     "KeyFeatureSearchPipeline",
     "KeyFeatureSearchRequest",

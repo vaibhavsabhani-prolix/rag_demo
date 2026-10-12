@@ -56,6 +56,7 @@ export function useKeyFeatureSearch() {
           invention_details: values.invention_details,
           collection: values.collection,
           score_threshold: values.score_threshold,
+          top_k: values.top_k,
         },
         (event) => {
           switch (event.type) {
@@ -83,9 +84,15 @@ export function useKeyFeatureSearch() {
                 setState((prev) => ({
                   ...prev,
                   currentStep: 3,
-                  stepName: 'Searching Qdrant independently for each key feature…',
+                  stepName: 'Searching Qdrant for top candidate chunks per feature…',
                 }))
               } else if (phaseNum === 3) {
+                setState((prev) => ({
+                  ...prev,
+                  currentStep: 4,
+                  stepName: 'Reranking candidate chunks using BGE Cross-Encoder…',
+                }))
+              } else if (phaseNum === 4) {
                 const rawResults = (data?.results as FeatureSearchResult[]) || []
                 setState((prev) => ({
                   ...prev,

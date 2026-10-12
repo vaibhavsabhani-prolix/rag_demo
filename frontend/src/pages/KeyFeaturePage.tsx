@@ -24,8 +24,8 @@ export function KeyFeaturePage() {
         </h1>
         <p className="text-slate-500 max-w-3xl">
           Provide your invention problem, domain, and details. The LLM extracts 5–15 key technical features,
-          generates an independent embedding for each feature, and searches Qdrant independently to keep all
-          retrieval results segregated by feature.
+          generates an independent embedding for each feature, retrieves top candidate chunks from Qdrant,
+          and reranks them using BGE Cross-Encoder to select the final top chunks per feature.
         </p>
       </div>
 
@@ -42,9 +42,10 @@ export function KeyFeaturePage() {
                 {stepName || 'Processing Key Feature Search Flow…'}
               </p>
               <p className="text-xs text-indigo-600 mt-0.5">
-                {currentStep === 1 && 'Step 1/3: Analyzing problem & disclosure with LLM to extract key features…'}
-                {currentStep === 2 && 'Step 2/3: Computing distinct vector embeddings for each extracted feature…'}
-                {currentStep === 3 && 'Step 3/3: Performing independent vector queries against Qdrant collection…'}
+                {currentStep === 1 && 'Step 1/4: Analyzing problem & disclosure with LLM to extract key features…'}
+                {currentStep === 2 && 'Step 2/4: Computing distinct vector embeddings for each extracted feature…'}
+                {currentStep === 3 && 'Step 3/4: Retrieving top candidate chunks per feature from Qdrant…'}
+                {currentStep === 4 && 'Step 4/4: Reranking candidates with BGE Cross-Encoder & picking top chunks…'}
               </p>
             </div>
           </div>

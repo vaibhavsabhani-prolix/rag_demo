@@ -3,7 +3,9 @@ import os
 # Overridable so the Docker web service can reach Qdrant by its compose service name.
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
-QDRANT_TIMEOUT = 120.0
+QDRANT_GRPC_PORT = int(os.getenv("QDRANT_GRPC_PORT", "6334"))
+QDRANT_PREFER_GRPC = os.getenv("QDRANT_PREFER_GRPC", "0") == "1"
+QDRANT_TIMEOUT = 500.0
 
 # PostgreSQL for search history (the `postgres` service in docker-compose.yml).
 DATABASE_URL = os.getenv(
@@ -100,6 +102,10 @@ PATENT_VIEW_URL_TEMPLATE = "https://www.qubeip.com/en/patent-view/{patent_id}"
 
 # Phase 2 Retrieval configuration
 RETRIEVAL_TOP_K_CHUNKS = 1000
+
+# Key Feature Search Flow configuration
+KEYFEATURE_RETRIEVAL_LIMIT = 5000  # Number of candidate chunks retrieved from Qdrant per feature
+KEYFEATURE_RERANK_TOP_K = 20       # Final top chunks kept after reranking per feature (adjustable anytime)
 
 # Phase 4 verification configuration
 VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD = 0.35

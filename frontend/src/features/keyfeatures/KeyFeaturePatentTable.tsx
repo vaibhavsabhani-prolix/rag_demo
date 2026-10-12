@@ -131,7 +131,7 @@ export function KeyFeaturePatentTable({ results }: KeyFeaturePatentTableProps) {
                     Publication Number
                   </th>
                   <th className="px-3 py-2 text-left text-xs font-semibold tracking-wide text-slate-500 uppercase">
-                    Best Score
+                    Best Score (Reranked)
                   </th>
                   <th className="px-3 py-2 text-left text-xs font-semibold tracking-wide text-slate-500 uppercase">
                     Matched On (Feature IDs)

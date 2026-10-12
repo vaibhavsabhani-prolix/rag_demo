@@ -95,6 +95,7 @@ from app.scoring.scorer import FinalScorer
 from app.semantic_search import PHASE_NAMES, SearchPipeline
 from app.verification.verifier import RelationshipVerifier
 from app.keyfeature_searchflow import (
+    KeyFeatureReranker,
     KeyFeatureSearchPipeline,
     KeyFeatureSearchRequest,
     KeyFeatureSearchResponse,
@@ -134,16 +135,19 @@ async def lifespan(_: FastAPI):
     init_db()
     db = QdrantDB()
     pipeline = build_pipeline(db)
-    keyfeature_pipeline = KeyFeatureSearchPipeline(db=db)
+    kf_reranker = KeyFeatureReranker(reranker=pipeline.reranker)
+    keyfeature_pipeline = KeyFeatureSearchPipeline(db=db, reranker=kf_reranker)
     yield
 
 
 def _get_keyfeature_pipeline() -> KeyFeatureSearchPipeline:
-    global keyfeature_pipeline, db
+    global keyfeature_pipeline, db, pipeline
     if keyfeature_pipeline is None:
         if "db" not in globals() or db is None:
             db = QdrantDB()
-        keyfeature_pipeline = KeyFeatureSearchPipeline(db=db)
+        reranker = getattr(pipeline, "reranker", None) if "pipeline" in globals() else None
+        kf_reranker = KeyFeatureReranker(reranker=reranker) if reranker else None
+        keyfeature_pipeline = KeyFeatureSearchPipeline(db=db, reranker=kf_reranker)
     return keyfeature_pipeline
 
 
@@ -329,12 +333,24 @@ def _stream_keyfeature_search(
     def worker() -> None:
         t0 = time.perf_counter()
         try:
+            def on_phase(phase: int, name: str, data: Any = None):
+                events.put({
+                    "type": "phase",
+                    "phase": phase,
+                    "name": name,
+                    "elapsed_ms": (time.perf_counter() - t0) * 1000,
+                    "data": data or {},
+                })
+
             res = kf_pipe.run(
                 problem=req.problem,
                 invention_title=req.invention_title,
                 invention_details=req.invention_details,
                 collection=collection,
                 score_threshold=req.score_threshold,
+                retrieval_limit=req.retrieval_limit,
+                top_k=req.top_k,
+                on_phase=on_phase,
             )
             final_event = {
                 "type": "done",
@@ -353,6 +369,8 @@ def _stream_keyfeature_search(
         "invention_title": req.invention_title,
         "collection": collection.name,
         "score_threshold": req.score_threshold,
+        "top_k": req.top_k,
+        "retrieval_limit": req.retrieval_limit,
     })
     threading.Thread(target=worker, daemon=True).start()
     while (event := events.get()) is not None:

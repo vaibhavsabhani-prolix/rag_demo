@@ -31,15 +31,15 @@ export function KeyFeatureResultsView({ response }: KeyFeatureResultsViewProps) 
                 {results.length} Features Extracted
               </Badge>
               <Badge tone="success" className="text-xs font-semibold">
-                {totalChunks} Chunks Retrieved
+                {totalChunks} Final Chunks (Top {response.top_k ?? 20}/feature)
               </Badge>
             </div>
             <p className="mt-1 text-xs text-slate-500">
               Collection: <span className="font-medium text-slate-700">{response.collection}</span>
-              {response.score_threshold != null && (
-                <> · Threshold: <span className="font-medium text-slate-700">≥ {response.score_threshold}</span></>
+              {' '}· BGE cross-encoder reranked (top {response.top_k ?? 20} selected)
+              {response.score_threshold != null && response.score_threshold > 0 && (
+                <> · Min Vector Score: <span className="font-medium text-slate-700">≥ {response.score_threshold}</span></>
               )}
-              {' '}· Each feature searched independently
             </p>
           </div>
 
@@ -61,6 +61,12 @@ export function KeyFeatureResultsView({ response }: KeyFeatureResultsViewProps) 
               <div className="rounded-md bg-slate-50 px-2.5 py-1.5 border border-slate-200">
                 <span className="text-slate-400">Qdrant Search:</span>{' '}
                 <span className="font-bold text-slate-800">{Math.round(response.timings.retrieval_ms)}ms</span>
+              </div>
+            )}
+            {response.timings.reranking_ms && (
+              <div className="rounded-md bg-slate-50 px-2.5 py-1.5 border border-slate-200">
+                <span className="text-slate-400">BGE Rerank:</span>{' '}
+                <span className="font-bold text-slate-800">{Math.round(response.timings.reranking_ms)}ms</span>
               </div>
             )}
             {response.timings.total_ms && (

@@ -38,9 +38,11 @@ from app.config import (
     CHUNKS_COLLECTION_PREFIX,
     PATENTS_COLLECTION_NAME,
     PATENTS_COLLECTION_PREFIX,
+    QDRANT_GRPC_PORT,
     QDRANT_HOST,
     QDRANT_INDEXING_THRESHOLD_KB,
     QDRANT_PORT,
+    QDRANT_PREFER_GRPC,
     QDRANT_TIMEOUT,
     VECTOR_SIZE,
 )
@@ -69,9 +71,16 @@ def _natural_key(name: str) -> list:
 class QdrantDB:
     def __init__(self, timeout: float = QDRANT_TIMEOUT):
 
+        grpc_options = {
+            "grpc.max_receive_message_length": 1024 * 1024 * 1024,
+            "grpc.max_send_message_length": 1024 * 1024 * 1024,
+        }
         self.client = QdrantClient(
             host=QDRANT_HOST,
             port=QDRANT_PORT,
+            grpc_port=QDRANT_GRPC_PORT,
+            prefer_grpc=QDRANT_PREFER_GRPC,
+            grpc_options=grpc_options,
             timeout=timeout,
         )
 

@@ -27,7 +27,8 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
       invention_title: '',
       invention_details: '',
       collection: collections.data?.default ?? '512',
-      score_threshold: 0.5,
+      score_threshold: 0.0,
+      top_k: 20,
     },
   })
 
@@ -51,7 +52,7 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
       <div className="border-b border-slate-100 pb-4">
         <h2 className="text-lg font-semibold text-slate-900">Key Feature Search Flow</h2>
         <p className="text-sm text-slate-500">
-          Extracts 5–15 key technical features via LLM, then embeds and searches Qdrant for each feature independently.
+          Extracts 5–15 key technical features via LLM, embeds &amp; retrieves candidate chunks from Qdrant, reranks them with BGE Cross-Encoder, and returns the top chunks per feature.
         </p>
       </div>
 
@@ -111,8 +112,8 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
           )}
         </div>
 
-        {/* Options: Collection & Score Threshold */}
-        <div className="grid grid-cols-1 gap-4 pt-2 sm:grid-cols-2">
+        {/* Options: Collection, Top-K Reranked, & Score Threshold */}
+        <div className="grid grid-cols-1 gap-4 pt-2 sm:grid-cols-3">
           <SelectField
             label="Qdrant Collection"
             {...register('collection')}
@@ -133,12 +134,24 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
 
           <TextField
             type="number"
-            label="Threshold Score"
-            hint="Chunks with similarity score ≥ this threshold are returned (0.0 to 1.0)"
+            label="Top Chunks (Reranked)"
+            hint="Final top chunks kept after reranking (default 20)"
+            min={1}
+            max={200}
+            step={1}
+            placeholder="20"
+            {...register('top_k', { valueAsNumber: true })}
+            error={errors.top_k?.message}
+          />
+
+          <TextField
+            type="number"
+            label="Initial Threshold"
+            hint="Min vector score for retrieved candidates (0.0 for all)"
             min={0}
             max={1}
             step={0.01}
-            placeholder="0.5"
+            placeholder="0.0"
             {...register('score_threshold', { valueAsNumber: true })}
             error={errors.score_threshold?.message}
           />

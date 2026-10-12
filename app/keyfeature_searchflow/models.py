@@ -7,6 +7,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+from app.config import (
+    KEYFEATURE_RERANK_TOP_K,
+    KEYFEATURE_RETRIEVAL_LIMIT,
+)
+
+
 class KeyFeatureItem(BaseModel):
     feature_id: int
     feature: str
@@ -20,6 +26,8 @@ class FeatureChunkResult(BaseModel):
     chunk_id: int
     patent_id: str
     score: float
+    retrieval_score: float | None = None
+    reranker_score: float | None = None
     text: str
     section: str | None = None
     title: str | None = None
@@ -40,7 +48,9 @@ class KeyFeatureSearchRequest(BaseModel):
     invention_title: str
     invention_details: str
     collection: str | None = None
-    score_threshold: float = 0.5
+    score_threshold: float = 0.0
+    top_k: int = KEYFEATURE_RERANK_TOP_K
+    retrieval_limit: int = KEYFEATURE_RETRIEVAL_LIMIT
 
 
 class KeyFeatureSearchResponse(BaseModel):
@@ -49,6 +59,8 @@ class KeyFeatureSearchResponse(BaseModel):
     invention_details: str
     collection: str
     score_threshold: float | None = None
+    top_k: int = KEYFEATURE_RERANK_TOP_K
+    retrieval_limit: int = KEYFEATURE_RETRIEVAL_LIMIT
     total_features: int
     results: list[FeatureSearchResult]
     timings: dict[str, float] = Field(default_factory=dict)

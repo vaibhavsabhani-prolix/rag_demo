@@ -254,6 +254,12 @@ class BGEReranker:
 
         return scores, len(starts)
 
+    def score_documents(self, query: str, documents: List[str]) -> Tuple[List[float], int]:
+        """
+        Public API: Score *documents* against *query* in concurrent batches.
+        """
+        return self._score_documents(query=query, documents=documents)
+
     def rerank_candidates(
         self,
         parsed_query: ParsedQuery,

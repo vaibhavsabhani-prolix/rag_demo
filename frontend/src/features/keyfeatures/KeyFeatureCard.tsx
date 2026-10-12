@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { Badge, ChevronIcon } from '@/components/ui'
+import { usePipelineConfig } from '@/hooks/queries'
+import { patentUrl } from '@/lib/patent'
 import type { FeatureSearchResult, FeatureChunkResult } from '@/schemas/keyfeature'
 
 interface KeyFeatureCardProps {
@@ -26,7 +28,7 @@ export function KeyFeatureCard({ result, defaultExpanded = true }: KeyFeatureCar
           <div>
             <h3 className="text-base font-semibold text-slate-900">{result.feature}</h3>
             <p className="mt-0.5 text-xs text-slate-500">
-              Independent embedding &amp; vector search · {chunks.length} candidate {chunks.length === 1 ? 'chunk' : 'chunks'} retrieved
+              BGE Cross-Encoder Reranked · {chunks.length} final {chunks.length === 1 ? 'chunk' : 'chunks'} selected
             </p>
           </div>
         </div>
@@ -65,6 +67,8 @@ export function KeyFeatureCard({ result, defaultExpanded = true }: KeyFeatureCar
 
 function ChunkItem({ chunk, index }: { chunk: FeatureChunkResult; index: number }) {
   const [copied, setCopied] = useState(false)
+  const { data: config } = usePipelineConfig()
+  const url = patentUrl(config?.patent_view_url_template, chunk.patent_id)
 
   const handleCopy = () => {
     navigator.clipboard.writeText(chunk.text)
@@ -78,11 +82,11 @@ function ChunkItem({ chunk, index }: { chunk: FeatureChunkResult; index: number 
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-bold text-slate-400">#{index}</span>
           <a
-            href={`https://patents.google.com/patent/${chunk.patent_id}/en`}
+            href={url}
             target="_blank"
             rel="noopener noreferrer"
             className="font-mono text-sm font-semibold text-indigo-600 hover:underline"
-            title="Open in Google Patents"
+            title="Open in Patent View"
           >
             {chunk.patent_id}
           </a>
@@ -100,8 +104,22 @@ function ChunkItem({ chunk, index }: { chunk: FeatureChunkResult; index: number 
 
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-500">Sim:</span>
-            <span className="font-mono text-xs font-bold text-slate-800">{chunk.score.toFixed(3)}</span>
+            {chunk.reranker_score != null ? (
+              <>
+                <span className="text-xs text-slate-500">Rerank:</span>
+                <span className="font-mono text-xs font-bold text-slate-800">{chunk.reranker_score.toFixed(3)}</span>
+                {chunk.retrieval_score != null && (
+                  <span className="text-2xs text-slate-400 font-mono" title="Vector similarity score from initial retrieval">
+                    (Vec: {chunk.retrieval_score.toFixed(3)})
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                <span className="text-xs text-slate-500">Sim:</span>
+                <span className="font-mono text-xs font-bold text-slate-800">{chunk.score.toFixed(3)}</span>
+              </>
+            )}
             <div className="w-16 h-2 overflow-hidden rounded-full bg-slate-100">
               <div
                 className="h-full bg-indigo-500 rounded-full"
@@ -125,7 +143,6 @@ function ChunkItem({ chunk, index }: { chunk: FeatureChunkResult; index: number 
 
       <div className="mt-2 flex items-center justify-between text-2xs text-slate-400">
         <span>Chunk ID: {chunk.chunk_id}</span>
-        {chunk.token_count && <span>Tokens: {chunk.token_count}</span>}
       </div>
     </div>
   )

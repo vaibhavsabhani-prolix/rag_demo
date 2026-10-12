@@ -29,6 +29,10 @@ export function summarizePatent(meta: Metadata): PatentSummary {
   }
 }
 
-export function patentUrl(template: string | undefined, patentId: string): string | undefined {
-  return template?.replace('{patent_id}', encodeURIComponent(patentId))
+export const DEFAULT_PATENT_VIEW_URL_TEMPLATE =
+  'https://www.qubeip.com/en/patent-view/{patent_id}'
+
+export function patentUrl(template: string | undefined, patentId: string): string {
+  const tmpl = template || DEFAULT_PATENT_VIEW_URL_TEMPLATE
+  return tmpl.replace('{patent_id}', encodeURIComponent(patentId))
 }
