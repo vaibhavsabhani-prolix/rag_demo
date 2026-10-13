@@ -149,12 +149,12 @@ export function KeyFeaturePatentTable({ results }: KeyFeaturePatentTableProps) {
                           href={url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="font-mono text-sm font-semibold text-indigo-600 hover:underline"
+                          className="font-mono text-sm font-semibold text-indigo-600 hover:underline dark:text-indigo-400 dark:hover:text-indigo-300"
                         >
                           {row.patent_id}
                         </a>
                       ) : (
-                        <span className="font-mono text-sm font-semibold text-indigo-600">{row.patent_id}</span>
+                        <span className="font-mono text-sm font-semibold text-indigo-600 dark:text-indigo-400">{row.patent_id}</span>
                       )}
                       <div className="mt-0.5 text-2xs text-slate-400">{row.chunkCount} matching chunk{row.chunkCount === 1 ? '' : 's'}</div>
                     </td>

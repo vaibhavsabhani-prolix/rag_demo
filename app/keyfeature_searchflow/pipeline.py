@@ -70,6 +70,18 @@ class KeyFeatureSearchPipeline:
                         chunk.metadata = pat_meta
                         if pat_meta.get("title"):
                             chunk.title = pat_meta.get("title")
+                for pat in feat_res.patents:
+                    if pat.patent_id in metadata_map:
+                        pat_meta = metadata_map[pat.patent_id]
+                        pat.metadata = pat_meta
+                        if pat_meta.get("title"):
+                            pat.title = pat_meta.get("title")
+                    for pch in pat.chunks:
+                        if pch.patent_id in metadata_map:
+                            pat_meta = metadata_map[pch.patent_id]
+                            pch.metadata = pat_meta
+                            if pat_meta.get("title"):
+                                pch.title = pat_meta.get("title")
         except Exception as exc:  # noqa: BLE001 - metadata enrichment is best-effort
             logger.warning("Could not enrich patent metadata: %s", exc)
 

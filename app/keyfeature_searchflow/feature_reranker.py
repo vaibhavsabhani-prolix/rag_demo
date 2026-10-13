@@ -15,7 +15,11 @@ from app.highlighting import (
     sentences_to_score,
     split_sentences,
 )
-from app.keyfeature_searchflow.models import FeatureChunkResult, FeatureSearchResult
+from app.keyfeature_searchflow.models import (
+    FeatureChunkResult,
+    FeaturePatentResult,
+    FeatureSearchResult,
+)
 from app.models.reranking import ChunkHighlight, HighlightSentence, HighlightTerm
 from app.reranking.reranker import BGEReranker
 
@@ -26,7 +30,9 @@ class KeyFeatureReranker:
     def __init__(self, reranker: BGEReranker | None = None):
         self.reranker = reranker or BGEReranker()
 
-    def _format_chunk(self, text: str, section: str | None, doc_budget: int = 3800) -> str:
+    def _format_chunk(
+        self, text: str, section: str | None, doc_budget: int = 3800
+    ) -> str:
         """
         Format chunk with section prefix and ensure it fits within context budget.
         """
@@ -46,7 +52,7 @@ class KeyFeatureReranker:
     ) -> list[FeatureSearchResult]:
         """
         Rerank retrieved candidate chunks for each feature against that feature's text,
-        then select and retain only the top_k final chunks.
+        then select and retain the top_k unique patents (along with all matching chunks for each).
         """
         if not results:
             return []
@@ -58,13 +64,43 @@ class KeyFeatureReranker:
 
             query = (feature_result.feature or "").strip()
             if not query:
-                # If feature query is empty, keep top_k by initial retrieval score
-                feature_result.chunks = chunks[:top_k]
+                # If feature query is empty, group by unique patent by initial retrieval score
+                patent_chunks_map: dict[str, list[FeatureChunkResult]] = {}
+                for ch in chunks:
+                    if ch.patent_id:
+                        patent_chunks_map.setdefault(ch.patent_id, []).append(ch)
+
+                for p_chunks in patent_chunks_map.values():
+                    p_chunks.sort(key=lambda c: c.score, reverse=True)
+
+                ranked_patent_items = sorted(
+                    patent_chunks_map.items(),
+                    key=lambda item: item[1][0].score,
+                    reverse=True,
+                )[:top_k]
+
+                top_patents: list[FeaturePatentResult] = []
+                retained_chunks: list[FeatureChunkResult] = []
+                for pid, p_chunks in ranked_patent_items:
+                    best_chunk = p_chunks[0]
+                    pat_res = FeaturePatentResult(
+                        patent_id=pid,
+                        title=best_chunk.title,
+                        score=best_chunk.score,
+                        best_reranker_score=None,
+                        best_retrieval_score=best_chunk.score,
+                        metadata=dict(best_chunk.metadata) if best_chunk.metadata else {},
+                        chunks=p_chunks,
+                    )
+                    top_patents.append(pat_res)
+                    retained_chunks.extend(p_chunks)
+
+                feature_result.patents = top_patents
+                feature_result.chunks = retained_chunks
                 continue
 
             formatted_docs: list[str] = [
-                self._format_chunk(ch.text or "", ch.section)
-                for ch in chunks
+                self._format_chunk(ch.text or "", ch.section) for ch in chunks
             ]
 
             logger.info(
@@ -90,28 +126,72 @@ class KeyFeatureReranker:
                 if has_valid_scores:
                     ch.score = r_score
 
-            # Sort descending by reranker_score (with retrieval_score as tiebreaker)
-            chunks.sort(
-                key=lambda c: (
-                    c.reranker_score if c.reranker_score is not None else 0.0,
-                    c.retrieval_score if c.retrieval_score is not None else 0.0,
+            # Group candidate chunks by unique patent_id
+            patent_chunks_map: dict[str, list[FeatureChunkResult]] = {}
+            for ch in chunks:
+                if not ch.patent_id:
+                    continue
+                patent_chunks_map.setdefault(ch.patent_id, []).append(ch)
+
+            # Sort chunks within each patent by reranker score (tiebreaker retrieval score)
+            for p_chunks in patent_chunks_map.values():
+                p_chunks.sort(
+                    key=lambda c: (
+                        c.reranker_score if c.reranker_score is not None else 0.0,
+                        c.retrieval_score if c.retrieval_score is not None else 0.0,
+                    ),
+                    reverse=True,
+                )
+
+            # Rank unique patents by best chunk's reranker score (tiebreaker retrieval score)
+            ranked_patent_items = sorted(
+                patent_chunks_map.items(),
+                key=lambda item: (
+                    item[1][0].reranker_score if item[1][0].reranker_score is not None else 0.0,
+                    item[1][0].retrieval_score if item[1][0].retrieval_score is not None else 0.0,
                 ),
                 reverse=True,
             )
 
-            # Keep top_k final chunks
-            top_chunks = chunks[:top_k]
-            feature_result.chunks = top_chunks
+            # Select top_k unique patents
+            top_patent_items = ranked_patent_items[:top_k]
 
-            # Compute sentence-level highlights and query-term matches on retained chunks
-            self._compute_highlights_for_chunks(query=query, chunks=top_chunks)
+            # Build FeaturePatentResult objects with ALL matching chunks for each patent
+            top_patents: list[FeaturePatentResult] = []
+            retained_chunks: list[FeatureChunkResult] = []
 
-            best_score = feature_result.chunks[0].score if feature_result.chunks else 0.0
+            for pat_id, p_chunks in top_patent_items:
+                best_chunk = p_chunks[0]
+                best_retrieval = max(
+                    (c.retrieval_score for c in p_chunks if c.retrieval_score is not None),
+                    default=None,
+                )
+                pat_result = FeaturePatentResult(
+                    patent_id=pat_id,
+                    title=best_chunk.title,
+                    score=best_chunk.score,
+                    best_reranker_score=best_chunk.reranker_score,
+                    best_retrieval_score=best_retrieval,
+                    metadata=dict(best_chunk.metadata) if best_chunk.metadata else {},
+                    chunks=p_chunks,
+                )
+                top_patents.append(pat_result)
+                retained_chunks.extend(p_chunks)
+
+            feature_result.patents = top_patents
+            feature_result.chunks = retained_chunks
+
+            # Compute sentence-level highlights and query-term matches on all retained chunks
+            self._compute_highlights_for_chunks(query=query, chunks=retained_chunks)
+
+            best_score = top_patents[0].score if top_patents else 0.0
             logger.info(
-                "Feature %d: retained top %d chunks out of %d candidates (best score: %.4f)",
+                "Feature %d: retained top %d unique patents (%d total matching chunks) out of %d candidate chunks across %d patents (best score: %.4f)",
                 feature_result.feature_id,
-                len(feature_result.chunks),
+                len(top_patents),
+                len(retained_chunks),
                 len(chunks),
+                len(patent_chunks_map),
                 best_score,
             )
 

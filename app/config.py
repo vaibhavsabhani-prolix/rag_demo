@@ -12,7 +12,7 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql+psycopg://patent:patent@localhost:5434/patent_search"
 )
 
-PATENT_DIRECTORY = "patents/bluetooth"
+PATENT_DIRECTORY = "patents/patent-features"
 
 # Search discovers collections in Qdrant by name: every "patent_chunks_<name>"
 # that has a matching "patents_metadata_<name>" can be searched as "<name>",
@@ -105,7 +105,7 @@ RETRIEVAL_TOP_K_CHUNKS = 1000
 
 # Key Feature Search Flow configuration
 KEYFEATURE_RETRIEVAL_LIMIT = 5000  # Number of candidate chunks retrieved from Qdrant per feature
-KEYFEATURE_RERANK_TOP_K = 20       # Final top chunks kept after reranking per feature (adjustable anytime)
+KEYFEATURE_RERANK_TOP_K = 20       # Final top unique patents kept after reranking per feature (adjustable anytime)
 
 # Phase 4 verification configuration
 VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD = 0.35

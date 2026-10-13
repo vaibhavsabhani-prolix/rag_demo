@@ -38,10 +38,21 @@ class FeatureChunkResult(BaseModel):
     highlight: ChunkHighlight | None = None
 
 
+class FeaturePatentResult(BaseModel):
+    patent_id: str
+    title: str | None = None
+    score: float
+    best_reranker_score: float | None = None
+    best_retrieval_score: float | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    chunks: list[FeatureChunkResult] = Field(default_factory=list[FeatureChunkResult])
+
+
 class FeatureSearchResult(BaseModel):
     feature_id: int
     feature: str
     chunks: list[FeatureChunkResult] = Field(default_factory=list[FeatureChunkResult])
+    patents: list[FeaturePatentResult] = Field(default_factory=list[FeaturePatentResult])
 
 
 class KeyFeatureSearchRequest(BaseModel):

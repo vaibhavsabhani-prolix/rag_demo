@@ -134,8 +134,8 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
 
           <TextField
             type="number"
-            label="Top Chunks (Reranked)"
-            hint="Final top chunks kept after reranking (default 20)"
+            label="Top Patents (Reranked)"
+            hint="Final top patents kept after reranking (default 20)"
             min={1}
             max={200}
             step={1}

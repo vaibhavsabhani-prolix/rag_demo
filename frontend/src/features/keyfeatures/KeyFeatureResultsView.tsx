@@ -13,6 +13,7 @@ export function KeyFeatureResultsView({ response }: KeyFeatureResultsViewProps) 
   const [viewMode, setViewMode] = useState<'patent' | 'feature'>('patent')
   const results = response.results || []
   const totalChunks = results.reduce((sum, r) => sum + (r.chunks?.length || 0), 0)
+  const totalUniquePatents = new Set(results.flatMap((r) => r.chunks?.map((c) => c.patent_id) || [])).size
 
   const displayedResults =
     selectedFeatureId === 'all'
@@ -31,12 +32,12 @@ export function KeyFeatureResultsView({ response }: KeyFeatureResultsViewProps) 
                 {results.length} Features Extracted
               </Badge>
               <Badge tone="success" className="text-xs font-semibold">
-                {totalChunks} Final Chunks (Top {response.top_k ?? 20}/feature)
+                {totalUniquePatents} Unique Patents · {totalChunks} Chunks (Top {response.top_k ?? 20} patents/feature)
               </Badge>
             </div>
             <p className="mt-1 text-xs text-slate-500">
               Collection: <span className="font-medium text-slate-700">{response.collection}</span>
-              {' '}· BGE cross-encoder reranked (top {response.top_k ?? 20} selected)
+              {' '}· BGE cross-encoder reranked (top {response.top_k ?? 20} patents per feature with all matching chunks)
               {response.score_threshold != null && response.score_threshold > 0 && (
                 <> · Min Vector Score: <span className="font-medium text-slate-700">≥ {response.score_threshold}</span></>
               )}
@@ -106,20 +107,23 @@ export function KeyFeatureResultsView({ response }: KeyFeatureResultsViewProps) 
             >
               All Features ({results.length})
             </button>
-            {results.map((r) => (
-              <button
-                key={r.feature_id}
-                type="button"
-                onClick={() => setSelectedFeatureId(r.feature_id)}
-                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                  selectedFeatureId === r.feature_id
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                Feature {r.feature_id} ({r.chunks?.length || 0})
-              </button>
-            ))}
+            {results.map((r) => {
+              const patentCount = r.patents?.length || new Set(r.chunks?.map((c) => c.patent_id) || []).size
+              return (
+                <button
+                  key={r.feature_id}
+                  type="button"
+                  onClick={() => setSelectedFeatureId(r.feature_id)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                    selectedFeatureId === r.feature_id
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  Feature {r.feature_id} ({patentCount} {patentCount === 1 ? 'patent' : 'patents'})
+                </button>
+              )
+            })}
           </div>
         )}
       </div>

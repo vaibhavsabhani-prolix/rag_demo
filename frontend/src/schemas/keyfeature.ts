@@ -54,10 +54,23 @@ export const featureChunkResultSchema = z.object({
 
 export type FeatureChunkResult = z.infer<typeof featureChunkResultSchema>
 
+export const featurePatentResultSchema = z.object({
+  patent_id: z.string(),
+  title: z.string().nullable().optional(),
+  score: z.number(),
+  best_reranker_score: z.number().nullable().optional(),
+  best_retrieval_score: z.number().nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  chunks: z.array(featureChunkResultSchema).default([]),
+})
+
+export type FeaturePatentResult = z.infer<typeof featurePatentResultSchema>
+
 export const featureSearchResultSchema = z.object({
   feature_id: z.number().int(),
   feature: z.string(),
   chunks: z.array(featureChunkResultSchema).default([]),
+  patents: z.array(featurePatentResultSchema).default([]),
 })
 
 export type FeatureSearchResult = z.infer<typeof featureSearchResultSchema>
