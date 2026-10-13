@@ -6,10 +6,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.config import (
-    KEYFEATURE_RERANK_TOP_K,
-    KEYFEATURE_RETRIEVAL_LIMIT,
-)
 from app.models.reranking import ChunkHighlight
 
 
@@ -61,8 +57,9 @@ class KeyFeatureSearchRequest(BaseModel):
     invention_details: str
     collection: str | None = None
     score_threshold: float = 0.0
-    top_k: int = KEYFEATURE_RERANK_TOP_K
-    retrieval_limit: int = KEYFEATURE_RETRIEVAL_LIMIT
+    rerank_score_threshold: float = 0.6
+    top_k: int = 20
+    retrieval_limit: int = 5000
 
 
 class KeyFeatureSearchResponse(BaseModel):
@@ -71,8 +68,9 @@ class KeyFeatureSearchResponse(BaseModel):
     invention_details: str
     collection: str
     score_threshold: float | None = None
-    top_k: int = KEYFEATURE_RERANK_TOP_K
-    retrieval_limit: int = KEYFEATURE_RETRIEVAL_LIMIT
+    rerank_score_threshold: float | None = None
+    top_k: int = 20
+    retrieval_limit: int = 5000
     total_features: int
     results: list[FeatureSearchResult]
     timings: dict[str, float] = Field(default_factory=dict)

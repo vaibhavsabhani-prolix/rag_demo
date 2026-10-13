@@ -56,7 +56,9 @@ export function useKeyFeatureSearch() {
           invention_details: values.invention_details,
           collection: values.collection,
           score_threshold: values.score_threshold,
+          rerank_score_threshold: values.rerank_score_threshold,
           top_k: values.top_k,
+          retrieval_limit: values.retrieval_limit,
         },
         (event) => {
           switch (event.type) {

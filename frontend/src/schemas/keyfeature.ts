@@ -16,15 +16,24 @@ export const keyFeatureFormSchema = z.object({
     .trim()
     .min(10, 'Please provide invention details or disclosure (at least 10 characters).'),
   collection: z.string().min(1, 'Select a collection to search.'),
-  score_threshold: z
+  retrieval_limit: z
     .number()
-    .min(0, 'Threshold score must be at least 0.0')
-    .max(1, 'Threshold score must be at most 1.0'),
+    .int()
+    .min(10, 'Candidate limit must be at least 10')
+    .max(10000, 'Candidate limit cannot exceed 10,000'),
   top_k: z
     .number()
     .int()
     .min(1, 'Top chunks must be at least 1')
     .max(200, 'Top chunks cannot exceed 200'),
+  score_threshold: z
+    .number()
+    .min(0, 'Threshold score must be at least 0.0')
+    .max(1, 'Threshold score must be at most 1.0'),
+  rerank_score_threshold: z
+    .number()
+    .min(0, 'Reranking threshold score must be at least 0.0')
+    .max(1, 'Reranking threshold score must be at most 1.0'),
 })
 
 export type KeyFeatureFormValues = z.infer<typeof keyFeatureFormSchema>
@@ -81,6 +90,7 @@ export const keyFeatureSearchResponseSchema = z.object({
   invention_details: z.string(),
   collection: z.string(),
   score_threshold: z.number().nullable().optional(),
+  rerank_score_threshold: z.number().nullable().optional(),
   top_k: z.number().optional(),
   retrieval_limit: z.number().optional(),
   total_features: z.number(),
@@ -97,6 +107,7 @@ export const keyFeatureEventSchema = z.discriminatedUnion('type', [
     invention_title: z.string().optional(),
     collection: z.string().optional(),
     score_threshold: z.number().optional(),
+    rerank_score_threshold: z.number().optional(),
     top_k: z.number().optional(),
     retrieval_limit: z.number().optional(),
   }),

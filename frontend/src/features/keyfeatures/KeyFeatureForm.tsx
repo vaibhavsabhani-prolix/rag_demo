@@ -27,8 +27,10 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
       invention_title: '',
       invention_details: '',
       collection: collections.data?.default ?? '512',
-      score_threshold: 0.0,
+      retrieval_limit: 5000,
       top_k: 20,
+      score_threshold: 0.0,
+      rerank_score_threshold: 0.6,
     },
   })
 
@@ -112,9 +114,10 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
           )}
         </div>
 
-        {/* Options: Collection, Top-K Reranked, & Score Threshold */}
-        <div className="grid grid-cols-1 gap-4 pt-2 sm:grid-cols-3">
+        {/* Options: Collection, Retrieval Limit, Top-K Reranked, Initial Threshold, & Rerank Threshold */}
+        <div className="grid grid-cols-1 gap-4 pt-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           <SelectField
+            id="kf_collection"
             label="Qdrant Collection"
             {...register('collection')}
             disabled={!collections.data || noCollections}
@@ -133,9 +136,23 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
           </SelectField>
 
           <TextField
+            id="kf_retrieval_limit"
+            type="number"
+            label="Candidate Limit"
+            hint="Chunks retrieved per feature (default 5000)"
+            min={10}
+            max={10000}
+            step={100}
+            placeholder="5000"
+            {...register('retrieval_limit', { valueAsNumber: true })}
+            error={errors.retrieval_limit?.message}
+          />
+
+          <TextField
+            id="kf_top_k"
             type="number"
             label="Top Patents (Reranked)"
-            hint="Final top patents kept after reranking (default 20)"
+            hint="Final top patents kept per feature (default 20)"
             min={1}
             max={200}
             step={1}
@@ -145,15 +162,29 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
           />
 
           <TextField
+            id="kf_score_threshold"
             type="number"
             label="Initial Threshold"
-            hint="Min vector score for retrieved candidates (0.0 for all)"
+            hint="Min vector score for candidates (0.0 for all)"
             min={0}
             max={1}
             step={0.01}
             placeholder="0.0"
             {...register('score_threshold', { valueAsNumber: true })}
             error={errors.score_threshold?.message}
+          />
+
+          <TextField
+            id="kf_rerank_score_threshold"
+            type="number"
+            label="Rerank Threshold"
+            hint="Min cross-encoder score to keep (default 0.6)"
+            min={0}
+            max={1}
+            step={0.01}
+            placeholder="0.6"
+            {...register('rerank_score_threshold', { valueAsNumber: true })}
+            error={errors.rerank_score_threshold?.message}
           />
         </div>
       </div>

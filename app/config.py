@@ -103,9 +103,6 @@ PATENT_VIEW_URL_TEMPLATE = "https://www.qubeip.com/en/patent-view/{patent_id}"
 # Phase 2 Retrieval configuration
 RETRIEVAL_TOP_K_CHUNKS = 1000
 
-# Key Feature Search Flow configuration
-KEYFEATURE_RETRIEVAL_LIMIT = 5000  # Number of candidate chunks retrieved from Qdrant per feature
-KEYFEATURE_RERANK_TOP_K = 20       # Final top unique patents kept after reranking per feature (adjustable anytime)
 
 # Phase 4 verification configuration
 VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD = 0.35

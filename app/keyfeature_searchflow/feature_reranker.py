@@ -8,7 +8,6 @@ text using the BGE cross-encoder reranker, and selects the top-K final chunks.
 import logging
 import re
 
-from app.config import KEYFEATURE_RERANK_TOP_K
 from app.highlighting import (
     extract_term_patterns,
     find_term_spans,
@@ -48,7 +47,8 @@ class KeyFeatureReranker:
     def rerank_feature_results(
         self,
         results: list[FeatureSearchResult],
-        top_k: int = KEYFEATURE_RERANK_TOP_K,
+        top_k: int = 20,
+        rerank_score_threshold: float = 0.6,
     ) -> list[FeatureSearchResult]:
         """
         Rerank retrieved candidate chunks for each feature against that feature's text,
@@ -68,6 +68,8 @@ class KeyFeatureReranker:
                 patent_chunks_map: dict[str, list[FeatureChunkResult]] = {}
                 for ch in chunks:
                     if ch.patent_id:
+                        if rerank_score_threshold > 0 and ch.score < rerank_score_threshold:
+                            continue
                         patent_chunks_map.setdefault(ch.patent_id, []).append(ch)
 
                 for p_chunks in patent_chunks_map.values():
@@ -126,9 +128,18 @@ class KeyFeatureReranker:
                 if has_valid_scores:
                     ch.score = r_score
 
+            # Filter candidate chunks by reranking score threshold if specified
+            qualifying_chunks = chunks
+            if rerank_score_threshold > 0 and has_valid_scores:
+                qualifying_chunks = [
+                    ch
+                    for ch in chunks
+                    if ch.reranker_score is not None and ch.reranker_score >= rerank_score_threshold
+                ]
+
             # Group candidate chunks by unique patent_id
             patent_chunks_map: dict[str, list[FeatureChunkResult]] = {}
-            for ch in chunks:
+            for ch in qualifying_chunks:
                 if not ch.patent_id:
                     continue
                 patent_chunks_map.setdefault(ch.patent_id, []).append(ch)
@@ -186,13 +197,14 @@ class KeyFeatureReranker:
 
             best_score = top_patents[0].score if top_patents else 0.0
             logger.info(
-                "Feature %d: retained top %d unique patents (%d total matching chunks) out of %d candidate chunks across %d patents (best score: %.4f)",
+                "Feature %d: retained top %d unique patents (%d total matching chunks) out of %d candidate chunks across %d patents (best score: %.4f, threshold: %.4f)",
                 feature_result.feature_id,
                 len(top_patents),
                 len(retained_chunks),
                 len(chunks),
                 len(patent_chunks_map),
                 best_score,
+                rerank_score_threshold,
             )
 
         return results

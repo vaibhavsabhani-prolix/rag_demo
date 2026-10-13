@@ -3,11 +3,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from app.config import (
-    CHUNKS_COLLECTION_NAME,
-    KEYFEATURE_RERANK_TOP_K,
-    KEYFEATURE_RETRIEVAL_LIMIT,
-)
+from app.config import CHUNKS_COLLECTION_NAME
 from app.keyfeature_searchflow.feature_embedder import KeyFeatureEmbedder
 from app.keyfeature_searchflow.feature_extractor import KeyFeatureExtractor
 from app.keyfeature_searchflow.feature_reranker import KeyFeatureReranker
@@ -92,8 +88,9 @@ class KeyFeatureSearchPipeline:
         invention_details: str,
         collection: SearchCollection | str = CHUNKS_COLLECTION_NAME,
         score_threshold: float = 0.0,
-        retrieval_limit: int = KEYFEATURE_RETRIEVAL_LIMIT,
-        top_k: int = KEYFEATURE_RERANK_TOP_K,
+        rerank_score_threshold: float = 0.6,
+        retrieval_limit: int = 5000,
+        top_k: int = 20,
         on_phase: Callable[[int, str, Any], None] | None = None,
     ) -> KeyFeatureSearchResponse:
 
@@ -134,6 +131,7 @@ class KeyFeatureSearchPipeline:
         results = self.reranker.rerank_feature_results(
             results=results,
             top_k=top_k,
+            rerank_score_threshold=rerank_score_threshold,
         )
         elapsed_rerank = (time.perf_counter() - t3) * 1000
 
@@ -154,6 +152,7 @@ class KeyFeatureSearchPipeline:
             invention_details=invention_details,
             collection=collection_str,
             score_threshold=score_threshold,
+            rerank_score_threshold=rerank_score_threshold,
             retrieval_limit=retrieval_limit,
             top_k=top_k,
             total_features=len(features),

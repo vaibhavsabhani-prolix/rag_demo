@@ -348,6 +348,7 @@ def _stream_keyfeature_search(
                 invention_details=req.invention_details,
                 collection=collection,
                 score_threshold=req.score_threshold,
+                rerank_score_threshold=req.rerank_score_threshold,
                 retrieval_limit=req.retrieval_limit,
                 top_k=req.top_k,
                 on_phase=on_phase,
@@ -369,6 +370,7 @@ def _stream_keyfeature_search(
         "invention_title": req.invention_title,
         "collection": collection.name,
         "score_threshold": req.score_threshold,
+        "rerank_score_threshold": req.rerank_score_threshold,
         "top_k": req.top_k,
         "retrieval_limit": req.retrieval_limit,
     })

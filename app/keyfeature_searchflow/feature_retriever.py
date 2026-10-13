@@ -5,7 +5,6 @@ from qdrant_client.models import QueryRequest
 
 from app.config import (
     CHUNKS_COLLECTION_NAME,
-    KEYFEATURE_RETRIEVAL_LIMIT,
     PATENTS_COLLECTION_NAME,
     QDRANT_TIMEOUT,
 )
@@ -49,7 +48,7 @@ class KeyFeatureRetriever:
         features_with_embeddings: list[tuple[KeyFeatureItem, list[float]]],
         collection: SearchCollection | str = CHUNKS_COLLECTION_NAME,
         score_threshold: float = 0.0,
-        limit: int = KEYFEATURE_RETRIEVAL_LIMIT,
+        limit: int = 5000,
     ) -> list[FeatureSearchResult]:
 
         if not features_with_embeddings:

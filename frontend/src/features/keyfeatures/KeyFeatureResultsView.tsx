@@ -41,6 +41,12 @@ export function KeyFeatureResultsView({ response }: KeyFeatureResultsViewProps) 
               {response.score_threshold != null && response.score_threshold > 0 && (
                 <> · Min Vector Score: <span className="font-medium text-slate-700">≥ {response.score_threshold}</span></>
               )}
+              {response.rerank_score_threshold != null && response.rerank_score_threshold > 0 && (
+                <> · Min Rerank Score: <span className="font-medium text-slate-700">≥ {response.rerank_score_threshold}</span></>
+              )}
+              {response.retrieval_limit != null && (
+                <> · Candidates/Feature: <span className="font-medium text-slate-700">{response.retrieval_limit}</span></>
+              )}
             </p>
           </div>
 
