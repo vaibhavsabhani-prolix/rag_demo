@@ -116,6 +116,7 @@ class KeyFeatureRetriever:
                     FeatureChunkResult(
                         chunk_id=chunk_id,
                         patent_id=patent_id,
+                        feature_id=feature_item.feature_id,
                         score=score,
                         retrieval_score=score,
                         reranker_score=None,

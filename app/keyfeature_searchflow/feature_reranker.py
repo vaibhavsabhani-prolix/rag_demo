@@ -18,6 +18,7 @@ from app.keyfeature_searchflow.models import (
     FeatureChunkResult,
     FeaturePatentResult,
     FeatureSearchResult,
+    StepPatentInfo,
 )
 from app.models.reranking import ChunkHighlight, HighlightSentence, HighlightTerm
 from app.reranking.reranker import BGEReranker
@@ -61,29 +62,55 @@ class KeyFeatureReranker:
             chunks = feature_result.chunks
             if not chunks:
                 continue
+            feat_id = feature_result.feature_id
+            for ch in chunks:
+                ch.feature_id = feat_id
+
+            # Group all chunks from initial vector retrieval by patent_id
+            vector_patent_chunks: dict[str, list[FeatureChunkResult]] = {}
+            for ch in chunks:
+                if ch.patent_id:
+                    vector_patent_chunks.setdefault(ch.patent_id, []).append(ch)
+
+            vector_retrieval_patents: list[StepPatentInfo] = []
+            for pid, p_chunks in vector_patent_chunks.items():
+                best_retrieval_sc = max(
+                    (c.retrieval_score if c.retrieval_score is not None else c.score for c in p_chunks),
+                    default=0.0,
+                )
+                vector_retrieval_patents.append(
+                    StepPatentInfo(
+                        patent_id=pid,
+                        title=p_chunks[0].title,
+                        retrieval_score=round(best_retrieval_sc, 6),
+                        chunks_count=len(p_chunks),
+                        stage="retrieval",
+                        passed=True,
+                        chunks=p_chunks,
+                    )
+                )
+            vector_retrieval_patents.sort(key=lambda p: p.retrieval_score or 0.0, reverse=True)
+            for idx, p in enumerate(vector_retrieval_patents, start=1):
+                p.rank = idx
 
             query = (feature_result.feature or "").strip()
             if not query:
                 # If feature query is empty, group by unique patent by initial retrieval score
-                patent_chunks_map: dict[str, list[FeatureChunkResult]] = {}
-                for ch in chunks:
-                    if ch.patent_id:
-                        if rerank_score_threshold > 0 and ch.score < rerank_score_threshold:
-                            continue
-                        patent_chunks_map.setdefault(ch.patent_id, []).append(ch)
-
-                for p_chunks in patent_chunks_map.values():
+                for p_chunks in vector_patent_chunks.values():
                     p_chunks.sort(key=lambda c: c.score, reverse=True)
 
                 ranked_patent_items = sorted(
-                    patent_chunks_map.items(),
+                    vector_patent_chunks.items(),
                     key=lambda item: item[1][0].score,
                     reverse=True,
-                )[:top_k]
+                )
+
+                top_patent_items = ranked_patent_items[:top_k]
+                pruned_patent_items = ranked_patent_items[top_k:]
 
                 top_patents: list[FeaturePatentResult] = []
                 retained_chunks: list[FeatureChunkResult] = []
-                for pid, p_chunks in ranked_patent_items:
+                for pid, p_chunks in top_patent_items:
                     best_chunk = p_chunks[0]
                     pat_res = FeaturePatentResult(
                         patent_id=pid,
@@ -97,8 +124,29 @@ class KeyFeatureReranker:
                     top_patents.append(pat_res)
                     retained_chunks.extend(p_chunks)
 
+                topk_pruned_patents: list[StepPatentInfo] = []
+                for rank_offset, (pat_id, p_chunks) in enumerate(pruned_patent_items, start=top_k + 1):
+                    best_c = p_chunks[0]
+                    topk_pruned_patents.append(
+                        StepPatentInfo(
+                            patent_id=pat_id,
+                            title=best_c.title,
+                            retrieval_score=round(best_c.score, 6),
+                            reranker_score=None,
+                            chunks_count=len(p_chunks),
+                            rank=rank_offset,
+                            stage="topk_pruned",
+                            filter_reason=f"Rank #{rank_offset} exceeds Top-{top_k} limit",
+                            passed=False,
+                            chunks=p_chunks,
+                        )
+                    )
+
                 feature_result.patents = top_patents
                 feature_result.chunks = retained_chunks
+                feature_result.vector_retrieval_patents = vector_retrieval_patents
+                feature_result.rerank_filtered_patents = []
+                feature_result.topk_pruned_patents = topk_pruned_patents
                 continue
 
             formatted_docs: list[str] = [
@@ -128,35 +176,66 @@ class KeyFeatureReranker:
                 if has_valid_scores:
                     ch.score = r_score
 
-            # Filter candidate chunks by reranking score threshold if specified
-            qualifying_chunks = chunks
-            if rerank_score_threshold > 0 and has_valid_scores:
-                qualifying_chunks = [
-                    ch
-                    for ch in chunks
-                    if ch.reranker_score is not None and ch.reranker_score >= rerank_score_threshold
-                ]
+            # Identify patents that fail the rerank threshold vs those that qualify
+            rerank_filtered_patents: list[StepPatentInfo] = []
+            qualifying_patent_chunks_map: dict[str, list[FeatureChunkResult]] = {}
 
-            # Group candidate chunks by unique patent_id
-            patent_chunks_map: dict[str, list[FeatureChunkResult]] = {}
-            for ch in qualifying_chunks:
-                if not ch.patent_id:
-                    continue
-                patent_chunks_map.setdefault(ch.patent_id, []).append(ch)
-
-            # Sort chunks within each patent by reranker score (tiebreaker retrieval score)
-            for p_chunks in patent_chunks_map.values():
+            for pid, p_chunks in vector_patent_chunks.items():
                 p_chunks.sort(
                     key=lambda c: (
-                        c.reranker_score if c.reranker_score is not None else 0.0,
-                        c.retrieval_score if c.retrieval_score is not None else 0.0,
+                        c.reranker_score if c.reranker_score is not None else -1.0,
+                        c.retrieval_score if c.retrieval_score is not None else (c.score or 0.0),
                     ),
                     reverse=True,
                 )
+                best_r_score = max(
+                    (c.reranker_score for c in p_chunks if c.reranker_score is not None),
+                    default=None,
+                )
+                best_retrieval_sc = max(
+                    (c.retrieval_score for c in p_chunks if c.retrieval_score is not None),
+                    default=0.0,
+                )
+                # Check if patent fails threshold
+                if (
+                    rerank_score_threshold > 0
+                    and has_valid_scores
+                    and (best_r_score is None or best_r_score < rerank_score_threshold)
+                ):
+                    rerank_filtered_patents.append(
+                        StepPatentInfo(
+                            patent_id=pid,
+                            title=p_chunks[0].title,
+                            retrieval_score=round(best_retrieval_sc, 6),
+                            reranker_score=round(best_r_score, 6) if best_r_score is not None else None,
+                            chunks_count=len(p_chunks),
+                            stage="rerank_filtered",
+                            filter_reason=f"Below rerank threshold ({best_r_score:.3f} < {rerank_score_threshold:.2f})"
+                            if best_r_score is not None
+                            else "No rerank score",
+                            passed=False,
+                            chunks=p_chunks,
+                        )
+                    )
+                else:
+                    # Chunks that qualify for this patent
+                    valid_chunks = [
+                        c for c in p_chunks
+                        if not rerank_score_threshold or not has_valid_scores or (c.reranker_score is not None and c.reranker_score >= rerank_score_threshold)
+                    ]
+                    if valid_chunks:
+                        valid_chunks.sort(
+                            key=lambda c: (
+                                c.reranker_score if c.reranker_score is not None else 0.0,
+                                c.retrieval_score if c.retrieval_score is not None else 0.0,
+                            ),
+                            reverse=True,
+                        )
+                        qualifying_patent_chunks_map[pid] = valid_chunks
 
-            # Rank unique patents by best chunk's reranker score (tiebreaker retrieval score)
+            # Rank qualifying unique patents by best chunk's reranker score
             ranked_patent_items = sorted(
-                patent_chunks_map.items(),
+                qualifying_patent_chunks_map.items(),
                 key=lambda item: (
                     item[1][0].reranker_score if item[1][0].reranker_score is not None else 0.0,
                     item[1][0].retrieval_score if item[1][0].retrieval_score is not None else 0.0,
@@ -164,10 +243,35 @@ class KeyFeatureReranker:
                 reverse=True,
             )
 
-            # Select top_k unique patents
+            # Select top_k unique patents and separate pruned ones
             top_patent_items = ranked_patent_items[:top_k]
+            pruned_patent_items = ranked_patent_items[top_k:]
 
-            # Build FeaturePatentResult objects with ALL matching chunks for each patent
+            topk_pruned_patents: list[StepPatentInfo] = []
+            for rank_offset, (pat_id, p_chunks) in enumerate(pruned_patent_items, start=top_k + 1):
+                best_c = p_chunks[0]
+                topk_pruned_patents.append(
+                    StepPatentInfo(
+                        patent_id=pat_id,
+                        title=best_c.title,
+                        retrieval_score=round(best_c.retrieval_score, 6) if best_c.retrieval_score is not None else None,
+                        reranker_score=round(best_c.reranker_score, 6) if best_c.reranker_score is not None else None,
+                        chunks_count=len(p_chunks),
+                        rank=rank_offset,
+                        stage="topk_pruned",
+                        filter_reason=f"Rank #{rank_offset} exceeds Top-{top_k} limit",
+                        passed=False,
+                        chunks=p_chunks,
+                    )
+                )
+
+            # Sort filtered patents by score
+            rerank_filtered_patents.sort(
+                key=lambda p: (p.reranker_score if p.reranker_score is not None else -1.0, p.retrieval_score or 0.0),
+                reverse=True,
+            )
+
+            # Build FeaturePatentResult objects with ALL matching chunks for each winning patent
             top_patents: list[FeaturePatentResult] = []
             retained_chunks: list[FeatureChunkResult] = []
 
@@ -191,6 +295,9 @@ class KeyFeatureReranker:
 
             feature_result.patents = top_patents
             feature_result.chunks = retained_chunks
+            feature_result.vector_retrieval_patents = vector_retrieval_patents
+            feature_result.rerank_filtered_patents = rerank_filtered_patents
+            feature_result.topk_pruned_patents = topk_pruned_patents
 
             # Compute sentence-level highlights and query-term matches on all retained chunks
             self._compute_highlights_for_chunks(query=query, chunks=retained_chunks)
@@ -202,7 +309,7 @@ class KeyFeatureReranker:
                 len(top_patents),
                 len(retained_chunks),
                 len(chunks),
-                len(patent_chunks_map),
+                len(vector_patent_chunks),
                 best_score,
                 rerank_score_threshold,
             )

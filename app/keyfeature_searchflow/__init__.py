@@ -15,9 +15,11 @@ from app.keyfeature_searchflow.models import (
     FeatureChunkResult,
     FeatureExtractionResponse,
     FeatureSearchResult,
+    KeyFeatureCompareRequest,
     KeyFeatureItem,
     KeyFeatureSearchRequest,
     KeyFeatureSearchResponse,
+    StepPatentInfo,
 )
 from app.keyfeature_searchflow.pipeline import KeyFeatureSearchPipeline
 from app.keyfeature_searchflow.prompts import build_feature_extraction_prompt
@@ -26,6 +28,7 @@ __all__ = [
     "FeatureChunkResult",
     "FeatureExtractionResponse",
     "FeatureSearchResult",
+    "KeyFeatureCompareRequest",
     "KeyFeatureEmbedder",
     "KeyFeatureExtractor",
     "KeyFeatureItem",
@@ -34,6 +37,7 @@ __all__ = [
     "KeyFeatureSearchPipeline",
     "KeyFeatureSearchRequest",
     "KeyFeatureSearchResponse",
+    "StepPatentInfo",
     "build_feature_extraction_prompt",
 ]
 

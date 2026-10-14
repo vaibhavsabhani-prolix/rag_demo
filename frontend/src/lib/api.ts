@@ -12,8 +12,11 @@ import {
   type SearchEvent,
 } from '@/schemas/api'
 import {
+  keyFeatureCompareEventSchema,
   keyFeatureEventSchema,
+  type KeyFeatureCompareEvent,
   type KeyFeatureEvent,
+  type KeyFeatureItem,
 } from '@/schemas/keyfeature'
 import { historyListSchema, historyPhasesSchema, historySummarySchema } from '@/schemas/history'
 import { uiSettingsSchema, type UiSettings } from '@/schemas/settings'
@@ -151,4 +154,20 @@ export const api = {
     signal?: AbortSignal,
   ) => streamNdjson('/keyfeature-search', body, keyFeatureEventSchema, onEvent, signal),
 
+  /** Run key-feature search pipeline across multiple collections, comparing feature-wise. */
+  streamKeyFeatureCompare: (
+    body: {
+      problem: string
+      invention_title: string
+      invention_details: string
+      collections: string[]
+      score_threshold?: number
+      rerank_score_threshold?: number
+      top_k?: number
+      retrieval_limit?: number
+      features?: KeyFeatureItem[]
+    },
+    onEvent: (event: KeyFeatureCompareEvent) => void,
+    signal?: AbortSignal,
+  ) => streamNdjson('/keyfeature-compare', body, keyFeatureCompareEventSchema, onEvent, signal),
 }

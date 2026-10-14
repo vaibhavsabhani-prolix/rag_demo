@@ -95,6 +95,9 @@ from app.scoring.scorer import FinalScorer
 from app.semantic_search import PHASE_NAMES, SearchPipeline
 from app.verification.verifier import RelationshipVerifier
 from app.keyfeature_searchflow import (
+    FeatureExtractionResponse,
+    KeyFeatureCompareRequest,
+    KeyFeatureItem,
     KeyFeatureReranker,
     KeyFeatureSearchPipeline,
     KeyFeatureSearchRequest,
@@ -384,6 +387,157 @@ def keyfeature_search(req: KeyFeatureSearchRequest) -> StreamingResponse:
     collection = _resolve_collection(req.collection)
     return StreamingResponse(
         _stream_keyfeature_search(req, collection),
+        media_type="application/x-ndjson",
+    )
+
+
+def _stream_keyfeature_compare(
+    req: KeyFeatureCompareRequest, collections: list[SearchCollection]
+) -> Iterator[str]:
+    events: "queue.Queue[dict | None]" = queue.Queue()
+    kf_pipe = _get_keyfeature_pipeline()
+    cancelled = threading.Event()
+
+    def worker() -> None:
+        t0 = time.perf_counter()
+        try:
+            # Step 1 & 2: Feature Extraction and Feature Embedding (run once)
+            if req.features and len(req.features) > 0:
+                features = req.features
+                elapsed_extract = 0.0
+                events.put({
+                    "type": "phase",
+                    "phase": 1,
+                    "name": "Feature Extraction (Reused)",
+                    "elapsed_ms": 0.0,
+                    "data": {"key_features": [f.model_dump() for f in features]},
+                })
+            else:
+                t_extract_start = time.perf_counter()
+                features = kf_pipe.extract_features(
+                    req.problem,
+                    req.invention_title,
+                    req.invention_details,
+                )
+                elapsed_extract = (time.perf_counter() - t_extract_start) * 1000
+                events.put({
+                    "type": "phase",
+                    "phase": 1,
+                    "name": "Feature Extraction",
+                    "elapsed_ms": elapsed_extract,
+                    "data": {"key_features": [f.model_dump() for f in features]},
+                })
+
+            t_embed_start = time.perf_counter()
+            features_with_embeddings = kf_pipe.embed_features(features)
+            elapsed_embed = (time.perf_counter() - t_embed_start) * 1000
+            events.put({
+                "type": "phase",
+                "phase": 2,
+                "name": "Feature Embedding",
+                "elapsed_ms": elapsed_embed,
+                "data": {},
+            })
+
+            # For each collection, run Steps 3, 4, 5
+            for collection in collections:
+                if cancelled.is_set():
+                    break
+                events.put({
+                    "type": "collection_start",
+                    "collection": collection.name,
+                })
+                t_col = time.perf_counter()
+
+                def on_col_phase(phase: int, name: str, data: Any = None):
+                    events.put({
+                        "type": "collection_phase",
+                        "collection": collection.name,
+                        "phase": phase,
+                        "name": name,
+                        "elapsed_ms": (time.perf_counter() - t_col) * 1000,
+                    })
+
+                try:
+                    res = kf_pipe.run_collection(
+                        problem=req.problem,
+                        invention_title=req.invention_title,
+                        invention_details=req.invention_details,
+                        features=features,
+                        features_with_embeddings=features_with_embeddings,
+                        collection=collection,
+                        score_threshold=req.score_threshold,
+                        rerank_score_threshold=req.rerank_score_threshold,
+                        retrieval_limit=req.retrieval_limit,
+                        top_k=req.top_k,
+                        on_phase=on_col_phase,
+                        extraction_ms=elapsed_extract,
+                        embedding_ms=elapsed_embed,
+                        overall_start_time=t_col,
+                    )
+                    events.put({
+                        "type": "collection_done",
+                        "collection": collection.name,
+                        "elapsed_ms": (time.perf_counter() - t_col) * 1000,
+                        "data": res.model_dump(),
+                    })
+                except Exception as exc:
+                    logger.exception("Key feature compare run failed for collection %s", collection.name)
+                    events.put({
+                        "type": "collection_error",
+                        "collection": collection.name,
+                        "message": f"{type(exc).__name__}: {exc}",
+                    })
+
+            events.put({
+                "type": "done",
+                "elapsed_ms": (time.perf_counter() - t0) * 1000,
+            })
+        except Exception as exc:
+            logger.exception("Key feature compare flow failed")
+            events.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+        events.put(None)
+
+    yield _line({
+        "type": "start",
+        "problem": req.problem,
+        "invention_title": req.invention_title,
+        "collections": [c.name for c in collections],
+        "score_threshold": req.score_threshold,
+        "rerank_score_threshold": req.rerank_score_threshold,
+        "top_k": req.top_k,
+        "retrieval_limit": req.retrieval_limit,
+    })
+    threading.Thread(target=worker, daemon=True).start()
+    try:
+        while (event := events.get()) is not None:
+            yield _line(event)
+    finally:
+        cancelled.set()
+
+
+class KeyFeatureExtractRequest(BaseModel):
+    problem: str
+    invention_title: str
+    invention_details: str
+
+
+@app.post("/api/keyfeature-extract")
+def keyfeature_extract(req: KeyFeatureExtractRequest) -> FeatureExtractionResponse:
+    kf_pipe = _get_keyfeature_pipeline()
+    features = kf_pipe.extract_features(
+        req.problem,
+        req.invention_title,
+        req.invention_details,
+    )
+    return FeatureExtractionResponse(key_features=features)
+
+
+@app.post("/api/keyfeature-compare")
+def keyfeature_compare(req: KeyFeatureCompareRequest) -> StreamingResponse:
+    collections = _resolve_collections(req.collections)
+    return StreamingResponse(
+        _stream_keyfeature_compare(req, collections),
         media_type="application/x-ndjson",
     )
 

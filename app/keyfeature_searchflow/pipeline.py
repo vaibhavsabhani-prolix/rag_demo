@@ -10,6 +10,7 @@ from app.keyfeature_searchflow.feature_reranker import KeyFeatureReranker
 from app.keyfeature_searchflow.feature_retriever import KeyFeatureRetriever
 from app.keyfeature_searchflow.models import (
     FeatureSearchResult,
+    KeyFeatureItem,
     KeyFeatureSearchResponse,
 )
 from app.models.collection import SearchCollection
@@ -49,6 +50,12 @@ class KeyFeatureSearchPipeline:
                 for chunk in feat_res.chunks
                 if chunk.patent_id
             }
+            | {
+                p.patent_id
+                for feat_res in results
+                for p in getattr(feat_res, "vector_retrieval_patents", [])
+                if p.patent_id and not p.title
+            }
         )
         if not unique_patent_ids:
             return
@@ -60,7 +67,9 @@ class KeyFeatureSearchPipeline:
                 collection_name=patents_coll,
             )
             for feat_res in results:
+                feat_id = feat_res.feature_id
                 for chunk in feat_res.chunks:
+                    chunk.feature_id = feat_id
                     if chunk.patent_id in metadata_map:
                         pat_meta = metadata_map[chunk.patent_id]
                         chunk.metadata = pat_meta
@@ -73,46 +82,66 @@ class KeyFeatureSearchPipeline:
                         if pat_meta.get("title"):
                             pat.title = pat_meta.get("title")
                     for pch in pat.chunks:
+                        pch.feature_id = feat_id
                         if pch.patent_id in metadata_map:
                             pat_meta = metadata_map[pch.patent_id]
                             pch.metadata = pat_meta
                             if pat_meta.get("title"):
                                 pch.title = pat_meta.get("title")
+                for p in getattr(feat_res, "vector_retrieval_patents", []):
+                    if p.patent_id in metadata_map and not p.title:
+                        p.title = metadata_map[p.patent_id].get("title")
+                    for pch in getattr(p, "chunks", []):
+                        pch.feature_id = feat_id
+                for p in getattr(feat_res, "rerank_filtered_patents", []):
+                    if p.patent_id in metadata_map and not p.title:
+                        p.title = metadata_map[p.patent_id].get("title")
+                    for pch in getattr(p, "chunks", []):
+                        pch.feature_id = feat_id
+                for p in getattr(feat_res, "topk_pruned_patents", []):
+                    if p.patent_id in metadata_map and not p.title:
+                        p.title = metadata_map[p.patent_id].get("title")
+                    for pch in getattr(p, "chunks", []):
+                        pch.feature_id = feat_id
         except Exception as exc:  # noqa: BLE001 - metadata enrichment is best-effort
             logger.warning("Could not enrich patent metadata: %s", exc)
 
-    def run(
+    def extract_features(
         self,
         problem: str,
         invention_title: str,
         invention_details: str,
+    ) -> list[KeyFeatureItem]:
+        return self.extractor.extract_features(
+            problem,
+            invention_title,
+            invention_details,
+        )
+
+    def embed_features(
+        self,
+        features: list[KeyFeatureItem],
+    ) -> list[Any]:
+        return self.embedder.embed_features(features)
+
+    def run_collection(
+        self,
+        problem: str,
+        invention_title: str,
+        invention_details: str,
+        features: list[KeyFeatureItem],
+        features_with_embeddings: list[Any],
         collection: SearchCollection | str = CHUNKS_COLLECTION_NAME,
         score_threshold: float = 0.0,
         rerank_score_threshold: float = 0.6,
         retrieval_limit: int = 5000,
         top_k: int = 20,
         on_phase: Callable[[int, str, Any], None] | None = None,
+        extraction_ms: float = 0.0,
+        embedding_ms: float = 0.0,
+        overall_start_time: float | None = None,
     ) -> KeyFeatureSearchResponse:
-
-        t_overall_start = time.perf_counter()
-
-        # Step 1: Feature Extraction
-        t0 = time.perf_counter()
-        features = self.extractor.extract_features(
-            problem,
-            invention_title,
-            invention_details,
-        )
-        elapsed_extract = (time.perf_counter() - t0) * 1000
-        if on_phase:
-            on_phase(1, "Feature Extraction", {"key_features": [f.model_dump() for f in features]})
-
-        # Step 2: Independent Feature Embedding
-        t1 = time.perf_counter()
-        features_with_embeddings = self.embedder.embed_features(features)
-        elapsed_embed = (time.perf_counter() - t1) * 1000
-        if on_phase:
-            on_phase(2, "Feature Embedding", {})
+        t_start = overall_start_time if overall_start_time is not None else time.perf_counter()
 
         # Step 3: Independent Feature Retrieval (initial candidate retrieval from Qdrant)
         t2 = time.perf_counter()
@@ -143,7 +172,7 @@ class KeyFeatureSearchPipeline:
         if on_phase:
             on_phase(4, "Cross-Encoder Reranking", {"results": [r.model_dump() for r in results]})
 
-        total_elapsed = (time.perf_counter() - t_overall_start) * 1000
+        total_elapsed = (time.perf_counter() - t_start) * 1000
         collection_str = collection.name if isinstance(collection, SearchCollection) else str(collection)
 
         return KeyFeatureSearchResponse(
@@ -158,11 +187,61 @@ class KeyFeatureSearchPipeline:
             total_features=len(features),
             results=results,
             timings={
-                "extraction_ms": round(elapsed_extract, 2),
-                "embedding_ms": round(elapsed_embed, 2),
+                "extraction_ms": round(extraction_ms, 2),
+                "embedding_ms": round(embedding_ms, 2),
                 "retrieval_ms": round(elapsed_retrieve, 2),
                 "reranking_ms": round(elapsed_rerank, 2),
                 "metadata_enrich_ms": round(elapsed_enrich, 2),
+                "collection_total_ms": round(elapsed_retrieve + elapsed_rerank + elapsed_enrich, 2),
                 "total_ms": round(total_elapsed, 2),
             },
+        )
+
+    def run(
+        self,
+        problem: str,
+        invention_title: str,
+        invention_details: str,
+        collection: SearchCollection | str = CHUNKS_COLLECTION_NAME,
+        score_threshold: float = 0.0,
+        rerank_score_threshold: float = 0.6,
+        retrieval_limit: int = 5000,
+        top_k: int = 20,
+        on_phase: Callable[[int, str, Any], None] | None = None,
+    ) -> KeyFeatureSearchResponse:
+        t_overall_start = time.perf_counter()
+
+        # Step 1: Feature Extraction
+        t0 = time.perf_counter()
+        features = self.extract_features(
+            problem,
+            invention_title,
+            invention_details,
+        )
+        elapsed_extract = (time.perf_counter() - t0) * 1000
+        if on_phase:
+            on_phase(1, "Feature Extraction", {"key_features": [f.model_dump() for f in features]})
+
+        # Step 2: Independent Feature Embedding
+        t1 = time.perf_counter()
+        features_with_embeddings = self.embed_features(features)
+        elapsed_embed = (time.perf_counter() - t1) * 1000
+        if on_phase:
+            on_phase(2, "Feature Embedding", {})
+
+        return self.run_collection(
+            problem=problem,
+            invention_title=invention_title,
+            invention_details=invention_details,
+            features=features,
+            features_with_embeddings=features_with_embeddings,
+            collection=collection,
+            score_threshold=score_threshold,
+            rerank_score_threshold=rerank_score_threshold,
+            retrieval_limit=retrieval_limit,
+            top_k=top_k,
+            on_phase=on_phase,
+            extraction_ms=elapsed_extract,
+            embedding_ms=elapsed_embed,
+            overall_start_time=t_overall_start,
         )

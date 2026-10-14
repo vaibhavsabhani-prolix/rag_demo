@@ -3,6 +3,7 @@ import { Badge, SegmentedControl } from '@/components/ui'
 import type { KeyFeatureSearchResponse, FeatureSearchResult } from '@/schemas/keyfeature'
 import { KeyFeatureCard } from './KeyFeatureCard'
 import { KeyFeaturePatentTable } from './KeyFeaturePatentTable'
+import { StepWiseFilterView } from '@/features/feature-compare/StepWiseFilterView'
 
 interface KeyFeatureResultsViewProps {
   response: KeyFeatureSearchResponse
@@ -10,7 +11,7 @@ interface KeyFeatureResultsViewProps {
 
 export function KeyFeatureResultsView({ response }: KeyFeatureResultsViewProps) {
   const [selectedFeatureId, setSelectedFeatureId] = useState<number | 'all'>('all')
-  const [viewMode, setViewMode] = useState<'patent' | 'feature'>('patent')
+  const [viewMode, setViewMode] = useState<'patent' | 'feature' | 'pipeline'>('patent')
   const results = response.results || []
   const totalChunks = results.reduce((sum, r) => sum + (r.chunks?.length || 0), 0)
   const totalUniquePatents = new Set(results.flatMap((r) => r.chunks?.map((c) => c.patent_id) || [])).size
@@ -94,6 +95,7 @@ export function KeyFeatureResultsView({ response }: KeyFeatureResultsViewProps) 
             options={[
               { value: 'patent', label: 'By Patent' },
               { value: 'feature', label: 'By Feature' },
+              { value: 'pipeline', label: 'Step-Wise Pipeline Filtering' },
             ]}
           />
         </div>
@@ -137,7 +139,7 @@ export function KeyFeatureResultsView({ response }: KeyFeatureResultsViewProps) 
       {/* Results */}
       {viewMode === 'patent' ? (
         <KeyFeaturePatentTable results={results} />
-      ) : (
+      ) : viewMode === 'feature' ? (
         <div className="space-y-4">
           {displayedResults.map((result: FeatureSearchResult) => (
             <KeyFeatureCard
@@ -147,6 +149,12 @@ export function KeyFeatureResultsView({ response }: KeyFeatureResultsViewProps) 
             />
           ))}
         </div>
+      ) : (
+        <StepWiseFilterView
+          features={results.map((r) => ({ feature_id: r.feature_id, feature: r.feature }))}
+          runs={{ [response.collection]: { response } }}
+          series={[{ name: response.collection, color: '#6366f1' }]}
+        />
       )}
     </div>
   )

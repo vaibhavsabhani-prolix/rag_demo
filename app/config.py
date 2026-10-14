@@ -21,8 +21,8 @@ CHUNKS_COLLECTION_PREFIX = "patent_chunks_"
 PATENTS_COLLECTION_PREFIX = "patents_metadata_"
 
 # The collection pair that ingestion writes to. Search preselects it when it exists.
-CHUNKS_COLLECTION_NAME = "patent_chunks_512"
-PATENTS_COLLECTION_NAME = "patents_metadata_512"
+CHUNKS_COLLECTION_NAME = "patent_chunks_1024"
+PATENTS_COLLECTION_NAME = "patents_metadata_1024"
 
 # Remote embedding server
 EMBEDDING_REMOTE_BASE_URL = "http://192.168.2.213:8002/v1"
@@ -49,7 +49,7 @@ RERANK_CONCURRENT_REQUESTS = 10
 RERANKER_MAX_CONTEXT_TOKENS = 4100
 RERANKER_TOKEN_SAFETY_MARGIN = 16
 
-MAX_CHUNK_TOKENS = 512
+MAX_CHUNK_TOKENS = 1024
 
 EMBED_TOKEN_SAFETY_MARGIN = 8
 BATCH_SIZE = 512
@@ -79,7 +79,7 @@ QDRANT_INDEXING_THRESHOLD_KB = 20000
 # (metadata + every chunk). ingest_directory() reads it on startup to
 # skip already-completed patents, so stopping and re-running the same
 # command resumes instead of reprocessing from the start.
-INGEST_PROGRESS_FILE = "data/ingest_progress_512.log"
+INGEST_PROGRESS_FILE = "data/ingest_progress_1024.log"
 
 MAX_HEADING_LENGTH = 100
 MAX_HEADING_WORDS = 12

@@ -18,13 +18,13 @@ export function TextField({ label, hint, error, leading, className, id, ref, ...
   return (
     <div className={className}>
       {label && (
-        <label htmlFor={inputId} className="mb-1.5 block text-sm font-medium text-slate-700">
+        <label htmlFor={inputId} className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-white">
           {label}
         </label>
       )}
       <div className="relative">
         {leading && (
-          <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-slate-400">
+          <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-slate-400 dark:text-white/40">
             {leading}
           </span>
         )}
@@ -34,18 +34,18 @@ export function TextField({ label, hint, error, leading, className, id, ref, ...
           aria-invalid={!!error}
           aria-describedby={error || hint ? messageId : undefined}
           className={clsx(
-            'block w-full rounded-lg border bg-surface py-2.5 pr-3.5 text-slate-900 placeholder:text-slate-400',
+            'block w-full rounded-lg border bg-surface py-2.5 pr-3.5 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-white/40',
             'focus:outline-none focus:ring-4',
             leading ? 'pl-10' : 'pl-3.5',
             error
               ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-100'
-              : 'border-slate-300 focus:border-indigo-500 focus:ring-indigo-100',
+              : 'border-slate-300 dark:border-white/20 focus:border-indigo-500 focus:ring-indigo-100',
           )}
           {...props}
         />
       </div>
       {(error || hint) && (
-        <p id={messageId} className={clsx('mt-1.5 text-sm', error ? 'text-rose-600' : 'text-slate-500')}>
+        <p id={messageId} className={clsx('mt-1.5 text-sm', error ? 'text-rose-600' : 'text-slate-500 dark:text-white/70')}>
           {error ?? hint}
         </p>
       )}
