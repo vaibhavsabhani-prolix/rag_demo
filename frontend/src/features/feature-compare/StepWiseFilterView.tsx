@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Badge, TextField } from '@/components/ui'
 import { ChevronIcon, ExternalIcon } from '@/components/ui/icons'
 import { HighlightedText } from '@/components/patent/EvidenceChunkCard'
@@ -161,6 +161,19 @@ function PipelineChunkCard({
   )
 }
 
+function getPageNumbers(currentPage: number, totalPages: number): number[] {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i)
+  }
+  if (currentPage <= 3) {
+    return [0, 1, 2, 3, 4, -1, totalPages - 1]
+  }
+  if (currentPage >= totalPages - 4) {
+    return [0, -1, totalPages - 5, totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1]
+  }
+  return [0, -1, currentPage - 1, currentPage, currentPage + 1, -1, totalPages - 1]
+}
+
 export function StepWiseFilterView({ features, runs, series }: StepWiseFilterViewProps) {
   const { data: config } = usePipelineConfig()
 
@@ -171,6 +184,8 @@ export function StepWiseFilterView({ features, runs, series }: StepWiseFilterVie
   const [searchQuery, setSearchQuery] = useState('')
   const [expandedRowId, setExpandedRowId] = useState<string | null>(null)
   const [expandedFeatureFilter, setExpandedFeatureFilter] = useState<number | null>(null)
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(25)
 
   const resp = runs[selectedCollection]?.response
   const rerankThreshold = resp?.rerank_score_threshold ?? 0.6
@@ -488,6 +503,28 @@ export function StepWiseFilterView({ features, runs, series }: StepWiseFilterVie
     })
   }, [patentList, statusFilter, searchQuery])
 
+  // Pagination computations
+  const totalPages = Math.max(1, Math.ceil(filteredList.length / pageSize))
+  const safePage = Math.min(page, totalPages - 1)
+
+  const pagedList = useMemo(() => {
+    const start = safePage * pageSize
+    return filteredList.slice(start, start + pageSize)
+  }, [filteredList, safePage, pageSize])
+
+  // Reset pagination & expanded row when filters or collections change
+  useEffect(() => {
+    setPage(0)
+    setExpandedRowId(null)
+    setExpandedFeatureFilter(null)
+  }, [selectedCollection, selectedFeatureId, statusFilter, searchQuery, pageSize])
+
+  const handlePageChange = (newPage: number) => {
+    setExpandedRowId(null)
+    setExpandedFeatureFilter(null)
+    setPage(newPage)
+  }
+
   const toggleExpand = (patentId: string) => {
     setExpandedFeatureFilter(null)
     setExpandedRowId((prev) => (prev === patentId ? null : patentId))
@@ -731,9 +768,47 @@ export function StepWiseFilterView({ features, runs, series }: StepWiseFilterVie
               Collection “{selectedCollection}” — Candidate Patents Flow
             </h4>
           </div>
-          <span className="font-mono text-2xs text-slate-500 dark:text-white/70">
-            Showing {filteredList.length} of {patentList.length} candidates
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="font-mono text-2xs text-slate-500 dark:text-white/70">
+              {filteredList.length === 0 ? (
+                '0 candidates'
+              ) : (
+                <>
+                  Showing{' '}
+                  <strong className="text-slate-800 dark:text-white">
+                    {safePage * pageSize + 1}–{Math.min(filteredList.length, (safePage + 1) * pageSize)}
+                  </strong>{' '}
+                  of <strong className="text-slate-800 dark:text-white">{filteredList.length}</strong>
+                  {filteredList.length !== patentList.length && ` (${patentList.length} total)`}
+                </>
+              )}
+            </span>
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => handlePageChange(Math.max(0, safePage - 1))}
+                  disabled={safePage === 0}
+                  className="px-2 py-0.5 rounded text-2xs font-semibold bg-surface dark:bg-white/10 text-slate-700 dark:text-white border border-slate-200 dark:border-white/15 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-white/20 transition-colors"
+                  title="Previous page"
+                >
+                  ‹ Prev
+                </button>
+                <span className="text-2xs font-mono font-medium text-slate-600 dark:text-white/70 px-1">
+                  {safePage + 1}/{totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handlePageChange(Math.min(totalPages - 1, safePage + 1))}
+                  disabled={safePage >= totalPages - 1}
+                  className="px-2 py-0.5 rounded text-2xs font-semibold bg-surface dark:bg-white/10 text-slate-700 dark:text-white border border-slate-200 dark:border-white/15 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-white/20 transition-colors"
+                  title="Next page"
+                >
+                  Next ›
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -774,9 +849,10 @@ export function StepWiseFilterView({ features, runs, series }: StepWiseFilterVie
                   </td>
                 </tr>
               ) : (
-                filteredList.map((item, idx) => {
+                pagedList.map((item, idx) => {
                   const url = patentUrl(config?.patent_view_url_template, item.patent_id)
                   const isExpanded = expandedRowId === item.patent_id
+                  const absoluteRank = safePage * pageSize + idx + 1
 
                   return (
                     <>
@@ -793,7 +869,7 @@ export function StepWiseFilterView({ features, runs, series }: StepWiseFilterVie
                         {/* Rank */}
                         <td className="px-3.5 py-3 align-middle text-center">
                           <span className="font-mono text-xs font-bold text-slate-700 dark:text-white">
-                            #{idx + 1}
+                            #{absoluteRank}
                           </span>
                         </td>
 
@@ -1123,6 +1199,112 @@ export function StepWiseFilterView({ features, runs, series }: StepWiseFilterVie
             </tbody>
           </table>
         </div>
+
+        {/* Pagination & Page Size Footer */}
+        {filteredList.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 dark:border-white/10 bg-slate-50/70 dark:bg-white/5 px-4 py-3 text-xs">
+            {/* Left: Summary & Per-Page Selector */}
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-slate-600 dark:text-white/70">
+                Showing{' '}
+                <span className="font-semibold font-mono text-slate-900 dark:text-white">
+                  {safePage * pageSize + 1}–{Math.min(filteredList.length, (safePage + 1) * pageSize)}
+                </span>{' '}
+                of{' '}
+                <span className="font-semibold font-mono text-slate-900 dark:text-white">
+                  {filteredList.length}
+                </span>{' '}
+                candidates
+              </span>
+
+              <div className="flex items-center gap-1.5 pl-3 border-l border-slate-200 dark:border-white/10">
+                <span className="text-2xs text-slate-500 dark:text-white/60">Per page:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value))
+                    setPage(0)
+                  }}
+                  className="rounded-md border border-slate-300 dark:border-white/20 bg-surface dark:bg-[#1e293b] px-2.5 py-1 text-2xs font-semibold text-slate-800 dark:text-white shadow-2xs focus:outline-hidden focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                  aria-label="Candidates per page"
+                >
+                  {[15, 25, 50, 100, 200].map((size) => (
+                    <option key={size} value={size} className="bg-white text-slate-900 dark:bg-[#1e293b] dark:text-white">
+                      {size}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Right: Page navigation buttons */}
+            {totalPages > 1 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handlePageChange(0)}
+                  disabled={safePage === 0}
+                  className="px-2 py-1 rounded text-2xs font-semibold bg-surface dark:bg-white/10 text-slate-700 dark:text-white border border-slate-200 dark:border-white/15 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-white/20 transition-colors"
+                  title="First page"
+                >
+                  « First
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePageChange(Math.max(0, safePage - 1))}
+                  disabled={safePage === 0}
+                  className="px-2.5 py-1 rounded text-2xs font-semibold bg-surface dark:bg-white/10 text-slate-700 dark:text-white border border-slate-200 dark:border-white/15 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-white/20 transition-colors"
+                  title="Previous page"
+                >
+                  ‹ Prev
+                </button>
+
+                {/* Page numbers */}
+                <div className="flex items-center gap-1 px-1">
+                  {getPageNumbers(safePage, totalPages).map((pNum, pIdx) =>
+                    pNum === -1 ? (
+                      <span key={`ellipsis-${pIdx}`} className="px-1 text-slate-400 dark:text-white/40">
+                        …
+                      </span>
+                    ) : (
+                      <button
+                        key={pNum}
+                        type="button"
+                        onClick={() => handlePageChange(pNum)}
+                        className={`size-6 rounded text-2xs font-mono font-bold transition-all ${
+                          pNum === safePage
+                            ? 'bg-indigo-600 text-white shadow-2xs'
+                            : 'text-slate-700 dark:text-white/80 hover:bg-slate-200 dark:hover:bg-white/15'
+                        }`}
+                      >
+                        {pNum + 1}
+                      </button>
+                    )
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handlePageChange(Math.min(totalPages - 1, safePage + 1))}
+                  disabled={safePage >= totalPages - 1}
+                  className="px-2.5 py-1 rounded text-2xs font-semibold bg-surface dark:bg-white/10 text-slate-700 dark:text-white border border-slate-200 dark:border-white/15 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-white/20 transition-colors"
+                  title="Next page"
+                >
+                  Next ›
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePageChange(totalPages - 1)}
+                  disabled={safePage >= totalPages - 1}
+                  className="px-2 py-1 rounded text-2xs font-semibold bg-surface dark:bg-white/10 text-slate-700 dark:text-white border border-slate-200 dark:border-white/15 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-white/20 transition-colors"
+                  title="Last page"
+                >
+                  Last »
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

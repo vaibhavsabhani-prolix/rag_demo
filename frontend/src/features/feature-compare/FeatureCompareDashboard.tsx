@@ -3,10 +3,10 @@ import { Card, CardBody, CardHeader, Stat, StatGrid, Tabs } from '@/components/u
 import type { KeyFeatureItem, KeyFeatureSearchResponse } from '@/schemas/keyfeature'
 import type { Series } from '@/features/compare/charts'
 import { FeatureWiseMatrix } from './FeatureWiseMatrix'
-import { FeatureScoreChart } from './FeatureScoreChart'
 import { PatentConsensusTable } from './PatentConsensusTable'
 import { KeyFeatureMapping } from './KeyFeatureMapping'
 import { StepWiseFilterView } from './StepWiseFilterView'
+import { PatentResultsMatrix } from './PatentResultsMatrix'
 
 interface FeatureCompareDashboardProps {
   features: KeyFeatureItem[]
@@ -21,7 +21,7 @@ export function FeatureCompareDashboard({
   series,
   totalElapsedMs,
 }: FeatureCompareDashboardProps) {
-  const [activeTab, setActiveTab] = useState<'matrix' | 'mapping' | 'steps' | 'charts' | 'consensus' | 'timings'>('matrix')
+  const [activeTab, setActiveTab] = useState<'matrix' | 'mapping' | 'steps' | 'results-matrix' | 'consensus' | 'timings'>('matrix')
 
   const collectionNames = series.map((s) => s.name)
 
@@ -56,11 +56,11 @@ export function FeatureCompareDashboard({
     }
   }, [features, runs, collectionNames])
 
-  const tabItems: { id: 'matrix' | 'mapping' | 'steps' | 'charts' | 'consensus' | 'timings'; label: string }[] = [
+  const tabItems: { id: 'matrix' | 'mapping' | 'steps' | 'results-matrix' | 'consensus' | 'timings'; label: string }[] = [
     { id: 'matrix', label: 'Feature-Wise Comparison' },
     { id: 'mapping', label: 'Key Feature Mapping' },
     { id: 'steps', label: 'Step-Wise Filtering' },
-    { id: 'charts', label: 'Score Analysis Chart' },
+    { id: 'results-matrix', label: 'Patent Results Matrix' },
     { id: 'consensus', label: 'Patent Consensus' },
     { id: 'timings', label: 'Timings & Execution' },
   ]
@@ -118,9 +118,10 @@ export function FeatureCompareDashboard({
         <StepWiseFilterView features={features} runs={runs} series={series} />
       )}
 
-      {activeTab === 'charts' && (
-        <FeatureScoreChart features={features} runs={runs} series={series} />
+      {activeTab === 'results-matrix' && (
+        <PatentResultsMatrix features={features} runs={runs} series={series} />
       )}
+
 
       {activeTab === 'consensus' && (
         <PatentConsensusTable features={features} runs={runs} series={series} />

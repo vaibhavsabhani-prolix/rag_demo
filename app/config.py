@@ -12,7 +12,7 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql+psycopg://patent:patent@localhost:5434/patent_search"
 )
 
-PATENT_DIRECTORY = "patents/patent-features"
+PATENT_DIRECTORY = "patents/1"
 
 # Search discovers collections in Qdrant by name: every "patent_chunks_<name>"
 # that has a matching "patents_metadata_<name>" can be searched as "<name>",
