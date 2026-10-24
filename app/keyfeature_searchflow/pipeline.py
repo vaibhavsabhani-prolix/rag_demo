@@ -156,11 +156,27 @@ class KeyFeatureSearchPipeline:
             on_phase(3, "Candidate Retrieval", {})
 
         # Step 4: Cross-Encoder Reranking & Top-K Selection
+        # Emitted before the (expensive) rerank call so the UI reflects this
+        # stage while it's actually running, not only once it has finished.
+        if on_phase:
+            on_phase(4, "Cross-Encoder Reranking", {})
+
+        def on_feature_progress(done: int, total: int, feature_text: str) -> None:
+            if on_phase:
+                on_phase(
+                    4,
+                    f"Cross-Encoder Reranking ({done}/{total} features) — {feature_text[:60]}",
+                    {},
+                )
+
         t3 = time.perf_counter()
+        chunks_coll, _ = self.retriever.resolve_collection_names(collection)
         results = self.reranker.rerank_feature_results(
             results=results,
             top_k=top_k,
             rerank_score_threshold=rerank_score_threshold,
+            chunks_collection=chunks_coll,
+            on_feature_progress=on_feature_progress,
         )
         elapsed_rerank = (time.perf_counter() - t3) * 1000
 

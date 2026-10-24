@@ -95,10 +95,15 @@ export function useKeyFeatureSearch() {
                   stepName: 'Reranking candidate chunks using BGE Cross-Encoder…',
                 }))
               } else if (phaseNum === 4) {
-                const rawResults = (data?.results as FeatureSearchResult[]) || []
+                // Fires once when reranking starts, then repeatedly as a progress/keep-alive
+                // ping per feature, then once more with the final results. Only the last of
+                // these carries `data.results` - the pings must not blank out prior results.
+                const rawResults = data?.results as FeatureSearchResult[] | undefined
                 setState((prev) => ({
                   ...prev,
-                  results: rawResults,
+                  currentStep: 4,
+                  stepName: event.name || prev.stepName,
+                  ...(rawResults ? { results: rawResults } : {}),
                 }))
               }
               break

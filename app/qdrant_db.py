@@ -26,6 +26,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchValue,
     OptimizersConfigDiff,
     PointStruct,
@@ -513,6 +514,49 @@ class QdrantDB:
             "payload_bytes": payload_bytes,
             "estimated_total_bytes": vector_bytes + payload_bytes,
         }
+
+    def get_chunks_by_patent_ids(
+        self,
+        patent_ids: list[str],
+        chunks_collection: str,
+        payload_fields: list[str] | None = None,
+    ) -> dict[str, list[dict]]:
+        """
+        Fetch every stored chunk belonging to each of *patent_ids* from
+        *chunks_collection* (not just chunks that matched a vector search).
+
+        Returns a dict mapping patent_id -> list of chunk payload dicts.
+        `patent_id` has a payload index (see ensure_payload_index), so this
+        filtered scroll is efficient even on large collections.
+        """
+        if not patent_ids:
+            return {}
+
+        unique_ids = list(dict.fromkeys(patent_ids))
+        patent_filter = Filter(
+            must=[FieldCondition(key="patent_id", match=MatchAny(any=unique_ids))]
+        )
+
+        chunks_by_patent: dict[str, list[dict]] = {pid: [] for pid in unique_ids}
+        next_offset = None
+        while True:
+            points, next_offset = self.client.scroll(
+                collection_name=chunks_collection,
+                scroll_filter=patent_filter,
+                limit=1000,
+                offset=next_offset,
+                with_payload=payload_fields if payload_fields else True,
+                with_vectors=False,
+            )
+            for pt in points:
+                payload = pt.payload or {}
+                pid = payload.get("patent_id")
+                if pid in chunks_by_patent:
+                    chunks_by_patent[pid].append(payload)
+            if next_offset is None:
+                break
+
+        return chunks_by_patent
 
     # ==============================================================
     # Stats

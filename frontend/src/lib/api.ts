@@ -77,17 +77,30 @@ async function streamNdjson<T>(
 
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
   let buffer = ''
+  let sawTerminalEvent = false
+  const emit = (event: T) => {
+    const type = (event as { type?: string }).type
+    if (type === 'done' || type === 'error') sawTerminalEvent = true
+    onEvent(event)
+  }
   for (;;) {
     const { value, done } = await reader.read()
     if (done) break
     buffer += value
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-    for (const line of lines) {
-      if (line.trim()) onEvent(schema.parse(JSON.parse(line)))
+    let newlineIndex: number
+    while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newlineIndex)
+      buffer = buffer.slice(newlineIndex + 1)
+      if (line.trim()) emit(schema.parse(JSON.parse(line)))
     }
   }
-  if (buffer.trim()) onEvent(schema.parse(JSON.parse(buffer)))
+  if (buffer.trim()) emit(schema.parse(JSON.parse(buffer)))
+
+  if (!sawTerminalEvent) {
+    throw new ApiError(
+      'The connection closed before the search finished. The response may have been too large — try a smaller candidate limit.',
+    )
+  }
 }
 
 export interface HistoryParams {

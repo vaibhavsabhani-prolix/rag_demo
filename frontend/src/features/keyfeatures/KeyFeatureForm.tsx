@@ -23,9 +23,11 @@ export function KeyFeatureForm({ onSubmit, isPending }: KeyFeatureFormProps) {
   } = useForm<KeyFeatureFormValues>({
     resolver: zodResolver(keyFeatureFormSchema),
     defaultValues: {
-      problem: '',
-      invention_title: '',
-      invention_details: '',
+      problem:
+        'Urban farms waste water and energy because irrigation schedules do not accurately match soil moisture and plant requirements.',
+      invention_title: 'AI-Based Smart Irrigation System for Urban Farming',
+      invention_details:
+        'This invention relates to an intelligent irrigation system designed for rooftop gardens, urban farms, and small agricultural spaces. The system integrates soil moisture sensors, temperature sensors, weather data, and crop-specific information with an AI-based control algorithm. It automatically adjusts irrigation schedules and water flow according to plant requirements and environmental conditions. An IoT-enabled controller allows users to monitor water consumption, receive alerts, and manage irrigation remotely. The system can also detect abnormal water usage and identify potential irrigation failures. The invention aims to reduce water wastage, improve crop health, and support efficient urban agriculture.',
       collection: collections.data?.default ?? '512',
       retrieval_limit: 5000,
       top_k: 20,
