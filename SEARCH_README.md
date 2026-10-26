@@ -1,699 +1,143 @@
-# Patent Search Pipeline — Query to Results, A to Z
+# Search flow
 
-This document explains what happens, in order, from the moment a user types a
-query in the React web app ([frontend/](frontend/)) to the moment ranked patents are
-shown on screen. It covers the current 6-phase search pipeline only. For how
-patents get chunked, embedded, and indexed into Qdrant in the first place, see
-[INDEXING_README.md](INDEXING_README.md).
+The standard search implementation is split between the API adapter in
+[app/api/main.py](/Users/hepinprolix/Desktop/demo/rag_demo/app/api/main.py),
+the orchestration in
+[app/semantic_search.py](/Users/hepinprolix/Desktop/demo/rag_demo/app/semantic_search.py),
+and the phase implementations under `app/query_understanding`,
+`app/retrieval`, `app/verification`, `app/reranking`, and `app/scoring`.
 
-The pipeline is orchestrated top-to-bottom by `SearchPipeline.run()` in
-[app/semantic_search.py](app/semantic_search.py), exposed to the UI by the
-FastAPI server in [app/api/main.py](app/api/main.py). Each phase is a standalone
-module under `app/`, takes the previous phase's output as input, and produces
-a typed Pydantic result object that both feeds the next phase and renders its
-own section in the UI.
+## Request lifecycle
 
 ```text
-User types a query
-       │
-       ▼
-Phase 1  Query Understanding            (LLM call, cached)          → ParsedQuery
-       │
-       ▼
-Phase 2  Candidate Retrieval            (vector search, Qdrant)      → CandidateRetrievalResult
-       │
-       ▼
-Phase 3  Metadata Filtering             (deterministic, no I/O)      → FilteredCandidateResult
-       │
-       ▼
-Phase 4  Relationship/Requirement Verification (cross-encoder)       → VerificationBatchResult
-       │
-       ▼
-Phase 5  BGE Cross-Encoder Reranking    (cross-encoder)              → RerankBatchResult
-       │
-       ▼
-Phase 6  Final Scoring & Selection      (deterministic, no I/O)      → FinalSearchResult
-       │
-       ▼
-Ranked patent cards on screen
+React SearchForm
+    |
+    | POST /api/search
+    v
+resolve collection -> save history start
+    |
+    v
+stream NDJSON from a worker thread
+    |
+    +-- start
+    +-- phase 1 ... phase 6
+    +-- done or error
+    |
+    v
+save completed phases and return to the UI
 ```
 
-Only two things ever call an external model over the network: **Phase 1**
-(one LLM call) and **Phase 4 + Phase 5** (a shared BGE cross-encoder server).
-Every other phase is pure Python running against data already in memory or
-in Qdrant.
+The frontend validates every event with Zod before updating the pipeline views.
+The API uses the selected collection, or the ingestion collection
+`patent_chunks_1024` when no collection is supplied.
 
-There is no separate evidence-retrieval phase: Phase 4 and Phase 5 score the
-same chunk text Phase 2 already fetched for each Phase-3-surviving candidate.
-`_candidates_to_evidence_result()` in `app/semantic_search.py` reshapes that
-data in memory between Phase 3 and Phase 4 — zero new Qdrant calls happen
-there.
+## Six standard phases
 
----
+`SearchPipeline.run()` executes these phases in order:
 
-## Phase 1 — Query Understanding
+### 1. Query understanding
 
-**Module:** `app/query_understanding/engine.py` (`QueryUnderstandingEngine.parse`)
-**Config:** `QUERY_LLM_REMOTE_BASE_URL`, `QUERY_LLM_REMOTE_MODEL`, `QUERY_CACHE_SIZE`, `QUERY_LLM_TEMPERATURE`, `QUERY_LLM_MAX_TOKENS`, `QUERY_LLM_REQUEST_TIMEOUT`
+`QueryUnderstandingEngine` sends the user's query to the configured query LLM.
+It produces a normalized semantic query, relationship and requirement
+hypotheses, and metadata filters. Results can be served from the in-memory
+query cache.
 
-The raw query string is turned into a structured `ParsedQuery` object — this
-is the single point where natural language gets converted into something the
-rest of the pipeline can reason about mechanically.
+### 2. Candidate vector retrieval
 
-```text
-PHASE 1 — QUERY UNDERSTANDING
+`CandidateRetriever` embeds the parsed query and retrieves up to
+`RETRIEVAL_TOP_K_CHUNKS` chunks from the selected Qdrant collection.
 
-User Query (raw text)
-        ↓
-  Check LRU Cache
-        ↓
-┌───────┴───────┐
-↓               ↓
-Cache HIT       Cache MISS
-↓               ↓
-Return cached   Build prompt
-ParsedQuery     (system + 2 few-shot anchor examples + query)
-                ↓
-                Call remote LLM (temperature = 0, max_retries = 1)
-                ↓
-                Parse JSON response
-                ↓
-          ┌─────┴─────┐
-          ↓           ↓
-       Valid      Truncated
-       JSON       (finish_reason=length)
-          ↓           ↓
-          │      Salvage every field the model
-          │      finished generating (repair
-          │      partial JSON, drop incomplete
-          │      trailing objects)
-          └─────┬─────┘
-                ↓
-                Validate against ParsedQuery schema
-                ↓
-                Local deterministic normalization
-                ↓
-                Store result in cache
-└───────┬───────┘
-        ↓
-  PHASE 1 OUTPUT
+### 3. Metadata filtering
 
-  ParsedQuery
-  (metadata_filters, concepts, relationships,
-   requirements, semantic_query, is_metadata_only)
-        ↓
-  Send to Phase 2
+`filter_candidates` applies the parsed metadata constraints. Metadata-only
+queries can take a specialized path that does not require the normal semantic
+signals.
+
+### 4. Semantic verification
+
+`RelationshipVerifier` evaluates whether candidate evidence supports the
+query's relationship and requirement hypotheses. Verification thresholds are
+configured in `app/config.py`.
+
+### 5. BGE cross-encoder reranking
+
+`BGEReranker` scores candidate text against the parsed query using the remote
+BGE reranker. The phase also supplies sentence-level scores used to highlight
+matching evidence in the UI.
+
+### 6. Final scoring
+
+`FinalScorer` combines retrieval, reranker, relationship, and requirement
+signals using the configured weights. Results with a final score below
+`FINAL_SCORE_THRESHOLD` are excluded; there is no fixed final top-K cap.
+
+## Streaming event format
+
+`POST /api/search` returns `application/x-ndjson`. A typical stream contains:
+
+```json
+{"type":"start","query":"...","collection":"...","cache_hit":false,"search_id":123}
+{"type":"phase","phase":1,"name":"Query Understanding","elapsed_ms":12.3,"data":{}}
+{"type":"phase","phase":6,"name":"Final Patent Scoring","elapsed_ms":45.6,"data":{}}
+{"type":"done","elapsed_ms":1234.5}
 ```
 
-1. **Cache check** (`app/query_understanding/cache.py`) — an in-memory LRU
-   cache keyed on the exact query string. A cache hit skips everything below
-   and returns instantly (shown in the UI as "⚡ CACHE HIT").
-2. **Warm-up on startup** — `QueryUnderstandingEngine.warm_up()` fires one
-   throwaway request at the remote LLM when the engine singleton is created
-   (`build_pipeline()` in `app/api/main.py`, at server startup), so a cold/unloaded remote model
-   pays its startup latency once at app launch instead of on a real user's
-   first query.
-3. **One LLM call** — the query is sent to a remote OpenAI-compatible LLM
-   (`QUERY_LLM_REMOTE_MODEL`, temperature `0.0` for determinism) with a system
-   prompt (`app/query_understanding/prompt.py`) plus **two** few-shot anchor
-   examples (a short simple query, and a dense multi-field query) asking it to
-   return structured JSON, not prose. `response_format={"type": "json_object"}`
-   forces valid JSON back.
-4. **JSON truncation repair** (`_repair_truncated_json` in `engine.py`) — if
-   the response is cut off mid-generation (a very information-dense query can
-   need more output than `QUERY_LLM_MAX_TOKENS` allows), this walks the raw
-   text and salvages every field the model finished generating instead of
-   discarding the whole response. It only accepts a cut point that leaves
-   valid, semantically-complete JSON (e.g. it will drop a relationship object
-   that got cut off mid-key rather than keep a `{"subject": "..."}` with no
-   `relation`/`object`), so `ParsedQuery`'s safe field defaults absorb
-   whatever didn't make it.
-5. **Schema validation** — the JSON is parsed into a `ParsedQuery`
-   (`app/models/parsed_query.py`), which has:
-   - `metadata_filters` — structured `(field, operator, value)` constraints (assignee, date, CPC/IPC code, country, etc.).
-   - `concepts` — up to 8 of the most essential technical concepts/entities mentioned.
-   - `relationships` — directed triples like `(manufacturing method, produces, water)`.
-   - `attributes` — concept/property/value triples.
-   - `requirements` — plain-English sentences the patent must satisfy.
-   - `constraints` / `exclusions` — numeric/negative constraints.
-   - `semantic_query` — a *short* (≤~30 word) intent-preserving paraphrase of the query.
-   - `is_metadata_only` — true only when the query is pure metadata with no technical content (e.g. *"patents filed by Samsung in 2020"*).
-6. **Local normalization** (`app/query_understanding/normalizer.py`) —
-   deterministic cleanup (no LLM call) of extracted values, including CPC/IPC
-   code punctuation stripping (see the callout below).
-7. **Cache write** — the normalized result is cached for next time.
-8. **Failure handling** — any LLM/schema error returns a conservative
-   fallback `ParsedQuery` (just `semantic_query` = the raw query, everything
-   else empty) rather than crashing the pipeline.
-
-> **Past bugs that lived here:**
-> - The JSON schema used to list `semantic_query` *first* and describe it as
->   `"<complete intent query>"`. For a dense, fact-heavy query, the model read
->   that literally and just copied the entire input into `semantic_query`,
->   leaving every structured field empty — there was no example showing it
->   what to do with a long, multi-field query. Fixed by moving
->   `metadata_filters` first in the schema (so it's generated before the
->   model can run out of token budget), capping `concepts` at 8 items instead
->   of exhaustively enumerating every noun phrase (which was itself eating
->   the budget meant for `metadata_filters`), and adding a second few-shot
->   anchor demonstrating extraction from a dense, many-field query.
-> - Classification codes: the model sometimes "corrects" a bare code like
->   `H04N7163` into standard notation `H04N7/163`, but Qdrant's CPC/IPC
->   payload fields store the unpunctuated form — so an exact-match filter
->   silently failed. `QueryNormalizer.normalize_value` now strips
->   `/`, `-`, `.`, and spaces from CPC/IPC values regardless of how the LLM
->   chose to format them.
-> - A response cut off by `max_tokens` used to `json.loads()`-fail entirely,
->   discarding every field the model *did* finish generating (including a
->   fully-populated `metadata_filters`) in favor of an empty fallback. The
->   truncation-repair step above fixes this generally, not per-query.
-
-Rendered in the UI as **Phase 1: Query Understanding**, including the raw
-JSON the LLM produced.
-
----
-
-## Phase 2 — Dynamic Candidate Retrieval (Vector Search)
-
-**Module:** `app/retrieval/retriever.py` (`CandidateRetriever.retrieve_candidates`)
-**Config:** `RETRIEVAL_TOP_K_PER_VIEW=500`, `PATENT_CANDIDATE_TOP_K=300`
-
-This phase asks Qdrant "which patents are even plausibly relevant?" — cheap,
-broad, embedding-similarity-based, and intentionally over-inclusive (later
-phases narrow it down).
-
-```text
-PHASE 2 — CANDIDATE RETRIEVAL
-
-           ParsedQuery
-               ↓
-    ┌──────────┼──────────┐
-    ↓          ↓          ↓
- Original   Semantic   Structured
-    ↓          ↓          ↓
- Qdrant     Qdrant     Qdrant
-    ↓          ↓          ↓
- 100 hits   100 hits   100 hits
-    └──────────┼──────────┘
-               ↓
-        Merge duplicates
-               ↓
-        Group by patent
-               ↓
-    Best chunk = patent score
-               ↓
-        Sort patents
-               ↓
-        Keep top 300
-               ↓
-  PHASE 2 OUTPUT
-
-  CandidateRetrievalResult
-  (up to 300 candidate patents,
-   each with its matched chunks + best score)
-               ↓
-        Send to Phase 3
-```
-
-**Metadata-only branch:** if `parsed_query.is_metadata_only`, vector search
-is skipped entirely — patents are matched purely by scrolling the metadata
-collection (`app/retrieval/filter_builder.py`) and returned with a placeholder
-retrieval score of `1.0`.
-
-**Semantic branch** (the normal case):
-
-1. **Build multiple retrieval "views"** (`app/retrieval/views.py`,
-   `build_retrieval_views`) — deterministic, no LLM call. Up to three text
-   variants of the same query are built so different phrasings of the same
-   intent can each surface their own best matches:
-   - `original` — the raw user query.
-   - `semantic` — the Phase 1 `semantic_query`.
-   - `structured` — a compact synthesis of concepts, relationships,
-     attributes, and requirements (e.g. `"Relationships:\nmanufacturing method produces water"`).
-2. **Batch-embed all views in one HTTP call** (`app/embedder.py`,
-   `embed_texts`) — one round trip regardless of how many views there are.
-3. **Optional metadata pre-filter (best-effort, not a hard gate)** — if
-   `metadata_filters` are present, the patent-ID set is narrowed first (via
-   the metadata collection), and the vector search below is restricted to
-   only those patent IDs *if* the narrowing found at least one match. If it
-   finds **zero** matching patent IDs, the search does **not** short-circuit
-   to an empty result — it falls back to an unrestricted vector search
-   across the whole collection, and lets Phase 3's stricter, more forgiving
-   metadata check (below) do the real enforcement on whatever candidates
-   come back. See the callout below for why.
-4. **Vector search per view** — each view's embedding is searched against the
-   `CHUNKS_COLLECTION_NAME` collection independently, returning up to
-   `RETRIEVAL_TOP_K_PER_VIEW` (500) chunk hits per view.
-5. **Deduplicate and merge** — hits from different views that land on the
-   same chunk are merged (keeping the max score, recording which views
-   matched it).
-6. **Group into candidate patents** — chunks are grouped by `patent_id`; each
-   patent's `retrieval_score` is its single best-scoring chunk.
-7. **Bound the pool** — patents are sorted by that score and truncated to
-   `PATENT_CANDIDATE_TOP_K` (300).
-8. **Enrich with metadata** — title, assignee, dates, etc. are batch-fetched
-   from the metadata collection for the surviving 300 candidates.
-
-> **Past bug that lived here:** the metadata pre-filter used to be a hard
-> gate — if it found zero matching patent IDs (for *any* reason: a wrong
-> field-code mapping, an LLM-invented constraint the resolver couldn't
-> place, a formatting mismatch), the whole search returned zero results
-> immediately, and the vector search that would have found the patent by
-> its actual content never ran at all. Since metadata extraction/mapping is
-> exactly the kind of thing that can have edge cases, this made the entire
-> search fragile to a single bad filter. It's now explicitly an
-> optimization: narrow the search when the narrowing itself is trustworthy
-> (found something), otherwise fall back to the same broad search a
-> filter-less query would get, and let Phase 3 apply the real, per-candidate
-> metadata check afterward.
-
-Rendered as **Phase 2: Candidate Retrieval**, showing per-view hit counts and
-the merged candidate list.
-
----
-
-## Phase 3 — Metadata Filtering & Constraint Enforcement
-
-**Module:** `app/retrieval/metadata_filter.py` (`filter_candidates`)
-
-A purely deterministic, in-memory pass — no network calls. This is a second,
-stricter metadata check on the 300 candidates that survived Phase 2 (Phase
-2's own metadata narrowing, if any, only pruned which patent IDs vector
-search was allowed to look at — this phase re-validates every field on the
-actual candidate objects).
-
-```text
-PHASE 3 — METADATA FILTERING
-
-  Phase 2 Output (≤ 300 candidates)
-               ↓
-    metadata_filters present?
-    ┌──────────┴──────────┐
-    ↓                     ↓
-   No                    Yes
-    ↓                     ↓
- Pass all           For each candidate patent:
- through             check EVERY filter (AND)
- unchanged                ↓
-                    Date/Year field?  → numeric compare
-                    Code field (CPC/IPC)? → prefix/exact match
-                    Other field? → normalized text match
-                          ↓
-                    Missing required field → FAIL
-                          ↓
-                    All filters passed?
-                    ┌─────┴─────┐
-                    ↓           ↓
-                  Keep         Drop
-                    └─────┬─────┘
-    └──────────┬──────────┘
-               ↓
-     Record per-filter pass/fail diagnostics
-               ↓
-  PHASE 3 OUTPUT
-
-  FilteredCandidateResult
-  (surviving candidates + per-filter diagnostics)
-               ↓
-        Send to Phase 4
-```
-
-- Every `MetadataFilter` from Phase 1 is checked with **strict AND
-  semantics** — a candidate must pass *all* filters to survive.
-- Field comparison is type-aware:
-  - **Date/year fields** (`PY`, `PD`, `AD`, or any field name containing
-    "year"/"date") — numeric comparison, "smart" about comparing a year
-    against a full date; `in`/`any` (list membership) is supported the same
-    as `==` here.
-  - **Code fields** (`CPC`, `IPC`, `PNC`, `AC`, or any field containing
-    "cpc"/"ipc"/"country"/"jurisdiction") — normalized (punctuation
-    stripped) exact/prefix match.
-  - **Name/free-text fields** (inventor, assignee, applicant, title, address)
-    — punctuation-insensitive comparison, so a dataset name stored as
-    `"Last, First"` matches a query written as `"First Last"`.
-  - **Everything else** — normalized case-insensitive text match/substring/contains.
-- **Missing metadata is a hard fail** for `==`-style operators — but only
-  when the field *resolved to a real, known payload key* and that key is
-  genuinely absent from the candidate. A field name that never resolved to
-  any known key at all (`resolve_payload_field_names` in
-  `app/retrieval/filter_builder.py`, shared with Phase 2's pre-filter,
-  returns `[]`) is treated as **unverifiable, not failed** — see the callout
-  below for why that distinction matters. (`!=` filters trivially pass when
-  the field is absent, resolved or not.)
-- Per-filter pass/fail counters are recorded for the **Diagnostics** panel,
-  so it's visible in the UI exactly which filter, if any, is eliminating
-  candidates.
-
-If `parsed_query.metadata_filters` is empty, this phase is a no-op that
-passes every candidate through unchanged.
-
-> **Past bugs that lived here** (in the shared `filter_builder.py` field
-> resolution used by both this phase and Phase 2's pre-filter):
-> - An unresolved field name used to fall back to guessing the literal
->   string (or a generic reference-table description) as the Qdrant payload
->   key. That guess is almost never right, and a resolvable field silently
->   "not found" and a genuinely-unknown field were treated identically
->   (both = hard fail) — so one LLM-invented or mismapped field name (e.g.
->   `cpc_12_digit`, or `Attorney/Agent English` guessed from a generic
->   table when the real key was just `Attorney/Agent`) could zero out an
->   entire query that had 30 other, perfectly correct filters. Now:
->   resolvable-but-absent fails (a real mismatch), unresolvable is skipped
->   (can't verify it either way, so don't punish the candidate for it).
-> - Name fields used to get a hard Qdrant-level exact-match/`MatchAny`
->   condition at the Phase 2 pre-filter stage. This dataset has no full-text
->   payload index on those fields, so Qdrant's `MatchText` silently matched
->   nothing instead of erroring — every inventor/assignee filter was
->   effectively dead on arrival at the Qdrant level, regardless of how the
->   *name itself* was formatted. Name fields are never given a hard Qdrant
->   condition now; they're deferred entirely to this phase's Python-side
->   comparison.
-> - Year/date fields normalized to `int` by Phase 1 (for range comparisons)
->   used to be passed straight into Qdrant's exact-match condition — but
->   this dataset stores them as **strings** (`"2006"`, not `2006`), and
->   `MatchValue` is type-sensitive. Every exact year filter silently failed
->   until values were always compared as strings for equality.
-> - `in`/`any` (list membership) on a date/year field used to fall through
->   every branch of the date comparator with no matching case, silently
->   returning `False` regardless of whether the data matched — e.g.
->   `"priority years 2005 and 2006"` on a patent whose actual `Priority Year`
->   was exactly `[2005, 2006]` still failed.
-
-Rendered as **Phase 3: Metadata Filtering & Constraint Enforcement**.
-
----
-
-## Phase 4 — Semantic Relationship & Requirement Verification
-
-**Module:** `app/verification/verifier.py` (`RelationshipVerifier.verify_candidates`)
-**Config:** `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD=0.35`, `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD=0.35`, `VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD=0.5`, `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD=0.5`
-
-This is the **precision gate** — the phase responsible for deciding, patent
-by patent, whether the query's specific relationships and requirements are
-actually backed by evidence text, as opposed to the patent merely sharing
-generic vocabulary with the query. Unlike earlier phases, Phase 4 actually
-**eliminates** candidates — a patent whose coverage falls below the
-configured threshold never reaches Phase 5/6.
-
-There is no separate evidence-retrieval step feeding this phase: the
-"evidence chunks" scored below are the same chunk text Phase 2 already
-fetched for each Phase-3-surviving candidate, reshaped in memory
-(`_candidates_to_evidence_result()` in `app/semantic_search.py`) right before
-this phase runs — zero new Qdrant calls happen between Phase 3 and Phase 4.
-
-> Past bug fixed: the support threshold used to be a hardcoded `0.05`, which
-> is far too permissive for a BGE cross-encoder — near-zero relevance scores
-> would still count as "supported". That let patents which only share
-> generic words with the query (e.g. "method", "manufacturing") get marked
-> as satisfying a specific relationship (e.g. "produces water") even when
-> the actual subject never appeared in the evidence. Both support thresholds
-> are now real config values in `app/config.py` instead of magic numbers.
-
-```text
-PHASE 4 — RELATIONSHIP & REQUIREMENT VERIFICATION
-
-  Phase 3 Output (every surviving candidate, no cap;
-  evidence chunks reused directly from Phase 2)
-               ↓
-    is_metadata_only OR no relationships/requirements?
-    ┌──────────┴──────────┐
-    ↓                     ↓
-   Yes                   No
-    ↓                     ↓
- Auto-pass           Build one hypothesis string
- every patent         per relationship
- (coverage = 1.0)    ("subject relation object")
-                          ↓
-                    Build one hypothesis string
-                    per requirement
-                          ↓
-                    Cross-encoder scores:
-                    hypothesis × every evidence chunk
-                          ↓
-                    score ≥ 0.35 (relationship) /
-                    max(score, overlap*0.5) ≥ 0.35 (requirement)?
-                    ┌──────┴──────┐
-                    ↓             ↓
-                SUPPORTED    NOT_SUPPORTED
-                    └──────┬──────┘
-                           ↓
-                    relationship_coverage = supported / total
-                    requirement_coverage  = supported / total
-                           ↓
-                    coverage < COVERAGE_THRESHOLD (0.5)?
-                    ┌──────┴──────┐
-                    ↓             ↓
-                   Yes            No
-                    ↓             ↓
-               ELIMINATED      Keep
-    └──────────┬──────────────────┘
-               ↓
-  PHASE 4 OUTPUT
-
-  VerificationBatchResult
-  (surviving patents only + coverage ratios +
-   per-relationship/requirement verdicts + eliminated_count)
-               ↓
-        Send to Phase 5
-```
-
-Skipped entirely (auto-pass, coverage = 1.0) when the query is metadata-only
-or carries no relationships/requirements — there's nothing to verify.
-
-Otherwise, for **every** Phase 3 candidate (no cap — `VERIFICATION_MAX_CANDIDATES`
-was removed; Phase 4 processes the full candidate set):
-
-1. **Build one hypothesis string per relationship** — e.g.
-   `"manufacturing method produces water (process for making water)"`.
-2. **Build one hypothesis string per requirement** — the requirement's own text.
-3. **Batch cross-encoder scoring** — every hypothesis is scored against every
-   evidence chunk of every candidate in batched calls to the same BGE
-   reranker server used in Phase 5 (`_score_pairs_remote`).
-4. **Relationship verdict** — `SUPPORTED` purely if the best cross-encoder
-   score across the candidate's chunks clears
-   `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD`; `NOT_SUPPORTED` otherwise.
-   (There is no deterministic word-proximity override anymore — a prior
-   version OR'd in a word-distance heuristic that could fire on coincidence
-   and override a correctly-low cross-encoder score; it has been removed,
-   so support is now a pure semantic judgment.)
-5. **Requirement verdict** — blends the cross-encoder score with a
-   word-overlap ratio (`overlap * 0.5`) as a fallback signal, checked
-   against `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD`.
-6. **Coverage ratios** — `relationship_coverage` and `requirement_coverage`
-   are simply `supported / total` for that patent.
-7. **Elimination gate** — a patent whose `relationship_coverage` or
-   `requirement_coverage` falls below `VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD`
-   / `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD` (0.5 each) is dropped
-   entirely (`eliminated_count` tracks how many) and never reaches Phase 5.
-   There's no per-patent record of *why* a given patent was eliminated beyond
-   its coverage numbers — only the aggregate count is kept.
-
-These two coverage numbers matter a lot downstream — together they make up
-**70% of the final score** in Phase 6 (`FINAL_WEIGHT_RELATIONSHIP` +
-`FINAL_WEIGHT_REQUIREMENT` = 0.45 + 0.25), so getting the support threshold
-right here is the single highest-leverage knob for search precision.
-
-Rendered as **Phase 4: Semantic Relationship Verification**.
-
----
-
-## Phase 5 — BGE Cross-Encoder Reranking
-
-**Module:** `app/reranking/reranker.py` (`BGEReranker.rerank_candidates`)
-**Config:** `RERANKER_REMOTE_BASE_URL`/`_MODEL` (`BAAI/bge-reranker-v2-m3`), `RERANK_BATCH_SIZE=128`, `RERANK_CONCURRENT_REQUESTS=6`, `RERANKER_MAX_CONTEXT_TOKENS=4096`
-
-Where Phase 4 asks "is the query's *structure* (relationships/requirements)
-satisfied?", Phase 5 asks a simpler, complementary question: "how relevant
-is this evidence text to the query overall?" — a general cross-encoder
-relevance score, independent of the structured verification above.
-
-```text
-PHASE 5 — BGE CROSS-ENCODER RERANKING
-
-  Phase 4 Output (verified candidates)
-               ↓
-  Reranking query = user's original query, verbatim
-               ↓
-  For every evidence chunk of every candidate:
-  truncate to fit 4096-token budget
-  (query tokens + doc tokens + safety margin)
-               ↓
-  Group chunks into batches of 128
-               ↓
-  Fire up to 6 batches concurrently (thread pool)
-               ↓
-  Cross-encoder scores: chunk vs reranking query
-               ↓
-  best_reranker_score = MAX(chunk scores) per patent
-  avg_reranker_score  = AVG(chunk scores) per patent
-               ↓
-  PHASE 5 OUTPUT
-
-  RerankBatchResult
-  (best/avg reranker score per patent;
-   Phase 4 verification data carried forward unchanged)
-               ↓
-        Send to Phase 6
-```
-
-1. **Set the reranking query** — the user's `original_query`, used verbatim.
-   No synthetic concatenation of relationships/requirements, no LLM call.
-2. **Token-budget every chunk** (`truncate_document_for_budget`) — each
-   chunk (with its `Section: X` prefix if it has one) is truncated so
-   `query_tokens + doc_tokens + safety_margin` never exceeds the reranker's
-   hard `4096`-token context limit. A `400` "token limit" response triggers
-   one automatic retry with more aggressive truncation.
-3. **Batched, concurrent scoring** — every evidence chunk (from every
-   surviving candidate) is scored against the reranking query, `128` chunks
-   per HTTP request, up to `6` requests in flight at once via a thread pool.
-4. **Per-patent aggregation** — a patent's `best_reranker_score` is the max
-   score across its own chunks (its single strongest piece of evidence);
-   `avg_reranker_score` is also kept for visibility.
-5. **Resilient to failure** — if every reranker endpoint fails, chunks fall
-   back to a `0.0` score rather than crashing the whole search.
-
-All of Phase 4's verification data (relationships, requirements, coverage
-counts) is carried forward unchanged into `RerankedPatentResult` — Phase 5
-only adds the cross-encoder score, it doesn't recompute or discard anything.
-
-Rendered as **Phase 5: BGE Cross-Encoder Reranking**.
-
----
-
-## Phase 6 — Final Patent Scoring & Result Selection
-
-**Module:** `app/scoring/scorer.py` (`FinalScorer.score_and_rank`)
-**Config:** `FINAL_SCORE_THRESHOLD`, `FINAL_WEIGHT_RELATIONSHIP=0.45`, `FINAL_WEIGHT_REQUIREMENT=0.25`, `FINAL_WEIGHT_RERANKER=0.20`, `FINAL_WEIGHT_RETRIEVAL=0.10`
-
-The final phase is pure arithmetic — no model calls, no I/O — that combines
-every signal collected so far into one 0–10 score per patent, then decides
-what actually gets shown.
-
-```text
-PHASE 6 — FINAL PATENT SCORING & RESULT SELECTION
-
-  Phase 5 Output (reranked + verified candidates)
-               ↓
-  For each candidate, compute 4 components (0.0 – 1.0):
-    relationship_score   (forced to 0 if CONTRADICTED)
-    requirement_score
-    reranker_score
-    retrieval_score
-               ↓
-  Weighted sum × 10:
-    0.45 × relationship_score
-  + 0.25 × requirement_score
-  + 0.20 × reranker_score
-  + 0.10 × retrieval_score
-               ↓
-  final_score (0 – 10)
-               ↓
-  final_score ≥ FINAL_SCORE_THRESHOLD?
-  ┌───────────┴───────────┐
-  ↓                        ↓
- Yes                       No
-  ↓                        ↓
-Qualify                  Reject
-  └───────────┬───────────┘
-               ↓
-  Sort qualifying patents descending by final_score
-               ↓
-  PHASE 6 OUTPUT
-
-  FinalSearchResult
-  (ALL qualifying patents, no fixed top-N cap,
-   each with a full ScoreBreakdown for explainability)
-               ↓
-  Rendered as ranked patent result cards
-```
-
-For every candidate that made it through Phase 5:
-
-1. **Four normalized (0.0–1.0) component scores:**
-   - `relationship_score` = Phase 4's `relationship_coverage`, forced to
-     `0.0` if the patent had **any** `CONTRADICTED` relationship — an
-     explicit contradiction overrides whatever coverage ratio it otherwise had.
-   - `requirement_score` = Phase 4's `requirement_coverage`.
-   - `reranker_score` = Phase 5's `best_reranker_score`.
-   - `retrieval_score` = Phase 2's original `candidate_score` (the initial
-     embedding-similarity signal, carried all the way through).
-2. **Weighted sum on a 0–10 scale:**
-   ```text
-   final_score = 10 × ( 0.45 × relationship_score
-                       + 0.25 × requirement_score
-                       + 0.20 × reranker_score
-                       + 0.10 × retrieval_score )
-   ```
-   Weights must sum to exactly `1.0` (`validate_weights`, checked at
-   `FinalScorer.__init__` — raises immediately if `app/config.py` is
-   misconfigured).
-3. **Filter** — only patents with `final_score >= FINAL_SCORE_THRESHOLD`
-   qualify. Every patent is still counted (`passed_threshold_count`,
-   `rejected_count`) even if it doesn't make the cut, for the diagnostics panel.
-4. **Sort** descending by `final_score`. **All** qualifying patents are
-   returned — there is no fixed top-N cap; the score threshold alone decides
-   how many results are shown.
-5. **Full explainability** — every result carries a `ScoreBreakdown` (each
-   component's raw value and its weighted contribution) plus every Phase
-   4/5 relationship, requirement, and evidence chunk that produced it, so
-   the UI can show exactly *why* a patent scored what it did.
-
-Rendered as **Phase 6: Final Patent Scoring & Result Selection**, followed by
-the patent result cards themselves.
-
----
-
-## Why a patent can rank highly for the wrong reason (and how to fix it)
-
-Because 70% of the final score comes from Phase 4's coverage ratios, and
-those ratios are threshold-gated cross-encoder judgments, the single biggest
-lever for search precision is
-`VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD` / `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD`
-in `app/config.py`:
-
-- **Too low** → patents that only share generic vocabulary with the query
-  (not its actual subject) get marked `SUPPORTED` and can out-rank truly
-  relevant results.
-- **Too high** → genuinely relevant patents that use different wording than
-  the query get marked `NOT_SUPPORTED` and disappear from results entirely.
-
-The relationship support decision is now a pure cross-encoder score check
-(the prior deterministic word-proximity override was removed — see the
-Phase 4 section above), so a `SUPPORTED` verdict always reflects what the
-cross-encoder judged, never a coincidental word co-occurrence overriding it.
-
-That said, the verification layer only checks "does the cross-encoder think
-this evidence entails the relationship/requirement" — it does not verify
-that a multi-word qualifier (LED, wireless,
-lithium, ...) actually describes the *specific thing* the query asked about,
-as opposed to some other, unrelated component that happens to share one word
-with it. A patent titled "Multi-functional **LCD** TV" with a separate,
-unrelated **LED** indicator lamp can still satisfy a naive "television has
-LED display" check, because "LED" and "display" are each present in the
-document without ever describing the same component. Treat a `SUPPORTED`
-relationship as "the query's words are grounded in this evidence," not as
-"this exact claim is true," especially for compound technical terms.
-
-The next lever is `FINAL_SCORE_THRESHOLD` in Phase 6 — it decides how many
-of the qualifying patents actually get shown at all, independent of how they
-were scored.
-
-Finally, the Phase 4 **elimination gate**
-(`VERIFICATION_RELATIONSHIP_COVERAGE_THRESHOLD` / `VERIFICATION_REQUIREMENT_COVERAGE_THRESHOLD`,
-0.5 each) means a patent can pass Phase 2-3 with a strong embedding/metadata
-match and still never reach Phase 5/6 if too few of its relationships or
-requirements clear the support threshold. There's no per-patent record of
-*why* a patent was eliminated — only the aggregate `eliminated_count` on
-`VerificationBatchResult` — so if a known-relevant patent is missing from
-results, check its individual relationship/requirement scores against the
-support threshold before assuming it's a retrieval problem upstream.
-Phase 4 itself has no candidate cap anymore (`VERIFICATION_MAX_CANDIDATES`
-was removed) — every Phase 3 survivor is verified.
-
----
-
-## Where to look for each config value
-
-All tunables referenced above live in one place: [app/config.py](app/config.py).
-The comment directly above each constant explains what raising or lowering
-it does — that's the intended way to tune behavior; none of these values are
-duplicated or hardcoded elsewhere in the pipeline modules.
+Failures are sent as an `error` event with the exception type and message.
+Unknown collections fail before streaming with a normal HTTP error.
+
+## Compare flow
+
+`POST /api/compare` accepts a query and a list of collection names. Query
+understanding runs once with cache disabled. Each collection then runs phases
+2–6 from the same parsed query, in sequence. Events include the collection
+name, collection start/done markers, per-phase timing, and memory samples.
+Failure of one collection is reported as `collection_error`; other selected
+collections continue.
+
+## Key-feature flows
+
+The key-feature pipeline is separate from the six-phase semantic pipeline:
+
+- `POST /api/keyfeature-extract` extracts structured key features from the
+  problem, invention title, and invention details.
+- `POST /api/keyfeature-search` extracts/embeds features, retrieves matching
+  patent chunks, reranks feature evidence, and streams phase events for one
+  collection.
+- `POST /api/keyfeature-compare` extracts and embeds features once, then
+  evaluates the same features across each selected collection.
+
+The compare endpoint can reuse caller-provided features, avoiding repeated
+extraction.
+
+## Supporting endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/config` | Exposes pipeline models, limits, weights, and patent links |
+| `GET /api/collections` | Lists valid searchable collection pairs |
+| `GET /api/cache` | Reports query cache statistics |
+| `DELETE /api/cache` | Clears the query cache |
+| `GET /api/history` | Lists persisted searches with pagination and query filtering |
+| `GET /api/history/{id}` | Returns one stored search |
+| `GET /api/history/{id}/phases` | Returns stored phase data |
+| `DELETE /api/history/{id}` | Deletes one stored search |
+| `DELETE /api/history` | Clears search history |
+
+History persistence is best effort: a PostgreSQL failure is logged and does
+not prevent the search stream from running.
+
+## Configuration
+
+Search settings are in
+[app/config.py](/Users/hepinprolix/Desktop/demo/rag_demo/app/config.py).
+The most important controls are:
+
+- `RETRIEVAL_TOP_K_CHUNKS`
+- `RERANK_BATCH_SIZE`, `RERANK_CONCURRENT_REQUESTS`, and reranker context limits
+- `VERIFICATION_RELATIONSHIP_SUPPORT_THRESHOLD`
+- `VERIFICATION_REQUIREMENT_SUPPORT_THRESHOLD`
+- `FINAL_SCORE_THRESHOLD`
+- `FINAL_WEIGHT_RELATIONSHIP`, `FINAL_WEIGHT_REQUIREMENT`,
+  `FINAL_WEIGHT_RERANKER`, and `FINAL_WEIGHT_RETRIEVAL`
+- `HIGHLIGHT_SENTENCE_THRESHOLD` and
+  `HIGHLIGHT_SENTENCE_STRONG_THRESHOLD`
